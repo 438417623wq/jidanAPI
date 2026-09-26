@@ -34,11 +34,12 @@
 
 ```bash
 # 1. 修改 package.json 的 version 与 feed/announcements.json（版本说明）
-# 2. 重新生成清单（把每个发布文件的字节数与 SHA-256 写进 feed/manifest.json）
+# 2. 重新生成清单（把每个发布文件的字节数与 SHA-256 写进 feed/manifest.json；
+#    同一份文件清单也会写进 catalog/integrity.json，供生态目录审计用）
 node scripts/build-manifest.mjs
 # 3. 确认清单与实物一致（不一致就非零退出；已接进 npm test）
 node scripts/build-manifest.mjs --check
-# 4. 提交并推送，再打 tag 并创建 Release
+# 4. 提交并推送（目录记录 revision 的两步提交见下一节），再打 tag 并创建 Release
 git tag -a v1.2.3 -m "…" && git push origin v1.2.3
 gh release create v1.2.3 --title "…" --notes-file …
 # 5. purge CDN 缓存（不做的话 jsDelivr 上的 @main 会继续发上一版，见下一节）
@@ -58,6 +59,27 @@ curl "https://purge.jsdelivr.net/gh/zouyuxuan122/dsh-our-free-model@main/feed/an
 已安装的插件会按 `updateCheckHours`（默认 6 小时）自动发现新版本并推送通知；
 用户确认后下载、校验、备份、替换、热重载全部在应用内完成。清单会校验每个文件的
 SHA-256，并在安装前重新拉取一次，避免用陈旧清单校验新文件。
+
+## 目录记录与 revision 约定
+
+`catalog/dsh-plugin.json`（`source.revision`）与 `catalog/provenance.json`
+（`subject.sourceRevision`）记录**最近一次触及发布内容的 commit**——`package.json`
+加上 `files` 清单，正是 `catalog/integrity.json` 逐字节描述的那份文件集合。
+`scripts/catalog-test.mjs` 按此校验，比较对象刻意不是 HEAD：记录无法内含引入它自己
+的那个 commit 的哈希，拿 HEAD 比对会让目录套件在记录真正提交的那一刻变红，事后单改
+revision 再提交，HEAD 又前移——逻辑上无解。改比"最近一次触及发布内容的 commit"既
+真实（单独提交目录记录不改变任何发布字节）又可满足（刷新 revision 的 commit 只碰
+`catalog/`，它要匹配的指针不会因此移动）。
+
+所以内容改动按两步提交：
+
+1. **内容 commit**：代码、清单、目录记录一起进；
+2. **刷新 commit**：紧接着单独一个 commit，只把上述两处 revision 改成第 1 步的
+   哈希——不得顺带改动任何发布文件，否则校验会继续红。
+
+只有触及发布内容的 commit 才移动这个指针：改 `docs/`、`scripts/`、`catalog/`
+本身都不需要刷新。发布 tag 打在第 2 步之后（发布物不含 `catalog/`，两步的制品字节
+相同，但 HEAD 处于全绿状态）。
 
 ## 关于源顺序与网络现实
 
@@ -126,11 +148,13 @@ become code execution.
 
 ```bash
 # 1. bump `version` in package.json, and the release note in feed/announcements.json
-# 2. regenerate the manifest (size + SHA-256 of every published file)
+# 2. regenerate the manifest (size + SHA-256 of every published file; the same
+#    list is written to catalog/integrity.json for ecosystem catalog audits)
 node scripts/build-manifest.mjs
 # 3. confirm the manifest matches the tree (non-zero exit otherwise; part of npm test)
 node scripts/build-manifest.mjs --check
-# 4. commit and push, then tag and create the release
+# 4. commit and push (see the two-step catalog revision convention below), then
+#    tag and create the release
 git tag -a v1.2.3 -m "…" && git push origin v1.2.3
 gh release create v1.2.3 --title "…" --notes-file …
 ```
@@ -152,6 +176,32 @@ Installed plugins discover the new release automatically (every
 `updateCheckHours`, 6 by default) and notify the user; the upgrade itself runs
 in-app, and the manifest is re-fetched right before installing so a document
 fetched hours earlier cannot be used to vouch for bytes that changed since.
+
+## Catalog records and the revision convention
+
+`catalog/dsh-plugin.json` (`source.revision`) and `catalog/provenance.json`
+(`subject.sourceRevision`) record the **most recent commit that touched the
+release content** — `package.json` plus the `files` list, exactly the set
+`catalog/integrity.json` describes byte by byte. `scripts/catalog-test.mjs`
+checks it against that, deliberately not against HEAD: a record cannot contain
+the hash of the commit that introduces it, so a revision compared against HEAD
+turns red the moment the records are actually committed, and re-pointing it in
+a follow-up commit moves HEAD again — logically unsatisfiable. "Last commit
+that touched the release content" is both truthful (committing the records
+alone changes no published byte) and satisfiable (the refresh commit touches
+only `catalog/`, so the pointer it must match does not move under it).
+
+Content changes therefore go in as two commits:
+
+1. **The content commit**: code, manifest and catalog records together;
+2. **The refresh commit**: immediately after, a commit that only rewrites the
+   two revision fields to the first commit's hash — it must not touch any
+   published file, or the check stays red.
+
+Only commits that touch the release content move the pointer: `docs/`,
+`scripts/` and `catalog/` changes need no refresh. Tag the release after step 2
+(the published artifact excludes `catalog/`, so both commits produce identical
+artifact bytes — but HEAD sits at all-green there).
 
 ## Source order and network reality
 

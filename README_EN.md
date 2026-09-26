@@ -107,6 +107,16 @@ To install manually as a real directory, in `<DSH_HOME>/profiles/<profile>/`:
 > `dsh.profile.bundles` already applies its own patch layer, and registering it
 > twice fails with `duplicate loader entry id: our-free-model`.
 
+#### Integration packs (managed installation)
+
+When the plugin arrives through an integration pack (an EAC pack, Mojobox, …),
+the *pack* owns update timing and bytes: install with the bundle config
+`distribution: 'managed'` (or write the same field into settings.json), and the
+in-app updater, the announcement feed and the hot reload all stand down — two
+writers to one installed directory corrupt it; the model lane is unaffected.
+Acceptance lives in `scripts/offline-test.mjs`; the catalog-ready records
+(manifest 0.15 / provenance / license / integrity) are under `catalog/`.
+
 ### Verify before launching the desktop app
 
 Run the desktop host's own gate against your profile instead of blind-retrying:
@@ -190,6 +200,8 @@ A failed upgrade restores the previous version and reports why.
 index.js      host half: adapter registration, catalog + availability probes,
               settings/stats stores, webServer API routes, forward lifecycle,
               announcement / upgrade / hot-reload wiring
+adapter/      kernel seam: the only module in the package allowed to import
+              @deepseek-ai/* (kernel.js: attribution User-Agent with a literal fallback)
 src/adapter.js  structural LlmAdapter: providerInfo, listModels, resolveModel,
                 prepareCall, stream, providerRetryPolicy
 src/upstream.js gateway identity: credentials, session/request id minting,

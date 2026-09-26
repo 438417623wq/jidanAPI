@@ -34,6 +34,7 @@ import { publishedBytes } from './lib/published-bytes.mjs'
 const root = path.join(fileURLToPath(new URL('..', import.meta.url)))
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const manifestPath = path.join(root, 'feed', 'manifest.json')
+const integrityPath = path.join(root, 'catalog', 'integrity.json')
 
 // `private: true` guards against accidental npm publishes; building the manifest
 // is the project's own release path, so it proceeds either way.
@@ -76,6 +77,8 @@ files.sort((a, b) => a.path.localeCompare(b.path))
 
 let previous
 try { previous = JSON.parse(fs.readFileSync(manifestPath, 'utf8')) } catch { /* first manifest */ }
+let previousIntegrity
+try { previousIntegrity = JSON.parse(fs.readFileSync(integrityPath, 'utf8')) } catch { /* first run */ }
 if (previous?.version !== undefined && !process.argv.includes('--force')) {
   const rank = value => String(value).split(/[.\-]/).map(part => Number.isNaN(Number(part)) ? part : Number(part))
   const after = (left, right) => {
@@ -106,27 +109,36 @@ const manifest = {
 
 if (process.argv.includes('--check')) {
   const problems = describeDrift(previous, manifest)
-  if (problems.length === 0) {
-    console.log(`feed/manifest.json matches the ${files.length} files it describes (${files.reduce((sum, file) => sum + file.size, 0)} bytes)`)
+  // The catalog's integrity record is the same promise, addressed to ecosystem
+  // consumers instead of the in-app upgrader, so it is checked in the same pass.
+  const integrityProblems = describeDrift(previousIntegrity, { version: pkg.version, files }, 'catalog/integrity.json')
+  if (problems.length === 0 && integrityProblems.length === 0) {
+    console.log(`feed/manifest.json and catalog/integrity.json match the ${files.length} files they describe (${files.reduce((sum, file) => sum + file.size, 0)} bytes)`)
     process.exit(0)
   }
-  console.error('feed/manifest.json does not describe the files on disk:')
-  for (const problem of problems) console.error(`  ${problem}`)
+  console.error('the committed digests do not describe the files on disk:')
+  for (const problem of [...problems, ...integrityProblems]) console.error(`  ${problem}`)
   console.error('every user who upgrades now fails verification — run: node scripts/build-manifest.mjs')
   process.exit(1)
 }
 
 fs.mkdirSync(path.dirname(manifestPath), { recursive: true })
 fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, undefined, 2)}\n`)
+// The catalog-facing copy of the same file list: no notes, no base URL — just
+// the version and the per-file bytes/sha256 a catalog record can be audited
+// against. One builder writes both so they cannot disagree.
+fs.mkdirSync(path.dirname(integrityPath), { recursive: true })
+fs.writeFileSync(integrityPath, `${JSON.stringify({ version: pkg.version, algorithm: 'sha256', files }, undefined, 2)}\n`)
 console.log(`feed/manifest.json: ${pkg.version}, ${files.length} files, ${files.reduce((sum, file) => sum + file.size, 0)} bytes`)
+console.log(`catalog/integrity.json: same ${files.length} digests, written beside the manifest`)
 
 /**
- * Every way the committed manifest can disagree with the tree, in the terms the
- * upgrader itself checks: the version it will install, then each file's size and
- * hash, in that order — a size mismatch already aborts the download.
+ * Every way a committed digest document can disagree with the tree, in the terms
+ * the upgrader itself checks: the version it will install, then each file's size
+ * and hash, in that order — a size mismatch already aborts the download.
  */
-function describeDrift(committed, built) {
-  if (committed === undefined) return ['feed/manifest.json does not exist']
+function describeDrift(committed, built, label = 'feed/manifest.json') {
+  if (committed === undefined) return [`${label} does not exist`]
   const problems = []
   if (committed.version !== built.version) problems.push(`version ${committed.version} on disk, ${built.version} in the manifest`)
   const byPath = new Map((Array.isArray(committed.files) ? committed.files : []).map(row => [row?.path, row]))

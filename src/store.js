@@ -164,6 +164,12 @@ export const SETTINGS_INITIAL = {
   updateNotifiedFor: '',
   /** Watch the installed package and hot-reload on change (development aid). */
   autoReloadWatch: false,
+  /** Who owns the installed bytes: `self` updates in-app from the repository;
+   *  `managed` — written by a distribution pack's installer, or passed as the
+   *  bundle config `distribution` — stands the self-updater, the announcement
+   *  feed and the hot reload down. The settings API never accepts this field,
+   *  so an install that shipped managed stays managed. */
+  distribution: 'self',
   /** When the running code was hot-reloaded into place, and how many times. */
   reloadedAt: 0,
   reloadCount: 0,

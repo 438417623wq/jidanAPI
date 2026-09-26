@@ -103,6 +103,15 @@ PROFILE_UPGRADE_REQUIRED: offline dependency migration is not yet available
 > **不要**再往 `cordis.patch.yml` 里加条目。被 `dsh.profile.bundles` 引用的包，它自带的
 > patch 层会自动生效；两处都注册会报 `duplicate loader entry id: our-free-model`。
 
+#### 整合包（托管安装）
+
+插件被整合包（EAC 整合包、Mojobox 等）安装时，由**安装方**负责更新时机与字节：
+在安装时把 bundle config 设为 `distribution: 'managed'`（或向 settings.json 写入
+同一字段），插件的应用内升级、公告 feed 与热重载即全部停用——两个写入者同时操作
+同一个安装目录只会把它写坏；模型 lane 不受影响。相关验收见
+`scripts/offline-test.mjs`；目录就绪记录（manifest 0.15 / 出处 / 许可 / 完整性）
+在 `catalog/` 下。
+
 ### 启动桌面端前先自检
 
 不要盲试，直接调用桌面端自己的闸门代码：
@@ -173,6 +182,8 @@ POST /v1/responses
 ```text
 index.js        Host 半身：适配器注册、清单与可用性探测、设置/用量存储、
                 webServer 路由、转发端口生命周期、公告/升级/热重载接线
+adapter/        内核接缝：全包唯一允许 import @deepseek-ai/* 的地方
+                （kernel.js：attribution User-Agent，失败降级为字面量）
 src/adapter.js  结构性 LlmAdapter：providerInfo、listModels、resolveModel、
                 prepareCall、stream、providerRetryPolicy
 src/upstream.js 网关身份：凭据、session/request id 铸造、工具指纹、按线协议选端点
@@ -354,6 +365,10 @@ node scripts/build-manifest.mjs     # 发布：重新生成 feed/manifest.json�
 出网、不花免费额度的离线检查。
 
 需要 Node `^22.19.0 || >=24.0.0`。无安装步骤、无依赖。
+
+```bash
+npm run typecheck                 # tsc --noEmit，严格检查 adapter/ 接缝（可选：需要 typescript）
+```
 
 ## 安全与隐私
 

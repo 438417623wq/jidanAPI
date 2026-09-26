@@ -41,6 +41,7 @@ import { PluginUpdater, restoreBackup } from './src/updater.js'
 import { selfReload, watchPackage, isReloading } from './src/reload.js'
 import { createPushHub } from './src/push.js'
 import { rejectionFor, isLoopbackHost } from './src/trust.js'
+import { resolveAttributionUserAgent } from './adapter/kernel.js'
 
 export const name = 'our-free-model'
 
@@ -93,23 +94,26 @@ const FALLBACK_CATALOG = buildCatalog([
 export const ANNOUNCEMENT_VERSION = '2026-09-25.1'
 
 /**
- * Resolve the harness attribution User-Agent.
+ * Who owns the plugin's bytes — the distribution mode:
  *
- * Imported lazily because the plugin must not pin a kernel version: the package
- * is supplied by whichever installation resolves the bundle, and if a composition
- * cannot supply it a literal keeps attribution present, which is what the adapter
- * contract requires.
+ * - `self` (default): the plugin updates itself from its repository, publishes
+ *   its announcement feed, and hot-reloads, exactly as before.
+ * - `managed`: the plugin arrived through a distribution pack (an EAC
+ *   integration pack, a Mojobox install). The pack manager owns the bytes now,
+ *   so the in-app updater, the announcement channel and the hot reload stand
+ *   down — two writers to one installed directory is a corrupted install. The
+ *   model lane is untouched; this is about who ships the code, not what it does.
+ *
+ * `config.distribution` (what a pack's bundle patch passes) outranks the
+ * settings file, and the settings API never accepts the field back, so an
+ * install that shipped managed stays managed.
  */
-async function resolveAttributionUserAgent(logger) {
-  try {
-    const module = await import('@deepseek-ai/dsh-llm')
-    const headers = typeof module.attributionHeaders === 'function' ? module.attributionHeaders() : undefined
-    const agent = headers?.['user-agent'] ?? headers?.['User-Agent']
-    if (typeof agent === 'string' && agent !== '') return agent
-  } catch (error) {
-    logger?.debug?.(`our-free-model: attribution module unavailable (${error?.message ?? error})`)
-  }
-  return 'deepseek-harness/0.1.7 (+https://github.com/deepseek-ai/deepseek-harness)'
+const MANAGED_MESSAGE = 'this installation is managed; updates are handled by the pack that installed it'
+
+/** Effective distribution mode: config override first, then the settings file. */
+function distributionOf(config, settings) {
+  if (config?.distribution === 'managed' || settings.get().distribution === 'managed') return 'managed'
+  return 'self'
 }
 
 export function apply(ctx, config) {
@@ -138,6 +142,10 @@ export function apply(ctx, config) {
     settings.flush()
   }
 
+  /** `managed` stands down everything that would rewrite the installed bytes. */
+  const distribution = distributionOf(config, settings)
+  const managed = distribution === 'managed'
+
   let catalog = materializeCatalog(catalogStore.get().entries ?? [])
   let attributionUserAgent = 'deepseek-harness'
   let egress = availability.get().egress ?? null
@@ -161,8 +169,14 @@ export function apply(ctx, config) {
   })
   feed.load()
 
+  /**
+   * The announcement view the settings page reads. A managed install polls no
+   * feed and caches no copy — the pack speaks for the plugin — so its view is a
+   * fixed empty one that names its source honestly.
+   */
+  const MANAGED_FEED_VIEW = { items: [], unread: 0, fetchedAt: 0, source: 'managed', error: '', lastError: '' }
   function feedView() {
-    return feed.view({ ackedIds: ackedIds() })
+    return managed ? MANAGED_FEED_VIEW : feed.view({ ackedIds: ackedIds() })
   }
 
   const updater = new PluginUpdater({
@@ -176,7 +190,7 @@ export function apply(ctx, config) {
 
   /** Push an `update` event once per version (manual checks force a re-push). */
   function pushUpdate(force = false) {
-    if (disposed) return
+    if (disposed || managed) return
     const status = updater.status()
     if (status.available !== true || status.latest === '') return
     if (!force && status.latest === updateNotifiedFor) return
@@ -339,6 +353,13 @@ export function apply(ctx, config) {
   async function syncForward() {
     const desired = settings.get().forward ?? {}
     const wanted = desired.enabled === true
+    // A listener already bound where the settings want it is left alone. Two
+    // callers reconcile the same state — the boot refresh and every settings
+    // POST — and the second one used to close and re-bind the port anyway,
+    // resetting whatever request was in flight on the old socket.
+    if (forward !== null && wanted
+      && forward.host === (desired.host || '127.0.0.1')
+      && forward.port === (Number.isFinite(Number(desired.port)) ? Number(desired.port) : 0)) return
     if (forward === null && !wanted) return
     if (forward !== null) {
       const closing = forward
@@ -456,6 +477,7 @@ export function apply(ctx, config) {
   }
 
   async function applyUpgrade(version) {
+    if (managed) throw httpError(409, MANAGED_MESSAGE)
     if (isReloading()) throw new Error('a reload is already in progress')
     const result = await updater.apply({ version })
     // The next apply() picks this up and pushes `upgraded` once it is live.
@@ -571,6 +593,7 @@ export function apply(ctx, config) {
     },
     meta: () => ({
       version: packageVersion,
+      distribution,
       generation,
       reloadedAt: settings.get().reloadedAt ?? 0,
       reloadCount: settings.get().reloadCount ?? 0,
@@ -591,15 +614,23 @@ export function apply(ctx, config) {
       refresh: () => feed.poll(),
     },
     update: {
-      status: () => ({ ...updater.status(), notifiedFor: updateNotifiedFor }),
+      status: () => managed
+        ? { ...updater.status(), managed: true, available: false, latest: '' }
+        : { ...updater.status(), notifiedFor: updateNotifiedFor },
       check: async () => {
+        if (managed) throw httpError(409, MANAGED_MESSAGE)
         const result = await updater.check()
         pushUpdate(true)
         return result
       },
       apply: applyUpgrade,
     },
-    hotReload: () => reloadFromDisk(),
+    hotReload: () => {
+      if (managed) throw httpError(409, MANAGED_MESSAGE)
+      return reloadFromDisk()
+    },
+    /** Fixed for this generation; the settings API cannot flip it (see below). */
+    managedDistribution: managed,
     push,
     connection: fenceConnection,
     logger,
@@ -683,7 +714,9 @@ export function apply(ctx, config) {
 
   // Feed poll: shortly after boot, then on the configured period. Concurrency
   // with a manual refresh is harmless — polls share one in-flight request.
+  // A managed install polls nothing: the pack speaks for the plugin.
   ctx.effect(() => {
+    if (managed) return
     const first = setTimeout(() => { void feed.poll() }, 12_000)
     first.unref?.()
     return () => clearTimeout(first)
@@ -715,11 +748,13 @@ export function apply(ctx, config) {
   }
 
   const feedMinutes = positiveOr(settings.get().feedPollMinutes, 30, 5)
-  every(() => {
-    void feed.poll()
-    const hours = settings.get().updateCheckHours ?? 6
-    if (hours > 0) void updater.check().then(() => pushUpdate(false)).catch(() => {})
-  }, feedMinutes * 60_000)
+  if (!managed) {
+    every(() => {
+      void feed.poll()
+      const hours = settings.get().updateCheckHours ?? 6
+      if (hours > 0) void updater.check().then(() => pushUpdate(false)).catch(() => {})
+    }, feedMinutes * 60_000)
+  }
   // The probe period is in minutes, and one minute is the floor — a value of 0 or
   // a negative one would otherwise spin. This used to read `Math.max(60, …)`,
   // which floored every interval below an hour *including the shipped default of
@@ -735,7 +770,9 @@ export function apply(ctx, config) {
   }, 120_000)
   // The first update check waits for the boot refresh to settle, then runs once
   // even when the periodic poll is disabled (hours === 0 means opt out fully).
+  // Managed installs check nothing — the pack that installed them decides.
   ctx.effect(() => {
+    if (managed) return
     const first = setTimeout(() => {
       const hours = settings.get().updateCheckHours ?? 6
       if (hours <= 0) return
@@ -758,14 +795,24 @@ export function apply(ctx, config) {
 // ── helpers ─────────────────────────────────────────────────────────────────
 
 /**
+ * An error the settings API presents with its own status line, not a bare 500.
+ * Used where a refusal is the *correct* answer — a managed install declining to
+ * update itself — so the page can say why instead of blaming a fault.
+ */
+function httpError(statusCode, message) {
+  const error = new Error(message)
+  error.statusCode = statusCode
+  return error
+}
+
+/**
  * A period that cannot become a hot loop.
  *
  * `setTimeout(fn, NaN)` is `setTimeout(fn, 1)` in Node, and a settings file the
  * user edits by hand (the only way in on a headless composition) can carry
  * anything. Both timers below take their period from a stored number, so the
  * guard belongs here rather than in each caller.
- */
-function positiveOr(value, fallback, floor = 1) {
+ */function positiveOr(value, fallback, floor = 1) {
   const number = Number(value)
   if (!Number.isFinite(number) || number <= 0) return fallback
   return Math.max(floor, Math.trunc(number))
@@ -1009,7 +1056,10 @@ function createApiRoutes(deps) {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
       }
       if (method === 'GET' && routePath === '/announcement') {
-        return send(200, { version: ANNOUNCEMENT_VERSION, acknowledged: deps.settings.get().announcementAck === ANNOUNCEMENT_VERSION })
+        // A managed install also stands down the owner's onboarding copy: the
+        // pack, not the plugin, speaks for what is new.
+        const acknowledged = deps.managedDistribution === true || deps.settings.get().announcementAck === ANNOUNCEMENT_VERSION
+        return send(200, { version: ANNOUNCEMENT_VERSION, acknowledged })
       }
       if (method === 'POST' && routePath === '/announcement/ack') {
         deps.settings.update({ announcementAck: String(url.searchParams.get('version') ?? ANNOUNCEMENT_VERSION) })
@@ -1032,7 +1082,9 @@ function createApiRoutes(deps) {
         return send(200, { ok: true, view: deps.announcements.view() })
       }
       if (method === 'POST' && routePath === '/announcements/refresh') {
-        await deps.announcements.refresh()
+        // Managed installs poll no feed; a manual refresh is a polite no-op
+        // rather than a network round the pack never asked for.
+        if (deps.managedDistribution !== true) await deps.announcements.refresh()
         return send(200, { ok: true, view: deps.announcements.view() })
       }
       if (method === 'GET' && routePath === '/update/status') {
@@ -1048,6 +1100,8 @@ function createApiRoutes(deps) {
         return send(200, { ok: true, ...result })
       }
       if (method === 'POST' && routePath === '/reload') {
+        // A managed install does not swap its own bytes; the pack owns them.
+        if (deps.managedDistribution === true) return send(409, { error: 'this installation is managed; updates are handled by the pack that installed it' })
         // Answer first, then swap: the response rides an already-accepted
         // socket, but the client should not wait on the reload finishing. The
         // swap closure is `deps.hotReload`, applied inside `apply` — this
@@ -1109,7 +1163,8 @@ function createApiRoutes(deps) {
       }
       return send(404, { error: 'not found' })
     } catch (error) {
-      return send(500, { error: String(error?.message ?? error) })
+      const status = Number(error?.statusCode)
+      return send(Number.isInteger(status) && status >= 400 && status <= 599 ? status : 500, { error: String(error?.message ?? error) })
     }
   }
 }
@@ -1179,8 +1234,9 @@ function buildSummary(deps) {
     probedAt: snapshot.at ?? 0,
     announcementVersion: ANNOUNCEMENT_VERSION,
     version: deps.meta().version,
+    distribution: deps.meta().distribution,
     announcements: { unread: feedView.unread, fetchedAt: feedView.fetchedAt },
-    update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying },
+    update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying, managed: update.managed === true },
   }
 }
 

@@ -137,6 +137,8 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   return {
     server,
     port,
+    /** The address actually bound, so a caller can tell a restart from a no-op. */
+    host: config().host || '127.0.0.1',
     close: () => new Promise(resolve => {
       server.closeAllConnections?.()
       server.close(() => resolve())

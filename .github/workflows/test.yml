@@ -24,3 +24,15 @@ jobs:
         with:
           node-version: 22
       - run: npm test
+
+  # The adapter seam (and only it) is kept under strict TypeScript checking. This
+  # job installs the one devDependency; the offline job above stays install-free.
+  typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm install
+      - run: npm run typecheck
