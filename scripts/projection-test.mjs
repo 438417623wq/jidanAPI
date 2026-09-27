@@ -187,5 +187,29 @@ console.log('\n=== 6. the repair must stay inert on history that is already soun
   check('a plain assistant answer is untouched', JSON.stringify(repairToolPairing(textOnly)) === JSON.stringify(textOnly), true)
 }
 
+console.log('\n=== 7. one answer goes out, not two, on every wire ===')
+{
+  // The Messages wire merges a result into the user turn it builds, so a message
+  // that emits its `tool_result` and then falls through to the generic block loop
+  // sends the same content a second time — the text twice, and a returned image's
+  // whole base64 payload twice. Asserting the block *types* (section 1) cannot see
+  // that; counting the answer in the bytes that go out can.
+  for (const shape of ['v3', 'v4']) {
+    const sent = answer => JSON.stringify(answer).split('IMG_20260926_060423.jpg').length - 1
+    const repaired = repairToolPairing(history(shape))
+    check(`${shape}: Chat carries the answer once`, sent(toChatMessages(repaired, resolveImage, [])), 1)
+    check(`${shape}: Messages carries the answer once`, sent(toClaudeMessages(repaired, resolveImage, [])), 1)
+    check(`${shape}: Responses carries the answer once`, sent(toResponseInput(repaired, resolveImage, [])), 1)
+  }
+  const imageAnswer = {
+    role: 'user', source: { kind: 'tool', callId: 'im' },
+    content: [{ type: 'tool-result', toolCallId: 'im', content: [IMAGE], isError: false }],
+  }
+  const turn = [{ role: 'user', content: [{ type: 'text', text: 'look' }] },
+    { role: 'assistant', source: { kind: 'model' }, content: [callBlock('im', 'read_image', '{}')] }, imageAnswer]
+  check('a result image is base64-encoded once on the Messages wire',
+    JSON.stringify(toClaudeMessages(repairToolPairing(turn), resolveImage, [])).split('AAAA').length - 1, 1)
+}
+
 console.log(failures === 0 ? '\nall projection checks passed' : `\n${failures} projection check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1

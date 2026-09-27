@@ -1,7 +1,7 @@
 {
   "version": "1.3.1",
   "base": "../",
-  "publishedAt": "2026-09-27T06:40:35.472Z",
+  "publishedAt": "2026-09-27T07:42:14.133Z",
   "notes": "",
   "files": [
     {
@@ -56,13 +56,13 @@
     },
     {
       "path": "README_EN.md",
-      "size": 46142,
-      "sha256": "91900a92f02c9f0d3644f6de5eb3b9af3c46f23f36af912cff7a1fcb121bc57a"
+      "size": 47610,
+      "sha256": "366671274d05b21591ba1564961ff91119385ac8a3879d78cfebe741d76a49d3"
     },
     {
       "path": "README.md",
-      "size": 43668,
-      "sha256": "eaa61d1fda6318287c29925059cc77ca1fb3bb718ad493a7ece68dcbda70f8c1"
+      "size": 44966,
+      "sha256": "62e4c21286b2d938a78f7a8df46cc2892eba8ec10b5d8ced38d21b91eed64f7c"
     },
     {
       "path": "src/adapter.js",
@@ -86,8 +86,8 @@
     },
     {
       "path": "src/feed.js",
-      "size": 10843,
-      "sha256": "3f35e887e2b2a9f8b98e9f23be83f40d73dd5b61655b2a6eef8ef7c385be52db"
+      "size": 10976,
+      "sha256": "8128ab8eecb9420251d952db0b559db73e7bdbec1788c5a248802136a4350746"
     },
     {
       "path": "src/forward.js",
@@ -101,8 +101,8 @@
     },
     {
       "path": "src/messages.js",
-      "size": 16811,
-      "sha256": "d591d2f823104caf0571a3a626f55a96dcbb40cfb192031074d76c6df24b85ea"
+      "size": 17173,
+      "sha256": "adb840efc95948f94cc2e662af8f9139c80271a31e7df30a9748bb67e1cb617b"
     },
     {
       "path": "src/probe.js",
@@ -126,8 +126,8 @@
     },
     {
       "path": "src/stream.js",
-      "size": 16618,
-      "sha256": "c009f84ad0d154e218bf1a0f07dafebd1d3e8645c867aff1ef5ae9ac11c1992c"
+      "size": 17458,
+      "sha256": "bf67e334bab3092972864b622d5c0563df0c2ab04f78aaca75e4299c2edc3ce2"
     },
     {
       "path": "src/trust.js",

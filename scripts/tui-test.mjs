@@ -120,6 +120,31 @@ const answered = await (await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/com
 check('a non-streaming call answers', String(answered.choices?.[0]?.message?.content ?? ''), 'hello from the tui')
 check('usage comes back in the OpenAI spelling the caller reads', [answered.usage?.prompt_tokens, answered.usage?.completion_tokens], [11, 7])
 
+// The same listener's Responses route has to carry a caller's *tool* history
+// upstream, not only its prose. Those rows arrive in OpenAI's spelling, with the
+// call and its answer in side fields the projector never reads, so a caller
+// replaying its own tool round trip silently lost both halves of it — issue #9's
+// defect one layer down, on a route no suite had exercised.
+await fetch(`http://127.0.0.1:${forwardPort}/v1/responses`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+  body: JSON.stringify({
+    model: 'space-bunny-free',
+    input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'weather?' }] },
+      { type: 'function_call', call_id: 'call_1', name: 'get_weather', arguments: '{"city":"Shanghai"}' },
+      { type: 'function_call_output', call_id: 'call_1', output: '{"temp":22}' },
+    ],
+  }),
+}).then(res => res.json())
+const forwarded = stub.requests[stub.requests.length - 1]?.body ?? {}
+check('a forwarded /v1/responses call sends the tool call upstream',
+  (forwarded.messages ?? []).filter(row => row.role === 'assistant').flatMap(row => row.tool_calls?.map(call => `${call.function.name} ${call.function.arguments}`) ?? []),
+  ['get_weather {"city":"Shanghai"}'])
+check('…and sends its result, keyed to the call it answers',
+  (forwarded.messages ?? []).filter(row => row.role === 'tool').map(row => `${row.tool_call_id}=${row.content}`),
+  ['call_1={"temp":22}'])
+
 // A turn the lane refuses must not arrive as an empty 200.
 stub.api.refuseAll = true
 const refused = await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/completions`, {

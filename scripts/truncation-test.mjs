@@ -195,6 +195,29 @@ check('finish tokens map through', ['tool_calls', 'length', 'stop'].map(finishRe
   check('…and the call is a success', stopped.records.map(record => record.ok), [true])
 }
 
+// 12. The other endings on these two wires are deliberate too. Reading only
+// `response.completed` as terminal turned a turn that hit its output ceiling into
+// a transport fault, and issue #10's own check then retried it twice — the retry
+// the fix exists to enable, spent on a stream that had already finished.
+{
+  const sse = type => `data: ${JSON.stringify({ type })}\n\n`
+  const partial = `data: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'partial' })}\n\n`
+  const incomplete = await drive(partial + `data: ${JSON.stringify({ type: 'response.incomplete', response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, usage: { input_tokens: 10, output_tokens: 4096 } } })}\n\n`, 'muse-spark-1.3-contributor-free')
+  check('a Responses turn cut by its ceiling is max-tokens, not a cut stream', incomplete.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'max-tokens' })
+  check('…and is recorded as a call that answered', incomplete.records.map(record => record.ok), [true])
+  check('…and not flagged truncated', incomplete.records.map(record => record.truncated ?? false), [false])
+  const doneOnly = await drive(partial + sse('response.done'), 'muse-spark-1.3-contributor-free')
+  check('a bare response.done is an end, not a truncation', [doneOnly.chunks.find(chunk => chunk.type === 'finish')?.reason, doneOnly.records.map(r => r.truncated ?? false)], [{ kind: 'stop' }, [false]])
+
+  // A terminal frame that names no reason marks the end; it must not erase the
+  // finish token the status-carrying frame already gave.
+  const ceilingClaude = await drive(
+    `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } })}\n\n`
+      + `data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'max_tokens' }, usage: { output_tokens: 4096 } })}\n\n`
+      + sse('message_stop'), 'union-alpha')
+  check('message_stop does not overwrite the stop_reason it followed', ceilingClaude.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'max-tokens' })
+}
+
 // The listener is unref'd at creation; the exit below must not race a close()
 // on Windows (libuv asserts on handles mid-close), so just let the process end.
 console.log(failures === 0 ? '\nall truncation checks passed' : `\n${failures} check(s) failed`)

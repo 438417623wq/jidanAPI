@@ -287,6 +287,11 @@ export function toClaudeMessages(messages, resolveImage, warnings) {
         })
       }
       push('user', lead)
+      // A V4 tool message's content *is* the result, and all of it just went out
+      // inside `tool_result`. Falling through would append the same text a second
+      // time to that very user turn — and a returned image with its whole base64
+      // payload twice, which the upstream is then billed for twice.
+      if (message.role === 'tool') continue
     }
     const blocks = blocksOf(message.content).filter(block => block?.type !== 'tool-result')
     const content = []

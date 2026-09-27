@@ -26,12 +26,14 @@ const REPO = 'zouyuxuan122/dsh-our-free-model'
 /**
  * Feed locations, in preference order.
  *
- * jsDelivr comes first because raw.githubusercontent.com is TLS-interfered on
- * the networks this plugin most serves (measured: connection dies with an
- * unverifiable certificate); the jsDelivr edge serves the same content and
- * stays reachable there. A minute-resolution cache-buster is appended to
- * jsDelivr URLs at fetch time so an owner's push is never served stale from
- * the CDN (its default cache holds up to 12 hours).
+ * `raw.githubusercontent.com` is first because it is the repository's own bytes,
+ * with no third-party cache in front of it. jsDelivr is the fallback for the
+ * networks where raw is TLS-interfered (measured: the connection dies with an
+ * unverifiable certificate) and the edge serves the same content there; the last
+ * entry is that same file under the other default branch name. A minute-
+ * resolution cache-buster is appended to jsDelivr URLs at fetch time so an
+ * owner's push is never served stale from the CDN (its default cache holds up
+ * to 12 hours).
  */
 export const DEFAULT_FEED_SOURCES = [
   `https://raw.githubusercontent.com/${REPO}/main/feed/announcements.json`,

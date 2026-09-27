@@ -271,10 +271,11 @@ reasoning token 从分子里剔掉，`decodeWindow()` 拒掉短到没法计时�
 | 项目 | 方式 | 结果 |
 | --- | --- | --- |
 | 两种工具结果形状都真的送达模型 | 真实上游 `host-selftest.mjs` 第 2 步 | 同一模型、同一个 `get_weather` 结果，分别按 pre-V4 的 `user`+`tool-result` 与 V4 的 `role:'tool'` 各发一轮：两条都 `finish=stop`，且模型都复述出结果里的 `22°C / sunny`。改动前插件对第一种形状完全无感（`src/messages.js` 从头到尾没出现过 `tool-result`），那一轮发出去的请求里既没有工具调用也没有结果 |
-| 消息形状取自记录，不是想象 | 本机真实 durable 会话日志（`~/.dsh/sessions`，zstd 需按帧切开逐段解压） | 24 个会话文件里 `tool/result` 事件共出现两种形状：`role:'user'` 携带 `tool-result` 块 **362 条**（V1/V3 格式，其中 AIO 6.9.3 写的 336 条），V4 的 `role:'tool'` 27 条。两代都有人在用，而插件只认后者——issue #9 的判断成立，只是它描述的形状比报告者的内核更新 |
-| 投影与配对修复 | 离线 `projection-test.mjs`（新增，33 条断言） | 三条线 × 两种形状：调用与其结果都落到 wire 上、按 call id 一一对应；三个并行调用各自的结果逐个送达，Messages 线合并进同一个 user 轮且 `tool_result` 排在最前（与内核自己的 Messages 适配器同一条规则）；结果里嵌的图像不再消失（Chat 走紧随其后的 user 轮，Messages 直接嵌进 `tool_result`）；无 call id 的工具答案、悬空调用、孤儿结果照旧剔除；已配对历史逐字节不被改写 |
+| 消息形状取自记录，不是想象 | 本机全部 4 处 session 根、共 40 个 `session*.jsonl.zstd`（zstd 需按帧切开逐段解压） | `tool/result` 事件共出现两种形状：`role:'user'` 携带 `tool-result` 块 **362 条**（V1/V3 格式——AIO 6.9.3 的 v3 家目录写 336 条，`~/.dsh` 的 v1 写 26 条），V4 的 `role:'tool'` **27 条**（v4 格式的会话副本）。两代都有人在用，而插件只认后者——issue #9 的判断成立，只是它描述的形状比报告者的内核更新 |
+| 投影与配对修复 | 离线 `projection-test.mjs`（新增，40 条断言） | 三条线 × 两种形状：调用与其结果都落到 wire 上、按 call id 一一对应；三个并行调用各自的结果逐个送达，Messages 线合并进同一个 user 轮且 `tool_result` 排在最前（与内核自己的 Messages 适配器同一条规则）；结果里嵌的图像不再消失（Chat 走紧随其后的 user 轮，Messages 直接嵌进 `tool_result`）；**同一份结果在任一线上只出现一次**（按字节数答案出现次数，不看块类型——块类型断言看不见重复）；无 call id 的工具答案、悬空调用、孤儿结果照旧剔除；已配对历史逐字节不被改写 |
 | `pwsh` 顶替 `bash` 槽位能被网关接受 | 真实上游 `probes/shell-slot-promotion.mjs`（新增） | 声明名 `bash, glob, grep, read`，其中 `bash` 携带 pwsh 的真实 schema、无诱饵：网关不回 `FreeTierError`，`finish=tool-calls`，模型返回的调用被还原成 **`pwsh`**（`{"command":"Get-Date"}`）——即内核真的能执行。离线另有 `fingerprint-test.mjs`（新增，20 条）钉住不重复声明、真实 `bash` 优先、无 donor 时才落诱饵 |
-| 半截流不再被当成说完 | 离线 `truncation-test.mjs`（新增 15 条） | 本地 HTTP 服务真的 `res.end()` 关掉一条没有 finish token 的流 → `kind=error`、code `TRANSPORT`（在可重试名单里）、统计行 `ok=false` 且带 `truncated`；三条线各验一次；`message_stop`、`response.completed` 这类真结束不误伤；有 finish 却没有 usage 的行标 `noUsage`，`0/0` 与"真的没有产出"从此可分 |
+| 半截流不再被当成说完 | 离线 `truncation-test.mjs`（新增 20 条） | 本地 HTTP 服务真的 `res.end()` 关掉一条没有 finish token 的流 → `kind=error`、code `TRANSPORT`（在可重试名单里）、统计行 `ok=false` 且带 `truncated`；三条线各验一次；`message_stop`、`response.completed` 这类真结束不误伤；有 finish 却没有 usage 的行标 `noUsage`，`0/0` 与"真的没有产出"从此可分 |
+| 复查本轮发布，找出上面两条自身的毛病 | 离线 `projection-test.mjs` 第 7 节、`truncation-test.mjs` 第 12 节，另加 `tui-test.mjs` 一次转发端往返 | ① Messages 线在认出 V4 的 `role:'tool'` 之后，把同一段结果既放进 `tool_result`、又留在紧随的普通块里——文本两份，图像连 base64 一起两份；现在发出结果就跳过该消息自身，把修复撤掉这条断言立刻红。② `response.incomplete` / `response.failed` / `response.done` 同样是 Responses 线的正常收尾，此前只认 `response.completed`，于是撞到输出上限的一轮被读成"被掐断"、白白烧掉两次重试；现在仍由 status 决定 finish token，且不携带原因的收尾帧不再抹掉前一帧已经给出的 token。③ 转发端的 `/v1/responses` 从来没有用例走过工具历史，现用桩上游逐字节核对发出去的 `messages`：调用与它的结果都在 |
 | 这条车道的正常收尾长什么样 | 真实上游 `probes/stream-terminal-frames.mjs`（新增） | 逐帧抓取原始 SSE：`finish_reason:"stop"` → 带 usage 的帧 → `data: [DONE]` → `{"choices":[],"cost":"0"}`，两个模型一致。所以"始终没有出现 finish token"确实是异常，而不是这条车道的另一种正常写法——这也是 #10 判定条件的依据 |
 | 真实车道上不误判 | 真实上游 `host-selftest.mjs` 全量 | 11 个模型探测 + 普通对话 + 两轮工具 + 三档思考 + 视觉输入，全部落到各自的正常收尾（`stop` / `tool-calls` / `max-tokens`），没有一条被读成截断；被地区门挡住的那个仍回 `REGION_BLOCKED` |
 | 上游来源成文（#8） | 代码里全量出网目标逐条核对 | 新增[上游是哪些源](#上游是哪些源)：`opencode.ai/zen/v1/*`（推理与 `/models`）、本仓库 `feed/*.json`（raw 优先、jsDelivr 兜底）、`api.ipify.org` / `ipinfo.io` / `ipapi.co`（只读本机出口 IP 与国家码）。当前没有号池、没有中转 |
@@ -329,7 +330,7 @@ reasoning token 从分子里剔掉，`decodeWindow()` 拒掉短到没法计时�
 | 思考强度传递 | light/balanced/deep 三档实测：reasoning 2048（被预算截断）/ 3386 / 3522，输出单调上升 |
 | 地区门 | 受限模型报 `REGION_BLOCKED` 并留在自己的分组 |
 | 转发端口 | `/v1/models`、流式与非流式 `/v1/chat/completions`；无 Key 请求被拒 `401` |
-| 界面文案 | 无乱码；任何面向用户的位置都不出现上游厂名 |
+| 界面文案 | 无乱码；上游厂名只出现在仓库文档与公告正文两处——#8 要求的披露得有个用户看得见的位置，公告算说明位。模型选择器、设置页与报错文案里始终不出现 |
 
 **没验证的部分如实说明**：OS 级通知的**最终视觉呈现**没有逐像素确认——AIO
 桌面端的 WebView2 权限策略拒绝了 `Notification.requestPermission()`（插件的

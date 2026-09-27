@@ -218,7 +218,16 @@ function feedResponses(sink, event, onFinish, renameMap) {
     case 'response.function_call_arguments.delta':
       sink.toolArgs(`i${event.output_index}`, event.delta)
       return
-    case 'response.completed': {
+    // Every deliberate ending this wire has, not only the happy one. Reading just
+    // `response.completed` as terminal made `response.incomplete` — the frame a
+    // turn that hit the output ceiling ends on — look like a stream the gateway
+    // cut, so issue #10's check retried a finished turn twice and then failed it.
+    // The status still decides the finish token, so each ending maps to its own
+    // harness reason; a bare sentinel frame carries none and only marks the end.
+    case 'response.completed':
+    case 'response.incomplete':
+    case 'response.failed':
+    case 'response.done': {
       const response = event.response
       if (response?.usage) {
         const mapped = mapUsage({
@@ -295,8 +304,12 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
     // Which frame said so, not what it said: a stream that reached any of the
     // three wires' terminal events was closed by the model running out, while one
     // that never did was closed by something else, and only the second is a fault.
-    if (kind === 'finish') state.sawFinish = true
-    if (kind === 'finish') state.finish = token
+    if (kind !== 'finish') return
+    state.sawFinish = true
+    // A terminal frame that names no reason (`message_stop`, a `response.done`
+    // carrying no response) marks the end but must not erase the finish token a
+    // status-carrying frame already gave — losing it turned `length` into `stop`.
+    if (token !== undefined) state.finish = token
   }
 
   for await (const raw of lines) {
