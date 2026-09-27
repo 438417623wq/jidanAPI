@@ -1,7 +1,7 @@
 {
   "version": "1.3.1",
   "base": "../",
-  "publishedAt": "2026-09-27T07:42:14.133Z",
+  "publishedAt": "2026-09-27T08:59:06.715Z",
   "notes": "",
   "files": [
     {
@@ -56,18 +56,18 @@
     },
     {
       "path": "README_EN.md",
-      "size": 47610,
-      "sha256": "366671274d05b21591ba1564961ff91119385ac8a3879d78cfebe741d76a49d3"
+      "size": 48506,
+      "sha256": "dbff26640efe0916fc3ef4e484447951830a4d950359a1cfa29cec094ffc36cb"
     },
     {
       "path": "README.md",
-      "size": 44966,
-      "sha256": "62e4c21286b2d938a78f7a8df46cc2892eba8ec10b5d8ced38d21b91eed64f7c"
+      "size": 45736,
+      "sha256": "447e46f6e3d7a08672e761063b7b4e2159871c49054d82b03a99e0452d000533"
     },
     {
       "path": "src/adapter.js",
-      "size": 15839,
-      "sha256": "8b2a3a3dcb40403ce765e0412d72bbde8ee1a09129f2475973ecd4ae5930d00e"
+      "size": 16820,
+      "sha256": "161fe28177b5b245c3f46a2349eecd2beb6d29b8e6861c870f7b4081507824da"
     },
     {
       "path": "src/catalog.js",

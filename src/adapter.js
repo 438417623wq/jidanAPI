@@ -208,20 +208,29 @@ export class FreeModelAdapter {
       // what `finishReason(undefined)` falls through to — told the harness the
       // turn was over. A long thinking round therefore ended silently with
       // nothing in it, counted as a success, and logged 0/0 tokens (issue #10).
-      // `TRANSPORT` is in the retryable set, which is the whole point: the harness
-      // backs off and re-sends instead of stopping.
       if (outcome.sawFinish !== true) {
         if (options.signal?.aborted === true) {
           yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'our free model stream ended with the turn unfinished', code: CODE.aborted } } }
           record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started))
           return
         }
+        // Whether to re-send is decided by what had arrived, measured in a real
+        // `dsh` web session on 2026-09-27: this lane cut a pure-thinking round at
+        // 304 s, and because the code was retryable the harness re-sent the whole
+        // turn twice over — `llm/retry` at 304 s and 608 s, `turn/end` at 912 s —
+        // three identical failures, fifteen minutes, and one unanswered turn. The
+        // cap is a property of the turn's length, not of the network, so a cut that
+        // already delivered content will simply be cut again after spending the
+        // same minutes again; it ends now, with the failure named. A cut that
+        // delivered nothing costs nothing to repeat and stays `TRANSPORT`, which is
+        // where a transient blip actually lives.
+        const delivered = outcome.firstDeltaAt !== undefined
+        const seconds = Math.round((Date.now() - started) / 1000)
         yield { type: 'finish', reason: {
           kind: 'error',
-          failure: {
-            message: 'our free model closed the stream before its finish token — the turn was cut short upstream, not answered',
-            code: CODE.transport,
-          },
+          failure: delivered
+            ? { message: `our free model closed the stream after ${seconds}s, before its finish token — the turn was cut short upstream, not answered. Not re-sent: the same cut would end the retry.`, code: 'STREAM_CUT' }
+            : { message: 'our free model closed the stream before its finish token, without answering — retrying', code: CODE.transport },
         } }
         record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, { truncated: true })
         return

@@ -152,16 +152,30 @@ check('finish tokens map through', ['tool_calls', 'length', 'stop'].map(finishRe
 // to — is how a five-minute thinking round ended silently, marked completed, and
 // logged 0/0 tokens.
 
-// 8. A cut stream on the Chat wire is a retryable failure, not a completed turn.
+// 8. A cut stream on the Chat wire is a failure, not a completed turn — and only
+// the cut that delivered nothing is worth sending again. Measured in a real `dsh`
+// web session (2026-09-27): while the code was retryable the harness re-sent the
+// same five-minute turn twice over (`llm/retry` at 304 s and 608 s, `turn/end` at
+// 912 s) — three identical failures, fifteen minutes, one unanswered turn.
+const RETRYABLE = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']
 {
   const { chunks, records } = await drive(frame({ reasoning: 'thinking' }) + frame({ reasoning: ' still thinking' }))
   const finish = chunks.find(chunk => chunk.type === 'finish')
   check('a stream with no terminal frame is an error, not a stop', finish?.reason?.kind, 'error')
-  check('…and carries the retryable transport code', finish?.reason?.failure?.code, 'TRANSPORT')
-  check('…so the harness will send the turn again', ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'].includes(finish?.reason?.failure?.code), true)
   check('…and is counted as a failed call', records.map(record => record.ok), [false])
   check('…and is marked in the audit row', records.map(record => record.truncated), [true])
   check('the reasoning that did arrive is still handed over', chunks.some(chunk => chunk.type === 'reasoning-delta'), true)
+  check('a cut that had already streamed content is not re-sent', RETRYABLE.includes(finish?.reason?.failure?.code), false)
+  check('…and says how long it ran before dying', /after \d+s/.test(finish?.reason?.failure?.message ?? ''), true)
+
+  // A role-only frame is not a delta: nothing of the answer arrived, so repeating
+  // the turn costs what a blip costs, and the cap that bites the five-minute
+  // thinking round cannot bite this one.
+  const silent = await drive(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant' } }] })}\n\n`)
+  const silentFinish = silent.chunks.find(chunk => chunk.type === 'finish')
+  check('a cut that delivered no token at all stays retryable',
+    [silentFinish?.reason?.failure?.code, RETRYABLE.includes(silentFinish?.reason?.failure?.code)], ['TRANSPORT', true])
+  check('…and is still a failed, truncated row', silent.records.map(record => [record.ok, record.truncated]), [[false, true]])
 }
 
 // 9. A finish token with no usage frame stays a success, but says so.
@@ -177,7 +191,7 @@ check('finish tokens map through', ['tool_calls', 'length', 'stop'].map(finishRe
 {
   const cut = `data: ${JSON.stringify({ type: 'response.output_text.delta', output_index: 0, delta: 'partial' })}\n\n`
   const cutOut = await drive(cut, 'muse-spark-1.3-contributor-free')
-  check('a Responses stream with no response.completed is an error', cutOut.chunks.find(chunk => chunk.type === 'finish')?.reason?.failure?.code, 'TRANSPORT')
+  check('a Responses stream with no response.completed is an error', cutOut.chunks.find(chunk => chunk.type === 'finish')?.reason?.failure?.code, 'STREAM_CUT')
   const done = await drive(
     cut + `data: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 10, output_tokens: 3 } } })}\n\n`,
     'muse-spark-1.3-contributor-free')
@@ -189,7 +203,7 @@ check('finish tokens map through', ['tool_calls', 'length', 'stop'].map(finishRe
 {
   const cutClaude = `data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial' } })}\n\n`
   const cutOut = await drive(cutClaude, 'union-alpha')
-  check('a Messages stream closed mid-turn is an error', cutOut.chunks.find(chunk => chunk.type === 'finish')?.reason?.failure?.code, 'TRANSPORT')
+  check('a Messages stream closed mid-turn is an error', cutOut.chunks.find(chunk => chunk.type === 'finish')?.reason?.failure?.code, 'STREAM_CUT')
   const stopped = await drive(cutClaude + `data: ${JSON.stringify({ type: 'message_stop' })}\n\n`, 'union-alpha')
   check('message_stop counts as a real end even without a stop_reason', stopped.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'stop' })
   check('…and the call is a success', stopped.records.map(record => record.ok), [true])
