@@ -42,9 +42,10 @@ node scripts/build-manifest.mjs --check
 # 4. 提交并推送（目录记录 revision 的两步提交见下一节），再打 tag 并创建 Release
 git tag -a v1.2.3 -m "…" && git push origin v1.2.3
 gh release create v1.2.3 --title "…" --notes-file …
-# 5. purge CDN 缓存（不做的话 jsDelivr 上的 @main 会继续发上一版，见下一节）
-curl "https://purge.jsdelivr.net/gh/zouyuxuan122/dsh-our-free-model@main/feed/manifest.json"
-curl "https://purge.jsdelivr.net/gh/zouyuxuan122/dsh-our-free-model@main/feed/announcements.json"
+# 5. purge CDN 缓存——整棵 @main，不只是 feed 那两个文件（原因见下一节）
+curl "https://purge.jsdelivr.net/gh/zouyuxuan122/dsh-our-free-model@main"
+# 6. 以「已安装用户」的身份复核发布产物：下载清单、逐文件校验字节数与 SHA-256、再回读
+node scripts/live-audit.mjs          # 打印 OK 才算发出去；FAIL 就按它给的提示处置
 ```
 
 第 2 步不是可选项：清单是发布者对每个文件的**字节数与 SHA-256 的承诺**，改了发布文
@@ -106,9 +107,24 @@ v1.2.2。
 所以发布流程的最后一步是 purge；不做就要等 CDN 自己重解析，通常数小时：
 
 ```bash
-curl "https://purge.jsdelivr.net/gh/<仓库>@main/feed/manifest.json"
-curl "https://purge.jsdelivr.net/gh/<仓库>@main/feed/announcements.json"
+curl "https://purge.jsdelivr.net/gh/<仓库>@main"
 ```
+
+**要 purge 的是整棵 `@main`，不能只 purge `feed/*.json`。** v1.3.1（2026-09-27）就是反面
+教材：只 purged 那两个 feed 文件之后，`…@main/feed/manifest.json` 立刻变成 1.3.1，而同一
+CDN 上 `…@main/index.js` 仍返回 v1.3.0 的 56 999 字节——清单声明的却是 60 224。这比完全
+不 purge 更糟：完全不 purge 时用户拿到旧清单配旧文件，自洽，只是「检查更新」答「已是最
+新」；而新清单配旧文件会让 `stageRelease` 在按清单校验时失败（安全失败——拒绝安装、保留
+旧版本，但这一版对该网络的用户就是发不上去）。同一次实测里 `…@v1.3.1/index.js` 与
+`…@<commit sha>/index.js` 都返回正确的 60 224，可见 jsDelivr 缓存的是 `@main` 这个**分支
+名到 commit 的解析**，文件层跟着它一起旧；而且 purge 返回 `"status":"finished"` 之后文件
+层仍滞后了数分钟。
+
+所以第 6 步是：以已安装用户的身份把整条升级路跑一遍，而不是 curl 一下清单看版本号。
+`scripts/live-audit.mjs` 调的就是插件自己的 `downloadManifest` → `stageRelease` →
+`verifyStaged`，它打印 OK 等价于旧版本用户点「一键升级」会成功。清单的 `base` 是 `"../"`、
+相对清单自身 URL 解析，因此对不可变 ref 跑它（`--source …/@v1.3.1/feed/manifest.json`）
+验的是发布物本身，而默认三个源验的是用户实际会走的那条路。
 
 用 `feedUrl` 设置可把源指向任意 URL（含 `{repo}` 占位符），本地测试时指向一个静态文件
 服务器即可。
@@ -157,6 +173,11 @@ node scripts/build-manifest.mjs --check
 #    tag and create the release
 git tag -a v1.2.3 -m "…" && git push origin v1.2.3
 gh release create v1.2.3 --title "…" --notes-file …
+# 5. purge the CDN — the whole @main tree, not only the two feed files (see below)
+curl "https://purge.jsdelivr.net/gh/zouyuxuan122/dsh-our-free-model@main"
+# 6. re-verify as an installed user would: download the manifest, check every file's
+#    byte count and SHA-256, then read the staged copy back
+node scripts/live-audit.mjs          # publishing is done when this prints OK
 ```
 
 Step 2 is not optional. The manifest is the publisher's promise about every file's
@@ -237,9 +258,29 @@ So the last step of a release is a purge; skip it and the CDN re-resolves on its
 own in a matter of hours:
 
 ```bash
-curl "https://purge.jsdelivr.net/gh/<repo>@main/feed/manifest.json"
-curl "https://purge.jsdelivr.net/gh/<repo>@main/feed/announcements.json"
+curl "https://purge.jsdelivr.net/gh/<repo>@main"
 ```
+
+**Purge the whole `@main` tree — the two `feed/*.json` files are not enough.** The
+counter-example is v1.3.1 itself (2026-09-27): after purging only those two,
+`…@main/feed/manifest.json` turned into 1.3.1 at once while `…@main/index.js` on the
+same CDN still answered v1.3.0's 56 999 bytes against a manifest declaring 60 224.
+That is worse than not purging: unpurged, a user gets an old manifest with old files —
+self-consistent, and *Check for updates* just says "already up to date" — while a new
+manifest over old files makes `stageRelease` fail its digest check (it fails safe: the
+install is refused and the previous version stays, but this release never reaches that
+network). In the same measurement `…@v1.3.1/index.js` and the commit-sha ref both
+returned the correct 60 224, so what jsDelivr caches is the `@main` branch-name →
+commit resolution, and the file layer ages with it; a purge reporting
+`"status":"finished"` still lagged by minutes.
+
+Which is why step 6 walks the whole upgrade path as an installed user rather than
+curling a manifest for its version string. `scripts/live-audit.mjs` calls the
+plugin's own `downloadManifest` → `stageRelease` → `verifyStaged`, so its `OK` is
+equivalent to an older install clicking *Upgrade* and succeeding. The manifest's
+`base` is `"../"`, resolved against its own URL, so running the script against an
+immutable ref (`--source …/@v1.3.1/feed/manifest.json`) verifies the release itself,
+while the default sources verify the route a user actually takes.
 
 The `feedUrl` setting can point the source at any URL (with a `{repo}`
 placeholder) — point it at a static file server for local testing.
