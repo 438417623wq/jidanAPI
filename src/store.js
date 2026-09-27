@@ -255,6 +255,13 @@ export function recordUsage(stats, record) {
       decodeTokens: measured.measurable ? record.decodeTokens : 0,
       effort: record.effort ?? '',
       origin: record.origin ?? 'chat',
+      // A call the gateway cut mid-stream, and a call that reached its finish
+      // token but never sent a usage frame, both land as 0/0. With no marker on
+      // the row they are indistinguishable from a genuinely empty completion, and
+      // there is then nothing to audit a "that turn vanished" report against
+      // (issue #10).
+      ...record.truncated === true ? { truncated: true } : {},
+      ...record.noUsage === true ? { noUsage: true } : {},
     }].slice(-400)
     return { ...state, days, models, requests: (state.requests ?? 0) + 1, samples }
   })

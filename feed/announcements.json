@@ -2,10 +2,18 @@
   "$schema": "./announcements.schema.md",
   "announcements": [
     {
+      "id": "2026-09-27-v1.3.1-release",
+      "title": "v1.3.1：工具结果终于送达模型（#9）；被掐断的长思考不再算成功（#10）；上游来源写进 README（#8）",
+      "level": "update",
+      "pinned": true,
+      "createdAt": "2026-09-27T04:00:00Z",
+      "html": "<p><strong>Our Free Model v1.3.1</strong> 处理了 issue 追踪单上的三条：</p><ul><li><strong>工具调用与工具结果没有送给模型（#9）</strong>——dsh 在两个世代里用了两种消息形状记录工具结果：V4 之前是<strong>带 <code>tool-result</code> 内容块的 user 消息</strong>，V4 起才是 <code>role:'tool'</code> 消息。插件只认后者，于是在 <code>dsh</code> 0.1.5 / AIO 6.9.3 这一代内核上，免费车道的每一个 agent 任务都发不出工具结果：模型反复发出同一个调用、坚持说「图片读取未返回内容」，直到你手动停止。现在两种形状都会被识别并投影到三条线格式上，嵌在工具结果里的图像也不再被丢掉。同一轮里还有一个附带修复：为了过免费层指纹门而追加的 <code>bash</code> 诱饵工具会被模型真的去调用（一次会话里 24 次全部 unknown tool），现在改为把内核真实的 shell 工具（Windows 上这一代叫 <code>pwsh</code>）提升去占那个名字，调用回来时再还原成真实工具名，因此是可执行的。</li><li><strong>流被上游提前关闭时被当成正常说完（#10）</strong>——网关在既没发 finish token 也没发 usage 帧的情况下直接关闭 SSE 流时，插件会落到兜底的 <code>stop</code>，于是「模型思考了五分钟然后没了动静」这一轮被标记为完成，统计里还是 <code>ok:true / 0 tokens</code>。现在这被判定为可重试的传输故障，harness 会退避重发，统计行上也留下 <code>truncated</code> 与 <code>noUsage</code> 的痕迹以便审计。实测对照：<code>scripts/probes/stream-terminal-frames.mjs</code> 显示这条车道每一轮完整回答都以 finish_reason → usage → <code>[DONE]</code> 收尾。</li><li><strong>上游来源写进 README（#8）</strong>——新增「上游是哪些源」一节：只有一个，OpenCode 的 Zen 网关（<code>https://opencode.ai</code>），用其公开免密额度，不经任何第三方中转或号池；会出网的目标一共四类，逐项列出。</li></ul><p>已在 <code>dsh</code> 0.1.5 与 0.1.7 两代内核的真实会话记录上交叉验证。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
+    },
+    {
       "id": "2026-09-26-v1.3.0-release",
       "title": "v1.3.0：新增托管安装模式，适配生态整合包；修复转发端口重复重启",
       "level": "update",
-      "pinned": true,
+      "pinned": false,
       "createdAt": "2026-09-26T12:00:00Z",
       "html": "<p><strong>Our Free Model v1.3.0</strong> 为进入 EAC 生态整合包做准备：</p><ul><li><strong>托管安装模式（distribution=managed）</strong>——插件被整合包/包管理器接管时，应用内自升级、公告源与热重载全部停机（相应接口返回 409），发布字节与更新时机交给托管方；设置接口无法反转托管状态。自行安装的用户完全不受影响。</li><li><strong>上游内核依赖收敛到 adapter/</strong>——全包唯一允许 import <code>@deepseek-ai/*</code> 的位置是 <code>adapter/kernel.js</code>，其余模块一律经 seam 引用，由测试门禁固化，防止上游耦合重新扩散。</li><li><strong>修复转发端口重复重启</strong>——此前设置页每次保存都会把已满足 host:port 的本地转发服务重启一次，客户端拷出的 Bearer 也会随之失效；现在期望已满足时直接复用现有服务。</li><li><strong>目录与完整性记录</strong>——新增 manifest 0.15 目录记录（catalog/dsh-plugin.json）、provenance 与 integrity 清单，全部 SHA-256 由构建脚本按 LF 归一化后的实际字节生成，无任何占位或捏造值。</li></ul><p>自行安装的用户请前往 <strong>设置 → 插件升级</strong> 一键升级；托管安装用户的更新节奏由整合包安排。</p>"
     },

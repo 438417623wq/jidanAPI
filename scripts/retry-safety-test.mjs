@@ -76,7 +76,7 @@ const STATE = () => ({
 })
 
 /** Run the real adapter and return the failure object it yields, if any. */
-async function failureFor(model, { state = STATE, signal } = {}) {
+async function failureFor(model, { state = STATE, signal, abortAfterFirstText } = {}) {
   let regionSignal
   const adapter = new FreeModelAdapter({
     state,
@@ -84,6 +84,10 @@ async function failureFor(model, { state = STATE, signal } = {}) {
     warn: () => {},
     onRegionBlocked: id => { regionSignal = id },
   })
+  // Cancelled from inside the consumer rather than on a wall clock: the point of
+  // this case is "text had already been handed over when the user stopped it", and
+  // a timer set beside a warm HTTP server only proved that some of the time.
+  const own = new AbortController()
   let failure = null
   let kind = null
   let streamed = 0
@@ -91,9 +95,12 @@ async function failureFor(model, { state = STATE, signal } = {}) {
     provider: ROUTE_MAIN,
     model,
     messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }],
-    ...signal === undefined ? {} : { signal },
+    ...signal === undefined && abortAfterFirstText !== true ? {} : { signal: signal ?? own.signal },
   })) {
-    if (chunk.type === 'text-delta') streamed++
+    if (chunk.type === 'text-delta') {
+      streamed++
+      if (abortAfterFirstText === true && streamed === 1) own.abort(new Error('user cancelled'))
+    }
     if (chunk.type === 'finish') {
       kind = chunk.reason.kind
       failure = chunk.reason.failure ?? null
@@ -110,14 +117,11 @@ const policy = new FreeModelAdapter({ state: STATE, recordUsage: () => {}, warn:
  * `TRANSPORT`, which is in `retryableCodes`. The reason the harness cancels with
  * is not part of the contract; the fact that it cancelled is.
  */
-const customReason = new AbortController()
-setTimeout(() => customReason.abort(new Error('user cancelled')), 60).unref?.()
-
 const cases = [
   // name, model, fixture, finish kind, code, retryable?, region re-probe?, text delivered?
   ['transport failure', 'socket-model-free', {}, 'error', CODE.transport, true, undefined, false],
   ['aborted before the request', 'test-model-free', { signal: AbortSignal.abort() }, 'aborted', CODE.aborted, false, undefined, false],
-  ['aborted mid-stream, with the caller’s own reason', 'slow-model-free', { signal: customReason.signal }, 'aborted', CODE.aborted, false, undefined, true],
+  ['aborted mid-stream, with the caller’s own reason', 'slow-model-free', { abortAfterFirstText: true }, 'aborted', CODE.aborted, false, undefined, true],
   ['model not served on this egress', 'no-such-model-free', {}, 'error', CODE.server, true, undefined, false],
   ['plugin switched off mid-call', 'test-model-free', { state: () => ({ ...STATE(), settings: { ...STATE().settings, enabled: false } }) }, 'error', 'CONFIG_DISABLED', false, undefined, false],
   ['a geography refusal inside the stream', 'region-model-free', {}, 'error', CODE.region, false, 'region-model-free', false],

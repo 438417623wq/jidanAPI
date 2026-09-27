@@ -169,12 +169,34 @@ r = await drive([{ role: 'user', content: 'What is the weather in Shanghai? You 
 console.log(`  toolCalls=${JSON.stringify(r.tools)} finish=${r.finish?.kind}`)
 if (r.tools.length > 0) {
   const call = r.tools[0]
-  const r2 = await drive([
-    { role: 'user', content: 'What is the weather in Shanghai? You must call the get_weather tool.' },
-    { role: 'assistant', content: [], source: { kind: 'model' }, ...{ content: [{ type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments }] } },
-    { role: 'tool', content: [{ type: 'text', text: '{"temp":22,"cond":"sunny"}' }], toolCallId: call.id, source: { kind: 'tool', callId: call.id } },
-  ], { sessionId: 'selftest:tool2', tools: TOOLS })
-  console.log(`  round2 finish=${r2.finish?.kind} text=${JSON.stringify(r2.text.slice(0, 120))}`)
+  const ANSWER = { temp: 22, cond: 'sunny' }
+  /**
+   * The two shapes dsh has really written into its durable sessions, taken from
+   * recorded `tool/result` events rather than invented: a pre-V4 kernel answers a
+   * call with a `user` message carrying a `tool-result` block, V4 with a
+   * first-class `tool` message. This suite used to build only the second, so the
+   * first could go missing from the projector without anything going red — which
+   * is exactly how issue #9 shipped.
+   */
+  const vocabularies = {
+    'pre-V4 user+tool-result': {
+      role: 'user', source: { kind: 'tool', callId: call.id },
+      content: [{ type: 'tool-result', toolCallId: call.id, content: [{ type: 'text', text: JSON.stringify(ANSWER) }], isError: false }],
+    },
+    'V4 role:tool': {
+      role: 'tool', toolCallId: call.id, source: { kind: 'tool', callId: call.id }, isError: false,
+      content: [{ type: 'text', text: JSON.stringify(ANSWER) }],
+    },
+  }
+  for (const [label, answer] of Object.entries(vocabularies)) {
+    const r2 = await drive([
+      { role: 'user', content: 'What is the weather in Shanghai? You must call the get_weather tool.' },
+      { role: 'assistant', source: { kind: 'model' }, content: [{ type: 'tool-call', id: call.id, name: call.name, arguments: call.arguments }] },
+      answer,
+    ], { sessionId: `selftest:tool2:${label.replace(/[^a-z0-9]/gi, '-')}`, tools: TOOLS })
+    const used = /22|sunny|clear|warm|晴/i.test(r2.text)
+    console.log(`  ${label.padEnd(24)} round2 finish=${r2.finish?.kind} saw-the-result=${used} text=${JSON.stringify(r2.text.slice(0, 110))}`)
+  }
 }
 
 console.log('\n=== 3. effort budget must bind monotonically ===')

@@ -178,7 +178,7 @@ export class FreeModelAdapter {
     // Rejections are surfaced through the channel; silence the host's guard.
     request.catch(() => {})
 
-    const record = (ok, usage, ttftMs, decodeMs, sawReasoning) => {
+    const record = (ok, usage, ttftMs, decodeMs, sawReasoning, extra = {}) => {
       this.deps.recordUsage({
         at: started,
         model: entry.id,
@@ -193,12 +193,39 @@ export class FreeModelAdapter {
         decodeMs,
         origin: 'harness',
         ...warnings.length === 0 ? {} : { warnings },
+        ...extra,
       })
     }
 
     try {
       const outcome = yield* readStream(channel.read(), wire, renameMap, () => Date.now())
       yield { type: 'usage', usage: outcome.usage }
+      // A stream that never reached its terminal frame was closed by something
+      // other than the model finishing. Verified live against this gateway
+      // (`scripts/probes/stream-terminal-frames.mjs`): every complete answer ends
+      // with a finish_reason, then a usage frame, then `data: [DONE]`. So no
+      // finish token means the turn was cut, and reporting it as `stop` — which is
+      // what `finishReason(undefined)` falls through to — told the harness the
+      // turn was over. A long thinking round therefore ended silently with
+      // nothing in it, counted as a success, and logged 0/0 tokens (issue #10).
+      // `TRANSPORT` is in the retryable set, which is the whole point: the harness
+      // backs off and re-sends instead of stopping.
+      if (outcome.sawFinish !== true) {
+        if (options.signal?.aborted === true) {
+          yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'our free model stream ended with the turn unfinished', code: CODE.aborted } } }
+          record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started))
+          return
+        }
+        yield { type: 'finish', reason: {
+          kind: 'error',
+          failure: {
+            message: 'our free model closed the stream before its finish token — the turn was cut short upstream, not answered',
+            code: CODE.transport,
+          },
+        } }
+        record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, { truncated: true })
+        return
+      }
       // Two upstream pathologies the finish token alone cannot express:
       //
       // A truncated turn is reported by the gateway as finish "tool_calls" even
@@ -209,7 +236,7 @@ export class FreeModelAdapter {
       // finish makes the assembler prune the call and ends the turn instead.
       if (outcome.brokenToolCall === true) {
         yield { type: 'finish', reason: { kind: 'max-tokens' } }
-        record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning)
+        record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, outcome.sawUsage === true ? {} : { noUsage: true })
         if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
         return
       }
@@ -223,7 +250,7 @@ export class FreeModelAdapter {
         return
       }
       yield { type: 'finish', reason: finishReason(outcome.finish) }
-      record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning)
+      record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, outcome.sawUsage === true ? {} : { noUsage: true })
       if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
     } catch (error) {
       // No first-token time exists for a call that never streamed, and its wall

@@ -28,6 +28,14 @@ const BASE62 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
 /** The lowercase tool quartet the free tier requires to be declared. */
 export const FINGERPRINT_TOOLS = ['bash', 'glob', 'grep', 'read']
 
+/**
+ * Quartet slots that a tool the caller already has can answer for, keyed by the
+ * required spelling. dsh names its shell tool `pwsh` on Windows
+ * (`packages/shell/tool-pwsh`) and `bash` elsewhere (`packages/shell/tool-bash`),
+ * so the same plugin must fill the slot from whichever the kernel mounted.
+ */
+const QUARTET_DONORS = { bash: ['pwsh'] }
+
 /** Models served by /responses instead of /chat/completions. */
 const RESPONSES_MODELS = new Set(['muse-spark-1.2-contributor-free', 'muse-spark-1.3-contributor-free'])
 /** Models served by the Anthropic-shaped /messages endpoint. */
@@ -154,15 +162,23 @@ function quartetKey(name) {
   return FINGERPRINT_TOOLS.includes(lower) ? lower : ''
 }
 
+/** The Chat-shape `{function:{…}}` wrapper, or null for the flat Responses one. */
+function functionOf(tool) {
+  return tool.function && typeof tool.function === 'object' && !Array.isArray(tool.function) ? tool.function : null
+}
+
 /**
  * Satisfy the free-tier fingerprint gate on `body.tools`.
  *
  * The gate demands all four lowercase quartet names be declared. dsh's own
- * shell/filesystem tools already answer to `bash`/`glob`/`grep`/`read`, so a
- * normal agent turn declares them for real; anything genuinely absent is
- * appended as a self-disabling decoy. Case variants are canonicalised rather
- * than duplicated (upstream rejects `Bash` + `bash` as a duplicate), and the
- * rename map lets the response side restore the caller's spelling.
+ * shell/filesystem tools already answer to `bash`/`glob`/`grep`/`read` on the
+ * lane that names its shell `bash`, so a normal agent turn declares them for
+ * real; a slot the caller does not field is filled by promoting a tool that can
+ * genuinely answer for it (see {@link QUARTET_DONORS}) before it is faked, and
+ * only a slot with nothing to promote gets a self-disabling decoy. Case variants
+ * are canonicalised rather than duplicated (upstream rejects `Bash` + `bash` as a
+ * duplicate), and the rename map lets the response side restore the caller's
+ * spelling — which is what makes a promoted tool callable.
  *
  * @param {object} body - request body, mutated in place
  * @param {boolean} flat - true for the Responses shape ({name}), false for chat ({function:{name}})
@@ -183,11 +199,36 @@ export function applyFingerprint(body, flat) {
     seen.add(key)
     if (current !== key) {
       map.set(key, current)
-      const fn = tool.function && typeof tool.function === 'object' && !Array.isArray(tool.function) ? tool.function : null
+      const fn = functionOf(tool)
       out.push(fn ? { ...tool, function: { ...fn, name: key } } : { ...tool, name: key })
     } else {
       out.push(tool)
     }
+  }
+
+  // A decoy is a name the model will call: with only `pwsh` on the session, the
+  // `bash` decoy was recorded being invoked 24 times in one run, every one of
+  // them an unknown tool. Promoting the real shell into the slot costs the gate
+  // nothing — it fingerprints the declared names — and the call comes back
+  // executable.
+  const promoted = new Set()
+  for (const name of FINGERPRINT_TOOLS) {
+    if (seen.has(name)) continue
+    const donors = QUARTET_DONORS[name] ?? []
+    const index = out.findIndex(tool => {
+      const original = toolNameOf(tool)
+      if (original === '' || quartetKey(original) !== '') return false
+      const lower = original.toLowerCase()
+      return !promoted.has(lower) && donors.includes(lower)
+    })
+    if (index === -1) continue
+    const tool = out[index]
+    const original = toolNameOf(tool)
+    promoted.add(original.toLowerCase())
+    map.set(name, original)
+    const fn = functionOf(tool)
+    out[index] = fn ? { ...tool, function: { ...fn, name } } : { ...tool, name }
+    seen.add(name)
   }
 
   for (const name of FINGERPRINT_TOOLS) {

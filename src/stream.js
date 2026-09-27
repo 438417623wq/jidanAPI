@@ -190,7 +190,12 @@ function feedClaude(sink, event, onFinish, renameMap) {
     }
     const stop = event.delta?.stop_reason
     if (stop) onFinish(undefined, 'finish', stop)
+    return
   }
+  // `message_stop` is the Messages wire's own end-of-turn frame. A stream that
+  // carried it was closed on purpose, so it must not be read as a cut one even in
+  // the rare case where the stop_reason frame was the one that went missing.
+  if (event.type === 'message_stop') onFinish(undefined, 'finish', undefined)
 }
 
 /** Consume one parsed OpenAI Responses SSE event. */
@@ -269,15 +274,16 @@ export function windowTokens(usage, sawReasoning) {
  * @param {Map<string, string>} renameMap - fingerprint spelling -> caller spelling
  * @param {() => number} [now] - clock stamping the first delivered delta
  * @yields {object} harness StreamChunk
- * @returns {Promise<{ usage: object, finish?: string, sawToolCall: boolean, sawReasoning: boolean, firstDeltaAt?: number }>}
+ * @returns {Promise<{ usage: object, finish?: string, sawFinish: boolean, sawUsage: boolean, sawToolCall: boolean, sawReasoning: boolean, firstDeltaAt?: number }>}
  */
 export async function * readStream(lines, wire, renameMap, now = () => Date.now()) {
   const outbox = []
   const sink = new BlockSink(chunk => outbox.push(chunk))
-  const state = { usage: undefined, finish: undefined, sawToolCall: false, firstDeltaAt: undefined, sawReasoning: false, sawText: false, brokenToolCall: false }
+  const state = { usage: undefined, finish: undefined, sawFinish: false, sawUsage: false, sawToolCall: false, firstDeltaAt: undefined, sawReasoning: false, sawText: false, brokenToolCall: false }
 
   const onFinish = (usage, kind, token) => {
     if (kind === 'usage' && usage !== undefined) {
+      state.sawUsage = true
       const carried = state.usage
       // A usage report that names no input side is `message_delta` on the Messages
       // wire: it carries only the output count, and taking it whole dropped the
@@ -286,6 +292,10 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
         ? { ...carried, ...usage, totalTokens: Math.max(0, (carried.totalTokens ?? 0) - (carried.outputTokens ?? 0)) + (usage.outputTokens ?? 0) }
         : usage
     }
+    // Which frame said so, not what it said: a stream that reached any of the
+    // three wires' terminal events was closed by the model running out, while one
+    // that never did was closed by something else, and only the second is a fault.
+    if (kind === 'finish') state.sawFinish = true
     if (kind === 'finish') state.finish = token
   }
 

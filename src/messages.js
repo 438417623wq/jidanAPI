@@ -46,6 +46,37 @@ function hasBlocks(blocks, type) {
   return Array.isArray(blocks) && blocks.some(block => block?.type === type)
 }
 
+/** A user image block's data URL, or undefined when it cannot travel. */
+function imageDataUrl(block, resolveImage) {
+  if (block?.offloaded === true) return undefined
+  return resolveImage?.(block.attachment) ?? (typeof block.attachment?.url === 'string' ? block.attachment.url : undefined)
+}
+
+/**
+ * The tool results one message carries, in whichever vocabulary the kernel wrote it.
+ *
+ * dsh changed shape between session formats: before V4 a tool answer was a
+ * `user` message whose content held a `tool-result` wrapper block, and V4 made it
+ * a first-class `tool` message whose content *is* the result. Both generations
+ * are installed in the field, and a projector that reads only one of them ships
+ * every tool-using turn upstream with its results missing — which the model
+ * cannot notice, so it re-issues the same call until the user stops it.
+ */
+function toolResultsOf(message) {
+  if (message?.role === 'tool') {
+    const id = callIdOf(message)
+    return id === null ? [] : [{ callId: id, content: blocksOf(message.content), isError: message.isError === true }]
+  }
+  const out = []
+  for (const block of blocksOf(message?.content)) {
+    if (block?.type !== 'tool-result') continue
+    const id = String(block.toolCallId ?? message?.source?.callId ?? '')
+    if (id === '') continue
+    out.push({ callId: id, content: blocksOf(block.content), isError: block.isError === true })
+  }
+  return out
+}
+
 /**
  * Drop tool calls that were never answered, and answers with no call.
  *
@@ -60,20 +91,30 @@ export function repairToolPairing(messages) {
   const list = messages ?? []
   const answered = new Set()
   for (const message of list) {
-    if (message?.role !== 'tool') continue
-    const id = callIdOf(message)
-    if (id) answered.add(id)
+    for (const result of toolResultsOf(message)) answered.add(result.callId)
   }
 
   const keptCalls = new Set()
   const out = []
   for (const message of list) {
-    if (message?.role === 'tool') {
+    const results = toolResultsOf(message)
+    if (results.length > 0) {
       // Resolvable here because a call always precedes its own answer.
-      const id = callIdOf(message)
-      if (id !== null && keptCalls.has(id)) out.push(message)
+      if (message.role === 'tool') {
+        if (keptCalls.has(results[0].callId)) out.push(message)
+        continue
+      }
+      const kept = new Set(results.filter(result => keptCalls.has(result.callId)).map(result => result.callId))
+      const blocks = blocksOf(message.content)
+      const rest = blocks.filter(block => block?.type !== 'tool-result'
+        || kept.has(String(block.toolCallId ?? message.source?.callId ?? '')))
+      if (rest.length === blocks.length) out.push(message)
+      else if (rest.length > 0) out.push({ ...message, content: rest })
       continue
     }
+    // A tool answer with no call id to key on answers nothing, and an empty
+    // `tool_call_id` on the wire is a 400 for the whole turn.
+    if (message?.role === 'tool') continue
     if (message?.role !== 'assistant') {
       out.push(message)
       continue
@@ -114,7 +155,31 @@ function callIdOf(message) {
 export function toChatMessages(messages, resolveImage, warnings) {
   const out = []
   for (const message of messages ?? []) {
-    const blocks = blocksOf(message.content)
+    const results = toolResultsOf(message)
+    let blocks = blocksOf(message.content)
+    if (results.length > 0) {
+      // `role: 'tool'` carries text only, so an image a tool returned travels as
+      // the user turn after it — the same split the kernel's own adapter makes,
+      // and the reason a `read_image` result is not silently lost.
+      for (const result of results) {
+        const images = []
+        for (const block of result.content) {
+          if (block?.type !== 'image') continue
+          const url = imageDataUrl(block, resolveImage)
+          if (url !== undefined) images.push({ type: 'image_url', image_url: { url } })
+          else if (warnings) warnings.push('image-dropped')
+        }
+        const text = textOf(result.content)
+        out.push({ role: 'tool', tool_call_id: result.callId, content: text || (images.length > 0 ? '(see attached image)' : '(no output)') })
+        if (images.length > 0) {
+          out.push({
+            role: 'user',
+            content: [{ type: 'text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images],
+          })
+        }
+      }
+      blocks = blocks.filter(block => block?.type !== 'tool-result')
+    }
     switch (message.role) {
       case 'system':
       case 'developer': {
@@ -127,7 +192,7 @@ export function toChatMessages(messages, resolveImage, warnings) {
         for (const block of blocks) {
           if (block?.type === 'text' && block.text) parts.push({ type: 'text', text: block.text })
           else if (block?.type === 'image') {
-            const url = block.offloaded === true ? undefined : (resolveImage?.(block.attachment) ?? (typeof block.attachment?.url === 'string' ? block.attachment.url : undefined))
+            const url = imageDataUrl(block, resolveImage)
             if (url !== undefined) parts.push({ type: 'image_url', image_url: { url } })
             else if (warnings) warnings.push('image-dropped')
           }
@@ -161,38 +226,69 @@ export function toChatMessages(messages, resolveImage, warnings) {
         out.push(entry)
         break
       }
-      case 'tool': {
-        out.push({
-          role: 'tool',
-          tool_call_id: String(message.toolCallId ?? message.source?.callId ?? ''),
-          content: textOf(blocks) || '(no output)',
-        })
-        break
-      }
+      case 'tool': break
       default: break
     }
   }
   return out
 }
 
+/** A Claude `image` block from a resolved image URL, or undefined when it cannot travel. */
+function claudeImageBlock(url, warnings) {
+  if (url === undefined) {
+    if (warnings) warnings.push('image-dropped')
+    return undefined
+  }
+  const comma = String(url).indexOf(',')
+  const head = comma === -1 ? '' : String(url).slice(0, comma)
+  const media = head.match(/data:([^;]+)/)?.[1]
+  if (media === undefined || !IMAGE_MEDIA.has(media)) {
+    if (warnings) warnings.push('image-dropped')
+    return undefined
+  }
+  return { type: 'image', source: { type: 'base64', media_type: media, data: String(url).slice(comma + 1) } }
+}
+
 /** Project harness messages onto the Anthropic Messages shape. */
 export function toClaudeMessages(messages, resolveImage, warnings) {
   const out = []
   let systemText = ''
+  // One turn per role, merged: the kernel's own Messages adapter concatenates a
+  // result onto the preceding wire turn, and a pre-V4 history answers tool calls
+  // as separate user messages that would otherwise land as consecutive user
+  // turns — which is the shape the `messages` wire rejects.
+  const push = (role, blocks) => {
+    const previous = out[out.length - 1]
+    if (previous?.role === role) previous.content.push(...blocks)
+    else out.push({ role, content: [...blocks] })
+  }
   for (const message of messages ?? []) {
-    const blocks = blocksOf(message.content)
+    const results = toolResultsOf(message)
     if (message.role === 'system' || message.role === 'developer') {
-      const text = textOf(blocks)
+      const text = textOf(blocksOf(message.content))
       if (text) systemText = systemText ? `${systemText}\n\n${text}` : text
       continue
     }
-    if (message.role === 'tool') {
-      out.push({
-        role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: String(message.toolCallId ?? message.source?.callId ?? ''), content: textOf(blocks) || '(no output)', is_error: message.isError === true }],
-      })
-      continue
+    if (results.length > 0) {
+      const lead = []
+      for (const result of results) {
+        const inner = []
+        for (const block of result.content) {
+          if (block?.type === 'text' && block.text) inner.push({ type: 'text', text: block.text })
+          else if (block?.type === 'image') {
+            const image = claudeImageBlock(imageDataUrl(block, resolveImage), warnings)
+            if (image !== undefined) inner.push(image)
+          }
+        }
+        lead.push({
+          type: 'tool_result', tool_use_id: result.callId,
+          content: inner.length > 0 ? inner : [{ type: 'text', text: '(no output)' }],
+          is_error: result.isError,
+        })
+      }
+      push('user', lead)
     }
+    const blocks = blocksOf(message.content).filter(block => block?.type !== 'tool-result')
     const content = []
     for (const block of blocks) {
       if (block?.type === 'text' && block.text) content.push({ type: 'text', text: block.text })
@@ -201,19 +297,12 @@ export function toClaudeMessages(messages, resolveImage, warnings) {
         try { input = JSON.parse(block.arguments || '{}') } catch { input = {} }
         content.push({ type: 'tool_use', id: String(block.id ?? ''), name: String(block.name ?? ''), input })
       } else if (block?.type === 'image') {
-        const url = block.offloaded === true ? undefined : (resolveImage?.(block.attachment) ?? (typeof block.attachment?.url === 'string' ? block.attachment.url : undefined))
-        if (url !== undefined) {
-          const comma = String(url).indexOf(',')
-          const head = comma === -1 ? '' : String(url).slice(0, comma)
-          const media = head.match(/data:([^;]+)/)?.[1]
-          if (media !== undefined && IMAGE_MEDIA.has(media)) {
-            content.push({ type: 'image', source: { type: 'base64', media_type: media, data: String(url).slice(comma + 1) } })
-          } else if (warnings) warnings.push('image-dropped')
-        } else if (warnings) warnings.push('image-dropped')
+        const image = claudeImageBlock(imageDataUrl(block, resolveImage), warnings)
+        if (image !== undefined) content.push(image)
       }
     }
     if (content.length === 0) continue
-    out.push({ role: message.role === 'assistant' ? 'assistant' : 'user', content })
+    push(message.role === 'assistant' ? 'assistant' : 'user', content)
   }
   return { system: systemText || undefined, messages: out }
 }
@@ -222,18 +311,36 @@ export function toClaudeMessages(messages, resolveImage, warnings) {
 export function toResponseInput(messages, resolveImage, warnings) {
   const out = []
   for (const message of messages ?? []) {
-    const blocks = blocksOf(message.content)
+    const results = toolResultsOf(message)
+    if (results.length > 0) {
+      for (const result of results) {
+        const images = []
+        for (const block of result.content) {
+          if (block?.type !== 'image') continue
+          const url = imageDataUrl(block, resolveImage)
+          if (url !== undefined) images.push({ type: 'input_image', image_url: url })
+          else if (warnings) warnings.push('image-dropped')
+        }
+        const text = textOf(result.content)
+        out.push({
+          type: 'function_call_output', call_id: result.callId,
+          output: text || (images.length > 0 ? '(see attached image)' : '(no output)'),
+        })
+        // `output` is text on this wire, so a returned image travels as the user
+        // item after it rather than being dropped on the floor.
+        if (images.length > 0) {
+          out.push({
+            type: 'message', role: 'user',
+            content: [{ type: 'input_text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images],
+          })
+        }
+      }
+    }
+    if (message.role === 'tool') continue
+    const blocks = blocksOf(message.content).filter(block => block?.type !== 'tool-result')
     if (message.role === 'system' || message.role === 'developer') {
       const text = textOf(blocks)
       if (text) out.push({ type: 'message', role: 'system', content: [{ type: 'input_text', text }] })
-      continue
-    }
-    if (message.role === 'tool') {
-      out.push({
-        type: 'function_call_output',
-        call_id: String(message.toolCallId ?? message.source?.callId ?? ''),
-        output: textOf(blocks) || '(no output)',
-      })
       continue
     }
     if (message.role === 'assistant') {
@@ -250,7 +357,7 @@ export function toResponseInput(messages, resolveImage, warnings) {
     for (const block of blocks) {
       if (block?.type === 'text' && block.text) parts.push({ type: 'input_text', text: block.text })
       else if (block?.type === 'image') {
-        const url = block.offloaded === true ? undefined : (resolveImage?.(block.attachment) ?? (typeof block.attachment?.url === 'string' ? block.attachment.url : undefined))
+        const url = imageDataUrl(block, resolveImage)
         if (url !== undefined) parts.push({ type: 'input_image', image_url: url })
         else if (warnings) warnings.push('image-dropped')
       }

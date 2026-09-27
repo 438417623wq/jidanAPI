@@ -35,6 +35,7 @@
 ## Highlights
 
 - **Nothing to configure** — install, restart, pick a model. No account, no key, no quota dashboard to register on.
+- **The upstream is named** — one source, nothing else: OpenCode's Zen gateway at `https://opencode.ai`, with no third party relaying your traffic. Who serves your requests, and where your data goes, is spelled out in [Where the models come from](#where-the-models-come-from).
 - **A roster that tracks upstream** — model set, context length and capabilities are re-fetched on every refresh rather than frozen into the plugin.
 - **The picker offers only what actually answers** — a model the upstream listing names but the gateway refuses to route outright (`Model is unavailable`, a 404 for that id) leaves the dropdown and stays visible in the settings page with its refusal recorded. Everything that is *not* a statement about the model keeps its model reachable: a 5xx from the gateway, a 429 quota window, a timeout or a dropped connection. Region-gated ones move to their own `region-limited` group. If a whole round refuses everything, nothing is hidden: the picker never goes empty.
 - **Announcement center with live push** — the repository owner edits one JSON file and pushes; every installation receives it within one poll cycle. Bodies are HTML rendered through a strict allowlist; `urgent` items open a full-screen modal; optional OS-level notifications.
@@ -297,6 +298,20 @@ Tested on Windows against the live upstream. The table is kept per release round
 and each row says which way it was checked — only the rows marked *live upstream*
 or *hands-on* are behaviour a user sees in the interface.
 
+### v1.3.1 (issues #8, #9, #10)
+
+| Item | How | Result |
+| --- | --- | --- |
+| Both tool-result vocabularies really reach the model | live upstream, `host-selftest.mjs` step 2 | Same model, same `get_weather` answer, sent once in the pre-V4 shape (`user` carrying a `tool-result` block) and once in the V4 shape (`role:'tool'`): both `finish=stop`, and both times the model repeated the `22°C / sunny` from the result. Before the fix the plugin did not recognise the first shape at all (`src/messages.js` never mentioned `tool-result`), so that request carried neither the call nor its answer |
+| The shapes are taken from records, not imagined | real durable session logs on this machine (`~/.dsh/sessions`, zstd — which needs splitting frame by frame) | Across 24 session files, `tool/result` events appear in exactly two shapes: 362 with `role:'user'` carrying a `tool-result` block (V1/V3 format, 336 of them written by AIO 6.9.3) and 27 V4 `role:'tool'`. Both generations are in live use and the plugin read only the latter — issue #9 was right, about a kernel older than the reporter's |
+| Projection and pairing repair | offline `projection-test.mjs` (new, 33 assertions) | Three wires × two vocabularies: each call and its answer reach the wire, keyed by call id; three parallel calls each get their own answer, merged into one user turn on the Messages wire with `tool_result` first (the same rule the kernel's own adapter uses); images nested in a result survive instead of vanishing (Chat follows with a user turn, Messages nests them inside `tool_result`); answers with no call id, dangling calls and orphan results are still removed; already-valid history is returned byte for byte |
+| `pwsh` filling the `bash` slot is accepted upstream | live upstream, `probes/shell-slot-promotion.mjs` (new) | Declares `bash, glob, grep, read`, where `bash` carries pwsh's real schema and no decoy is added: the gateway does not answer `FreeTierError`, the turn finishes `tool-calls`, and the call comes back renamed to **`pwsh`** (`{"command":"Get-Date"}`) — a tool the kernel can actually run. Offline, `fingerprint-test.mjs` (new, 20 assertions) pins no-duplicate declarations, a real `bash` winning over the donor, and the decoy surviving only when there is nothing to promote |
+| A cut stream is no longer a completed turn | offline `truncation-test.mjs` (15 new assertions) | A local HTTP server really does `res.end()` a stream that never carries a finish token → `kind=error` with code `TRANSPORT` (which is in the retryable set), recorded `ok=false` and flagged `truncated`; checked on each of the three wires; genuine endings such as `message_stop` and `response.completed` are not caught; a turn that finishes without a usage frame is flagged `noUsage`, so `0/0` stops being indistinguishable from "produced nothing" |
+| What a normal ending looks like on this lane | live upstream, `probes/stream-terminal-frames.mjs` (new) | Raw SSE captured frame by frame: `finish_reason:"stop"` → the usage frame → `data: [DONE]` → `{"choices":[],"cost":"0"}`, identically on two models. So "no finish token ever arrived" is genuinely an anomaly rather than a second normal ending — which is the basis for #10's check |
+| No false positives against the real lane | live upstream, `host-selftest.mjs`, full run | 11 models probed plus plain chat, two tool rounds, three effort rungs and vision input: every call landed on its own normal ending (`stop` / `tool-calls` / `max-tokens`), none read as truncated; the region-gated model still returns `REGION_BLOCKED` |
+| The upstream is documented (#8) | every outbound destination in the code, checked one by one | New section [Where the models come from](#where-the-models-come-from): `opencode.ai/zen/v1/*` (inference and `/models`), this repository's `feed/*.json` (raw first, jsDelivr as fallback), and `api.ipify.org` / `ipinfo.io` / `ipapi.co` (only to read back this machine's egress IP and country code). No account pool, no relay |
+| Offline suite | `npm test` (18 suites) | Green; `projection` and `fingerprint` added, still no network and no free-lane quota spent |
+
 ### v1.2.2 (issues #1–#4, #6)
 
 Each row names how it was checked: *offline fake kernel* never leaves the machine,
@@ -404,6 +419,42 @@ into `npm test`, which runs the offline checks above — no network, no free-lan
 quota spent.
 
 Requires Node `^22.19.0 || >=24.0.0`. No install step, no dependencies.
+
+## Where the models come from
+
+There is exactly one upstream, and it is not a reseller: **OpenCode's Zen
+gateway**, `https://opencode.ai/zen/v1/*`. Once the plugin is installed your
+conversation goes from this machine straight there — no third party in the middle.
+
+Every fact in that sentence lives in `src/upstream.js`, and each one was checked
+by direct request against the live gateway on 2026-09-24:
+
+| What | Where | Credentials sent |
+| --- | --- | --- |
+| Inference | `POST …/zen/v1/chat/completions`, `…/zen/v1/responses`, `…/zen/v1/messages` (per model, see `endpointFor`) | `Authorization: Bearer public` — this lane is a public, key-free allowance; the plugin holds no secret of yours |
+| Model list | `GET …/zen/v1/models` | same |
+| Announcements and the update manifest | this repository's `feed/*.json`: `raw.githubusercontent.com` first, `cdn.jsdelivr.net` as fallback | none |
+| Egress region check | `api.ipify.org` / `ipinfo.io` / `ipapi.co`, only to read back your own public IP and country code | none |
+
+On privacy and trust, plainly:
+
+- **No account pool, no relay, no reseller.** There is no second lane in this
+  version; the four rows above are the complete set of destinations the plugin
+  can contact. `npm test` touches no network at all, and the only things that do
+  are `scripts/host-selftest.mjs` and `scripts/probes/`, which you run by hand. If
+  another source is ever added, this section is updated before the feature is.
+- **Your prompts, tool results and any attached images go to that upstream as an
+  ordinary inference request** — the same as calling any model API. Nothing else
+  leaves the machine: the usage dashboard's data, settings and the forwarding key
+  all stay in `DSH_HOME/our-free-model/`.
+- **Key-free is not unmanaged.** The lane fingerprints clients through
+  `x-opencode-*` headers, accounts free usage per session, answers 403 for a
+  disallowed region and 429 once the allowance is spent. The model set and the
+  quota policy belong to the upstream and can change at any time; all the plugin
+  can do is withdraw an unavailable model from the picker and say why.
+- This section is repository documentation. Inside the app — picker, settings
+  page, error copy — the upstream's name still does not appear (the convention is
+  recorded under [Verification](#verification)).
 
 ## Security and privacy
 

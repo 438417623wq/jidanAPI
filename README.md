@@ -34,6 +34,7 @@
 ## 亮点
 
 - **装完即用，没有配置环节**——不需要账号、不需要 Key、不需要去哪个后台开配额。
+- **上游写在明面上**——只有一个来源：OpenCode 的 Zen 网关（`https://opencode.ai`），不经任何第三方中转。谁在服务你的请求、你的数据发到哪儿，见[上游是哪些源](#上游是哪些源)。
 - **清单跟随上游**——模型集合、上下文长度与能力每次刷新重新拉取，不是写死在插件里的一份快照。
 - **选择器只给真能用的模型**——上游清单点名、但网关明确拒绝路由的模型（回 `Model is unavailable`、404 找不到这个 id）会从下拉框里移除，只在设置页留痕并写清拒因；网关自己的毛病（5xx）、配额（429）、超时断网这些**不是对模型的判定**，一律保持可达；地区门拦截的单独归到 `region-limited` 分组。整轮全部被拒时一律保留，绝不让选择器变空。
 - **公告中心 + 实时推送**——仓库主人在仓库里编辑一份 JSON 并推送，所有安装最迟在一个轮询周期内收到；内容是白名单约束下的 HTML，支持图文排版；`urgent` 级别直接全屏弹窗；可选系统级通知。
@@ -265,7 +266,21 @@ reasoning token 从分子里剔掉，`decodeWindow()` 拒掉短到没法计时�
 在 Windows 环境、对真实上游实测。本节按轮次记录，并写明每一行的验证方式——只有标着
 「真实上游」与「实机点击」的那些才是用户在界面上会看到的行为。
 
-### 本轮：v1.2.2（对应 issue #1–#4、#6）
+### 本轮：v1.3.1（对应 issue #8、#9、#10）
+
+| 项目 | 方式 | 结果 |
+| --- | --- | --- |
+| 两种工具结果形状都真的送达模型 | 真实上游 `host-selftest.mjs` 第 2 步 | 同一模型、同一个 `get_weather` 结果，分别按 pre-V4 的 `user`+`tool-result` 与 V4 的 `role:'tool'` 各发一轮：两条都 `finish=stop`，且模型都复述出结果里的 `22°C / sunny`。改动前插件对第一种形状完全无感（`src/messages.js` 从头到尾没出现过 `tool-result`），那一轮发出去的请求里既没有工具调用也没有结果 |
+| 消息形状取自记录，不是想象 | 本机真实 durable 会话日志（`~/.dsh/sessions`，zstd 需按帧切开逐段解压） | 24 个会话文件里 `tool/result` 事件共出现两种形状：`role:'user'` 携带 `tool-result` 块 **362 条**（V1/V3 格式，其中 AIO 6.9.3 写的 336 条），V4 的 `role:'tool'` 27 条。两代都有人在用，而插件只认后者——issue #9 的判断成立，只是它描述的形状比报告者的内核更新 |
+| 投影与配对修复 | 离线 `projection-test.mjs`（新增，33 条断言） | 三条线 × 两种形状：调用与其结果都落到 wire 上、按 call id 一一对应；三个并行调用各自的结果逐个送达，Messages 线合并进同一个 user 轮且 `tool_result` 排在最前（与内核自己的 Messages 适配器同一条规则）；结果里嵌的图像不再消失（Chat 走紧随其后的 user 轮，Messages 直接嵌进 `tool_result`）；无 call id 的工具答案、悬空调用、孤儿结果照旧剔除；已配对历史逐字节不被改写 |
+| `pwsh` 顶替 `bash` 槽位能被网关接受 | 真实上游 `probes/shell-slot-promotion.mjs`（新增） | 声明名 `bash, glob, grep, read`，其中 `bash` 携带 pwsh 的真实 schema、无诱饵：网关不回 `FreeTierError`，`finish=tool-calls`，模型返回的调用被还原成 **`pwsh`**（`{"command":"Get-Date"}`）——即内核真的能执行。离线另有 `fingerprint-test.mjs`（新增，20 条）钉住不重复声明、真实 `bash` 优先、无 donor 时才落诱饵 |
+| 半截流不再被当成说完 | 离线 `truncation-test.mjs`（新增 15 条） | 本地 HTTP 服务真的 `res.end()` 关掉一条没有 finish token 的流 → `kind=error`、code `TRANSPORT`（在可重试名单里）、统计行 `ok=false` 且带 `truncated`；三条线各验一次；`message_stop`、`response.completed` 这类真结束不误伤；有 finish 却没有 usage 的行标 `noUsage`，`0/0` 与"真的没有产出"从此可分 |
+| 这条车道的正常收尾长什么样 | 真实上游 `probes/stream-terminal-frames.mjs`（新增） | 逐帧抓取原始 SSE：`finish_reason:"stop"` → 带 usage 的帧 → `data: [DONE]` → `{"choices":[],"cost":"0"}`，两个模型一致。所以"始终没有出现 finish token"确实是异常，而不是这条车道的另一种正常写法——这也是 #10 判定条件的依据 |
+| 真实车道上不误判 | 真实上游 `host-selftest.mjs` 全量 | 11 个模型探测 + 普通对话 + 两轮工具 + 三档思考 + 视觉输入，全部落到各自的正常收尾（`stop` / `tool-calls` / `max-tokens`），没有一条被读成截断；被地区门挡住的那个仍回 `REGION_BLOCKED` |
+| 上游来源成文（#8） | 代码里全量出网目标逐条核对 | 新增[上游是哪些源](#上游是哪些源)：`opencode.ai/zen/v1/*`（推理与 `/models`）、本仓库 `feed/*.json`（raw 优先、jsDelivr 兜底）、`api.ipify.org` / `ipinfo.io` / `ipapi.co`（只读本机出口 IP 与国家码）。当前没有号池、没有中转 |
+| 离线套件 | `npm test`（18 个套件） | 全绿；新增 `projection`、`fingerprint` 两套，仍不出网、不花免费额度 |
+
+### 上一轮：v1.2.2（对应 issue #1–#4、#6）
 
 每一行都写明**用什么方式验的**：`离线假内核`不出网、`真实上游`是插件真打网关但跑在
 手搭的 cordis context 上、`真实内核`才是把插件装进 dsh 里启动。这三者的差别本轮吃过一次
@@ -369,6 +384,27 @@ node scripts/build-manifest.mjs     # 发布：重新生成 feed/manifest.json�
 ```bash
 npm run typecheck                 # tsc --noEmit，严格检查 adapter/ 接缝（可选：需要 typescript）
 ```
+
+## 上游是哪些源
+
+只有一个，而且它不是中转站：**OpenCode 的 Zen 网关**，`https://opencode.ai/zen/v1/*`。
+装上插件之后，你的会话内容从这台机器直达它，中间没有任何第三方经手。
+
+具体到代码——`src/upstream.js` 里每一条都在 2026-09-24 用直接请求核过：
+
+| 用途 | 目标 | 带什么凭据 |
+| --- | --- | --- |
+| 推理请求 | `POST …/zen/v1/chat/completions`、`…/zen/v1/responses`、`…/zen/v1/messages`（按模型分流，见 `endpointFor`） | `Authorization: Bearer public`——这条车道本来就是公开免密额度，插件里没有属于你的任何密钥 |
+| 模型清单 | `GET …/zen/v1/models` | 同上 |
+| 公告与升级清单 | 本仓库的 `feed/*.json`：`raw.githubusercontent.com` 优先，`cdn.jsdelivr.net` 兜底 | 无 |
+| 出口地区判定 | `api.ipify.org` / `ipinfo.io` / `ipapi.co`，只为读到你自己的公网 IP 与国家码 | 无 |
+
+关于隐私与信任，把话说清楚：
+
+- **没有号池、没有中转、没有二道贩子**。当前版本不存在第二条车道，上表四行就是这个插件会出网的全部目标；`npm test` 的离线套件一步不出网，只有 `scripts/host-selftest.mjs` 与 `scripts/probes/` 会主动去打这些地址，而它们要人手动运行。将来若加入新的来源，这一节会先于功能更新，不会默认把流量分给别人。
+- **你的 prompt、工具结果与随附图像会作为正常推理请求发给这个上游**——与调用任何一家模型 API 没有区别。除此之外插件不上传任何东西：用量看板的数据、设置、转发 Key 全部只落在本机 `DSH_HOME/our-free-model/`。
+- **免密不等于无人管**：这条车道靠 `x-opencode-*` 指纹识别客户端、按会话计免费额度，会因地区回 403、因超量回 429。模型集合与额度政策由上游决定，随时可能变化；插件能做的只是如实把不可用从选择器里摘掉。
+- 这一节是仓库文档。应用内的选择器、设置页与报错文案仍然不出现上游厂名（那条约定见[验收情况](#验收情况)）。
 
 ## 安全与隐私
 

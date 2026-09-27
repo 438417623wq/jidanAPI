@@ -1,5 +1,5 @@
 {
-  "version": "1.3.0",
+  "version": "1.3.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -50,22 +50,22 @@
     {
       "path": "package.json",
       "size": 1490,
-      "sha256": "03ca4827beb918b3f18aff7b4aed6aa9729c9b76e6bf67dfdedc9fdc4143a31f"
+      "sha256": "4ed76c760333385bc297c92922a3643a4f2c209d67cf0bd24088b1a4968d9e22"
     },
     {
       "path": "README_EN.md",
-      "size": 39371,
-      "sha256": "1f6bc2af83b7b6dd894f8f99666cda08d3abd40bc943dbbed44f5103fe9d3b00"
+      "size": 46142,
+      "sha256": "91900a92f02c9f0d3644f6de5eb3b9af3c46f23f36af912cff7a1fcb121bc57a"
     },
     {
       "path": "README.md",
-      "size": 37501,
-      "sha256": "aecbc7ac40e80d04390413a8c32cd2a6319c2211efcced272b42343d4fb82eb8"
+      "size": 43668,
+      "sha256": "eaa61d1fda6318287c29925059cc77ca1fb3bb718ad493a7ece68dcbda70f8c1"
     },
     {
       "path": "src/adapter.js",
-      "size": 14043,
-      "sha256": "b9b8fc1a12a843a08994de4e081f66d11beabec746481b8ecaed7195765ec43b"
+      "size": 15839,
+      "sha256": "8b2a3a3dcb40403ce765e0412d72bbde8ee1a09129f2475973ecd4ae5930d00e"
     },
     {
       "path": "src/catalog.js",
@@ -99,8 +99,8 @@
     },
     {
       "path": "src/messages.js",
-      "size": 11945,
-      "sha256": "4869d40a83e61b1ee69c7da4a34722058f2a1470f6001ee6a93271422bf4b224"
+      "size": 16811,
+      "sha256": "d591d2f823104caf0571a3a626f55a96dcbb40cfb192031074d76c6df24b85ea"
     },
     {
       "path": "src/probe.js",
@@ -119,13 +119,13 @@
     },
     {
       "path": "src/store.js",
-      "size": 12237,
-      "sha256": "4bc839baba6611620a3d2c34d2122502e470dbcd9d1ade0868cd6263ed6c84df"
+      "size": 12702,
+      "sha256": "c13c99a7029febdcdd5dbd818127cd2f263d583d7d1ce33d64e8c88c06bc074e"
     },
     {
       "path": "src/stream.js",
-      "size": 15890,
-      "sha256": "5c9cf748d98a28064aa5df2192340adafc2fdd52af9fcbd2f84fe151dc4ed661"
+      "size": 16618,
+      "sha256": "c009f84ad0d154e218bf1a0f07dafebd1d3e8645c867aff1ef5ae9ac11c1992c"
     },
     {
       "path": "src/trust.js",
@@ -139,8 +139,8 @@
     },
     {
       "path": "src/upstream.js",
-      "size": 8920,
-      "sha256": "67ef62facc7c15248dd6b3d7e5523b8d1004ba792311d4568d92500a9c755bde"
+      "size": 10720,
+      "sha256": "3c8d756515607834739a8df37e34f80e905e7c822b55877f6585608dfb015bbe"
     }
   ]
 }
