@@ -144,6 +144,8 @@ export const SETTINGS_INITIAL = {
   forward: { enabled: false, host: '127.0.0.1', port: 18899 },
   /** Cap a turn's output so a slow lane cannot run away. */
   defaultMaxTokens: 32768,
+  /** 所有模型默认允许一次纯推理检查点续写，false 可关闭。 */
+  streamRecovery: true,
   /** Acknowledged announcement copy version. */
   announcementAck: '',
   /** Last full catalog refresh timestamp. */
@@ -262,6 +264,13 @@ export function recordUsage(stats, record) {
       // (issue #10).
       ...record.truncated === true ? { truncated: true } : {},
       ...record.noUsage === true ? { noUsage: true } : {},
+      ...typeof record.recoveryId === 'string' ? { recoveryId: record.recoveryId } : {},
+      ...Number.isSafeInteger(record.attempt) ? { attempt: record.attempt } : {},
+      ...Number.isFinite(record.elapsedMs) ? { elapsedMs: record.elapsedMs } : {},
+      ...record.recoveryAttempt === true ? { recoveryAttempt: true } : {},
+      ...record.recoveryScheduled === true ? { recoveryScheduled: true } : {},
+      ...record.recovered === true ? { recovered: true } : {},
+      ...record.aborted === true ? { aborted: true } : {},
     }].slice(-400)
     return { ...state, days, models, requests: (state.requests ?? 0) + 1, samples }
   })

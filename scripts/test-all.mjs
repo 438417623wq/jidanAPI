@@ -32,6 +32,7 @@ const suites = [
   ['fingerprint', 'fingerprint-test.mjs', []],
   ['sniff', 'sniff-test.mjs', []],
   ['truncation', 'truncation-test.mjs', []],
+  ['recovery', 'recovery-test.mjs', []],
   ['retry-safety', 'retry-safety-test.mjs', []],
   ['speed-stat', 'speed-stat-test.mjs', []],
   ['picker', 'picker-test.mjs', []],

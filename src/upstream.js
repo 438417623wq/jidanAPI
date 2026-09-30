@@ -181,10 +181,12 @@ function functionOf(tool) {
  * spelling — which is what makes a promoted tool callable.
  *
  * @param {object} body - request body, mutated in place
- * @param {boolean} flat - true for the Responses shape ({name}), false for chat ({function:{name}})
+ * @param {boolean|'claude'} style - true 为 Responses，false 为 Chat，claude 为 Messages
  * @returns {Map<string, string>} sent spelling -> caller spelling
  */
-export function applyFingerprint(body, flat) {
+export function applyFingerprint(body, style) {
+  const flat = style === true
+  const claude = style === 'claude'
   const map = new Map()
   const tools = Array.isArray(body.tools) ? body.tools : []
   const hadClientTools = tools.length > 0
@@ -233,15 +235,17 @@ export function applyFingerprint(body, flat) {
 
   for (const name of FINGERPRINT_TOOLS) {
     if (seen.has(name)) continue
-    out.push(flat
-      ? { type: 'function', name, description: 'This tool is currently unavailable and must not be used.', parameters: { type: 'object', properties: {} } }
-      : { type: 'function', function: { name, description: 'This tool is currently unavailable and must not be used.', parameters: { type: 'object', properties: {} } } })
+    out.push(claude
+      ? { name, description: 'This tool is currently unavailable and must not be used.', input_schema: { type: 'object', properties: {} } }
+      : flat
+        ? { type: 'function', name, description: 'This tool is currently unavailable and must not be used.', parameters: { type: 'object', properties: {} } }
+        : { type: 'function', function: { name, description: 'This tool is currently unavailable and must not be used.', parameters: { type: 'object', properties: {} } } })
   }
 
   body.tools = out
   if (!body.tool_choice) {
     if (flat) body.tool_choice = 'auto'
-    else if (!hadClientTools) body.tool_choice = 'none'
+    else if (!hadClientTools) body.tool_choice = claude ? { type: 'none' } : 'none'
   }
   return map
 }

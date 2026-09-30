@@ -21,8 +21,9 @@ import { applyFingerprint, baseModelId, endpointFor, mintRequestId, sessionForCo
 import { toChatMessages, toClaudeMessages, toResponseInput, toToolDefs, repairToolPairing } from './messages.js'
 import { CODE, UpstreamError, postStreamed } from './http.js'
 import { finishReason, readStream, windowTokens } from './stream.js'
-import { DEFAULT_LEVEL, budgetFor, effortsFor, resolveLevel } from './effort.js'
+import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, effortsFor, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
+import { recoveryPolicy, canRecover, recoveryMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -132,7 +133,33 @@ export class FreeModelAdapter {
    * @param {object|null} pinned - catalog row frozen by `prepareCall`, if any
    * @param {object} [snapshot] - state generation frozen by `prepareCall`
    */
-  async * stream(options, pinned, snapshot = this.deps.state()) {
+  stream(options, pinned, snapshot = this.deps.state()) {
+    const controller = new AbortController()
+    const onAbort = () => controller.abort(options.signal?.reason)
+    if (options.signal?.aborted === true) onAbort()
+    else options.signal?.addEventListener('abort', onAbort, { once: true })
+    const iterator = this.runStream({ ...options, signal: controller.signal }, pinned, snapshot)
+    const cleanup = () => options.signal?.removeEventListener('abort', onAbort)
+    const step = async (method, value) => {
+      try {
+        const row = await iterator[method](value)
+        if (row.done) cleanup()
+        return row
+      } catch (error) {
+        cleanup()
+        throw error
+      }
+    }
+    // 原生生成器把 return 排在 pending next 后；先取消请求才能立即退出。
+    return {
+      [Symbol.asyncIterator]() { return this },
+      next: value => step('next', value),
+      return: value => { controller.abort(); cleanup(); return step('return', value) },
+      throw: error => { controller.abort(error); cleanup(); return step('throw', error) },
+    }
+  }
+
+  async * runStream(options, pinned, snapshot) {
     const settings = snapshot.settings ?? {}
     const modelId = baseModelId(options.model)
     const entry = pinned ?? snapshot.catalog.find(candidate => candidate.id === modelId) ?? null
@@ -153,123 +180,187 @@ export class FreeModelAdapter {
     const resolveImage = this.deps.resolveImage
     const messages = repairToolPairing(options.messages ?? [])
     const budget = budgetFor(options.reasoningEffort, entry, options.maxTokens, settings.defaultMaxTokens)
-    const payload = buildPayload(wire, entry.id, messages, options, budget, resolveImage, warnings)
-
     const declared = toToolDefs(options.tools, style)
-    if (declared.length > 0) payload.tools = declared
-    if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
-    if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
-    // The free-tier gate is a fingerprint check over the declared tool set, so
-    // it is satisfied even when the caller brought no tools of its own.
-    const renameMap = applyFingerprint(payload, style === 'flat')
-
-    const channel = createChannel()
+    const policy = recoveryPolicy(settings.streamRecovery)
     const session = sessionForConversation(options.sessionId)
-    const request = postStreamed({
-      path: endpointFor(entry.id),
-      body: payload,
-      session,
-      requestId: mintRequestId(),
-      attributionUserAgent: snapshot.attributionUserAgent,
-      signal: options.signal,
-      onData: value => channel.push(value),
-    }).then(() => channel.push(undefined))
-      .catch(error => channel.push(error instanceof Error ? error : new Error(String(error))))
-    // Rejections are surfaced through the channel; silence the host's guard.
-    request.catch(() => {})
+    const recoveryId = mintRequestId()
+    let attemptMessages = messages
+    let attemptBudget = budget
+    let nextIndex = 0
+    let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
+    const blocks = createBlockTracker()
 
-    const record = (ok, usage, ttftMs, decodeMs, sawReasoning, extra = {}) => {
-      this.deps.recordUsage({
-        at: started,
-        model: entry.id,
-        effort: resolveLevel(options.reasoningEffort, entry)?.id ?? '',
-        ok,
-        input: usage?.inputTokens ?? 0,
-        output: usage?.outputTokens ?? 0,
-        reasoning: usage?.reasoningTokens ?? 0,
-        cacheRead: usage?.cacheReadTokens ?? 0,
-        decodeTokens: ok ? windowTokens(usage, sawReasoning === true) : 0,
-        ttftMs,
-        decodeMs,
-        origin: 'harness',
-        ...warnings.length === 0 ? {} : { warnings },
-        ...extra,
-      })
+    const payloadFor = (input, ceiling, recovering) => {
+      const payload = buildPayload(wire, entry.id, input, options, ceiling, resolveImage, warnings)
+      if (declared.length > 0) payload.tools = declared
+      if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
+      if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
+      if (recovering) payload.tool_choice = wire === 'messages' ? { type: 'none' } : 'none'
+      return payload
     }
 
-    try {
-      const outcome = yield* readStream(channel.read(), wire, renameMap, () => Date.now())
-      yield { type: 'usage', usage: outcome.usage }
-      // A stream that never reached its terminal frame was closed by something
-      // other than the model finishing. Verified live against this gateway
-      // (`scripts/probes/stream-terminal-frames.mjs`): every complete answer ends
-      // with a finish_reason, then a usage frame, then `data: [DONE]`. So no
-      // finish token means the turn was cut, and reporting it as `stop` — which is
-      // what `finishReason(undefined)` falls through to — told the harness the
-      // turn was over. A long thinking round therefore ended silently with
-      // nothing in it, counted as a success, and logged 0/0 tokens (issue #10).
-      if (outcome.sawFinish !== true) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (options.signal?.aborted === true) {
+        if (attempt > 0) yield { type: 'usage', usage: totalUsage }
+        yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted', code: CODE.aborted } } }
+        return
+      }
+      const attemptStarted = Date.now()
+      const recovering = attempt === 1
+      const payload = payloadFor(attemptMessages, attemptBudget, recovering)
+      const renameMap = applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
+      const controller = new AbortController()
+      const onAbort = () => controller.abort(options.signal?.reason)
+      options.signal?.addEventListener('abort', onAbort, { once: true })
+      const remainingMs = Math.max(1, policy.totalTimeoutMs - (attemptStarted - started))
+      let expired = false
+      const timeoutMs = recovering ? Math.min(policy.maxContinuationMs, remainingMs) : remainingMs
+      const timer = policy.enabled ? setTimeout(() => {
+        expired = true
+        controller.abort()
+      }, timeoutMs) : undefined
+      timer?.unref?.()
+      const channel = createChannel()
+      const request = postStreamed({
+        path: endpointFor(entry.id), body: payload, session,
+        requestId: attempt === 0 ? recoveryId : mintRequestId(),
+        attributionUserAgent: snapshot.attributionUserAgent,
+        signal: controller.signal,
+        onData: value => channel.push(value),
+      }).then(() => channel.push(undefined))
+        .catch(error => channel.push(error instanceof Error ? error : new Error(String(error))))
+      let firstDeltaAt
+      let delivered = false
+      let sawAnswer = false
+      let recorded = false
+      let partialOutcome
+      let usageAdded = false
+      const record = (ok, outcome, extra = {}) => {
+        if (recorded) return
+        recorded = true
+        const usage = outcome?.sawUsage === true ? outcome.usage : undefined
+        this.deps.recordUsage({
+          at: attemptStarted,
+          model: entry.id,
+          effort: resolveLevel(options.reasoningEffort, entry)?.id ?? '',
+          ok,
+          input: usage?.inputTokens ?? 0,
+          output: usage?.outputTokens ?? 0,
+          reasoning: usage?.reasoningTokens ?? 0,
+          cacheRead: usage?.cacheReadTokens ?? 0,
+          decodeTokens: ok ? windowTokens(usage, outcome?.sawReasoning === true) : 0,
+          ttftMs: firstDeltaAt === undefined ? undefined : firstDeltaAt - attemptStarted,
+          decodeMs: firstDeltaAt === undefined ? 0 : Date.now() - firstDeltaAt,
+          origin: 'harness',
+          recoveryId,
+          attempt,
+          elapsedMs: Date.now() - attemptStarted,
+          ...recovering ? { recoveryAttempt: true } : {},
+          ...outcome?.sawUsage === true ? {} : { noUsage: true },
+          ...warnings.length === 0 ? {} : { warnings },
+          ...extra,
+        })
+      }
+      try {
+        const reader = readStream(channel.read(), wire, renameMap, () => Date.now(), {
+          startIndex: nextIndex, checkpointLimit: policy.checkpointLimit,
+          onState: value => { partialOutcome = value },
+        })
+        let outcome
+        try {
+          while (true) {
+            const row = await reader.next()
+            if (row.done) { outcome = row.value; break }
+            if (options.signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
+            const chunk = row.value
+            if (chunk.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text.trim() !== '') sawAnswer = true
+            // 续写禁用工具；网关不遵守时也不把工具块交给宿主执行。
+            if (recovering && (chunk.blockType === 'tool-call' || chunk.type === 'tool-call-delta' || chunk.block?.type === 'tool-call')) {
+              throw new UpstreamError('our free model continuation unexpectedly requested a tool', 'STREAM_CUT')
+            }
+            if (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta' || chunk.type === 'tool-call-delta') {
+              delivered = true
+              if (firstDeltaAt === undefined) firstDeltaAt = Date.now()
+            }
+            blocks.accept(chunk)
+            yield chunk
+          }
+        } finally {
+          await reader.return()
+        }
+        nextIndex = outcome.nextIndex
+        totalUsage = addUsage(totalUsage, outcome.usage, outcome.sawUsage)
+        usageAdded = true
         if (options.signal?.aborted === true) {
-          yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'our free model stream ended with the turn unfinished', code: CODE.aborted } } }
-          record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started))
+          record(false, outcome, { aborted: true })
+          yield { type: 'usage', usage: totalUsage }
+          yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted', code: CODE.aborted } } }
           return
         }
-        // Whether to re-send is decided by what had arrived, measured in a real
-        // `dsh` web session on 2026-09-27: this lane cut a pure-thinking round at
-        // 304 s, and because the code was retryable the harness re-sent the whole
-        // turn twice over — `llm/retry` at 304 s and 608 s, `turn/end` at 912 s —
-        // three identical failures, fifteen minutes, and one unanswered turn. The
-        // cap is a property of the turn's length, not of the network, so a cut that
-        // already delivered content will simply be cut again after spending the
-        // same minutes again; it ends now, with the failure named. A cut that
-        // delivered nothing costs nothing to repeat and stays `TRANSPORT`, which is
-        // where a transient blip actually lives.
-        const delivered = outcome.firstDeltaAt !== undefined
-        const seconds = Math.round((Date.now() - started) / 1000)
-        yield { type: 'finish', reason: {
-          kind: 'error',
-          failure: delivered
-            ? { message: `our free model closed the stream after ${seconds}s, before its finish token — the turn was cut short upstream, not answered. Not re-sent: the same cut would end the retry.`, code: 'STREAM_CUT' }
-            : { message: 'our free model closed the stream before its finish token, without answering — retrying', code: CODE.transport },
-        } }
-        record(false, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, { truncated: true })
-        return
-      }
-      // Two upstream pathologies the finish token alone cannot express:
-      //
-      // A truncated turn is reported by the gateway as finish "tool_calls" even
-      // when the ceiling cut the arguments mid-JSON (verified live 2026-09-25).
-      // Handing the harness a tool-calls finish makes it execute an
-      // unexecutable call, the tool errors, and the model retries into the same
-      // ceiling — the reported endless, very expensive turns. A max-tokens
-      // finish makes the assembler prune the call and ends the turn instead.
-      if (outcome.brokenToolCall === true) {
-        yield { type: 'finish', reason: { kind: 'max-tokens' } }
-        record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, outcome.sawUsage === true ? {} : { noUsage: true })
+        if (!recovering && canRecover(outcome, policy, Date.now() - started)) {
+          const remainingTokens = budget - (outcome.sawUsage ? outcome.usage.outputTokens ?? 0 : 0)
+          const continuationBudget = Math.min(remainingTokens, policy.maxOutputTokens)
+          const continuationMessages = recoveryMessages(messages, outcome.reasoningText)
+          if (continuationBudget >= MIN_BUDGET
+            && checkpointFits(payloadFor(continuationMessages, continuationBudget, true), entry, outcome.reasoningText, continuationBudget)) {
+            record(false, outcome, { truncated: true, recoveryScheduled: true })
+            this.deps.warn?.('our-free-model: interrupted reasoning; continuing once from its checkpoint')
+            attemptMessages = continuationMessages
+            attemptBudget = continuationBudget
+            continue
+          }
+        }
+        const reason = outcome.brokenToolCall === true ? { kind: 'max-tokens' } : finishReason(outcome.finish)
+        const failedEnding = outcome.finish === 'failed' || outcome.finish === 'cancelled'
+        const normalEnding = outcome.finish === undefined || ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish)
+        if (outcome.sawFinish !== true || failedEnding || (recovering && (!sawAnswer
+          || outcome.sawToolCall === true || reason.kind !== 'stop' || !normalEnding))) {
+          const seconds = Math.round((Date.now() - started) / 1000)
+          const code = recovering || delivered || outcome.sawToolCall === true ? 'STREAM_CUT'
+            : failedEnding ? CODE.server : CODE.transport
+          const message = recovering
+            ? `our free model continuation ended without a complete answer after ${seconds}s; automatic recovery exhausted`
+            : failedEnding ? `our free model upstream response ended with status ${outcome.finish}`
+            : delivered || outcome.sawToolCall === true
+              ? `our free model closed the stream after ${seconds}s, before its finish token; automatic recovery was not safe`
+              : 'our free model closed the stream before its finish token, without answering; retrying'
+          record(false, outcome, { truncated: true })
+          yield { type: 'usage', usage: totalUsage }
+          yield { type: 'finish', reason: { kind: 'error', failure: { message, code } } }
+          return
+        }
+        if (outcome.sawText !== true && outcome.sawToolCall !== true && outcome.sawReasoning !== true && reason.kind === 'stop') {
+          record(false, outcome)
+          yield { type: 'usage', usage: totalUsage }
+          yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model returned an empty response', code: CODE.empty } } }
+          return
+        }
+        record(true, outcome, recovering ? { recovered: reason.kind === 'stop' } : {})
+        yield { type: 'usage', usage: totalUsage }
+        yield { type: 'finish', reason }
         if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
         return
-      }
-      // A degenerate completion — a normal stop with zero blocks — would end
-      // the turn silently with nothing for the user or the loop to act on.
-      // Classifying it here is what makes the harness back off and retry.
-      if (outcome.sawText !== true && outcome.sawToolCall !== true && outcome.sawReasoning !== true
-        && finishReason(outcome.finish).kind === 'stop') {
-        yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model returned an empty response', code: CODE.empty } } }
-        record(false, outcome.usage, undefined, 0)
+      } catch (error) {
+        if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
+        const aborted = options.signal?.aborted === true
+        let failure = toFailure(error)
+        if (!aborted && (recovering || expired)) {
+          failure = { ...failure, code: recovering || delivered || partialOutcome?.sawToolCall === true ? 'STREAM_CUT' : CODE.timeout,
+            message: expired ? 'our free model automatic recovery reached its time limit' : `our free model continuation failed: ${failure.message}` }
+        }
+        if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
+        record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })
+        for (const chunk of blocks.close()) yield chunk
+        if (recovering || partialOutcome?.sawUsage === true) yield { type: 'usage', usage: totalUsage }
+        yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure } }
         return
+      } finally {
+        clearTimeout(timer)
+        options.signal?.removeEventListener('abort', onAbort)
+        controller.abort()
+        await request
+        if (!recorded) record(false, partialOutcome, { aborted: true })
       }
-      yield { type: 'finish', reason: finishReason(outcome.finish) }
-      record(true, outcome.usage, (outcome.firstDeltaAt ?? started) - started, Date.now() - (outcome.firstDeltaAt ?? started), outcome.sawReasoning, outcome.sawUsage === true ? {} : { noUsage: true })
-      if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
-    } catch (error) {
-      // No first-token time exists for a call that never streamed, and its wall
-      // clock is not one: recording it as TTFT pushed failure latency into the
-      // latency average.
-      record(false, undefined, undefined, 0)
-      // Geography refusals are how a changed egress announces itself mid-turn.
-      if (error?.code === CODE.region) this.deps.onRegionBlocked?.(entry.id)
-      const failure = toFailure(error)
-      yield { type: 'finish', reason: { kind: options.signal?.aborted === true ? 'aborted' : 'error', failure } }
     }
   }
 }

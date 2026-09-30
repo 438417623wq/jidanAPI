@@ -1,28 +1,23 @@
 /**
- * Can this lane still be cut mid-stream, and does the cut now read as a failure?
+ * 真实上游长思考探测：分别记录原请求结束、自动恢复和最终截断。
  *
- * Issue #10's report: a long thinking round with no tool calls ends silently,
- * because the gateway closes the SSE body without a finish token, without a usage
- * frame, and without `data: [DONE]`. The plugin used to fall through
- * `finishReason(undefined)` → `stop`, so the harness marked the turn completed.
+ * issue #10 修正了无结束帧的 EOF 被当成 stop；issue #12 在只有思考、
+ * 没有正文或工具调用时，默认允许一次检查点新请求。它不是原生 resume。
  *
- * This drives the real adapter against the real gateway on the model and effort the
- * report names, and prints what the tail of the stream actually was:
+ * 默认使用恢复实现；--recovery off 可对照不恢复的行为。已有内容的
+ * 截断代码是 STREAM_CUT，完全无输出才可能是可重试的 TRANSPORT，
+ * 不能只统计 TRANSPORT，也不能把恢复成功算作原请求正常结束。
  *
- *   - terminal frame present + `stop`     → the model finished; nothing to catch.
- *   - terminal frame present + `length`   → the ceiling cut it, which is a
- *                                           different (already handled) failure.
- *   - `TRANSPORT` with "before its finish
- *     token"                              → the cut was reproduced, and it is now
- *                                           reported instead of swallowed.
+ * 脚本会访问真实上游并消耗额度；不输出提示词、思考原文或检查点。
+ * 一次没有截断的请求不能证明恢复成功，也不能否定截断检测。
  *
- * A single run is not proof either way: the gateway cut these unpredictably for
- * the reporter. Repeat with `--runs N`.
- *
- * Run: node scripts/probes/long-think-truncation.mjs [--model id] [--runs N]
+ * 运行：node scripts/probes/long-think-truncation.mjs
+ *       [--model id] [--runs N] [--effort deep] [--recovery on|off]
  */
 
 import { FreeModelAdapter, ROUTE_MAIN, ROUTE_REGION } from '../../src/adapter.js'
+import { capabilitiesFor } from '../../src/catalog.js'
+import { wireFor } from '../../src/upstream.js'
 
 const argv = process.argv.slice(2)
 const arg = (name, fallback) => {
@@ -32,40 +27,53 @@ const arg = (name, fallback) => {
 const MODEL = arg('model', 'mimo-v2.6-flash-free')
 const RUNS = Number(arg('runs', 1))
 const EFFORT = arg('effort', 'deep')
+const RECOVERY = arg('recovery', 'on')
+if (!Number.isInteger(RUNS) || RUNS < 1) throw new Error('--runs must be a positive integer')
+if (RECOVERY !== 'on' && RECOVERY !== 'off') throw new Error('--recovery must be on or off')
 
 /**
- * A prompt with no tool available and no short answer: the reported shape was a
- * turn whose only output was a reasoning block, so nothing is allowed to end the
- * turn early — no tool call, and no visible prose until the thinking is done.
+ * 原请求不给真实工具，并要求长思考；能否到达上游截断仍需实际观测。
  */
 const PROMPT = 'Without counting on any tool, reason at length and carefully about whether a sorting algorithm that is O(n log n) comparisons on average can also be O(n) worst case, examining three constructions and every place the argument breaks. Do not write the conclusion until the analysis is finished, and write out the full analysis before answering.'
 
+const caps = capabilitiesFor(MODEL)
 const CATALOG = [{
-  id: MODEL, name: MODEL, availability: 'available', vision: false, reasoning: true,
-  contextWindow: 1048576, maxOutput: 131072, canDisableThinking: false,
+  id: MODEL, name: MODEL, availability: 'available', vision: caps.vision === true,
+  reasoning: caps.reasoning !== false, contextWindow: caps.contextWindow,
+  maxOutput: caps.maxOutput, canDisableThinking: caps.canDisableThinking !== false,
 }]
+let physicalRecords = []
 
 const adapter = new FreeModelAdapter({
   state: () => ({
     catalog: CATALOG,
     membership: { [ROUTE_MAIN]: [MODEL], [ROUTE_REGION]: [] },
-    settings: { enabled: true, defaultMaxTokens: 32768 },
+    settings: { enabled: true, defaultMaxTokens: 32768, streamRecovery: RECOVERY !== 'off' },
     attributionUserAgent: 'probe/1.0',
   }),
-  recordUsage: record => console.log(`  record        : ok=${record.ok} input=${record.input} output=${record.output} reasoning=${record.reasoning} truncated=${record.truncated === true} noUsage=${record.noUsage === true}`),
+  recordUsage: record => {
+    physicalRecords.push(record)
+    console.log(`  record        : attempt=${record.attempt ?? 0} recoveryAttempt=${record.recoveryAttempt === true} scheduled=${record.recoveryScheduled === true} recovered=${record.recovered === true} ok=${record.ok} input=${record.input} output=${record.output} reasoning=${record.reasoning} truncated=${record.truncated === true} noUsage=${record.noUsage === true}`)
+  },
   warn: message => console.log(`  warn          : ${message}`),
 })
 
-console.log(`model=${MODEL} effort=${EFFORT} runs=${RUNS}`)
+console.log(`model=${MODEL} wire=${wireFor(MODEL)} effort=${EFFORT} recovery=${RECOVERY} runs=${RUNS}`)
 let cut = 0
 let clean = 0
 let ceiling = 0
+let recoveryAttempts = 0
+let recovered = 0
+let recoveryFailed = 0
+let physicalTotal = 0
 for (let run = 1; run <= RUNS; run += 1) {
+  physicalRecords = []
   const started = Date.now()
   let reasoningChars = 0
   let textChars = 0
   let firstDeltaAt = 0
   let finish = null
+  let logicalUsage
   let lastFrameAt = started
   console.log(`\n--- run ${run} ---`)
   for await (const chunk of adapter.stream({
@@ -78,20 +86,33 @@ for (let run = 1; run <= RUNS; run += 1) {
     if (chunk.type === 'reasoning-delta') { if (firstDeltaAt === 0) firstDeltaAt = Date.now(); reasoningChars += chunk.text.length; lastFrameAt = Date.now() }
     else if (chunk.type === 'text-delta') { if (firstDeltaAt === 0) firstDeltaAt = Date.now(); textChars += chunk.text.length; lastFrameAt = Date.now() }
     else if (chunk.type === 'finish') finish = chunk.reason
+    else if (chunk.type === 'usage') logicalUsage = chunk.usage
   }
   const elapsed = Date.now() - started
   const kind = finish?.kind ?? 'none'
   const code = finish?.failure?.code ?? ''
-  const verdict = kind === 'error' && code === 'TRANSPORT' ? 'CUT (reported as a retryable failure)'
+  const attempted = physicalRecords.some(record => record.recoveryAttempt === true || record.attempt === 1)
+  const recoverySucceeded = attempted && kind === 'stop' && physicalRecords.some(record => record.recovered === true)
+  const usageMissing = physicalRecords.some(record => record.noUsage === true)
+  const wasCut = kind === 'error' && (code === 'STREAM_CUT' || code === 'TRANSPORT')
+  const verdict = recoverySucceeded ? 'RECOVERED (checkpoint request completed the answer)'
+    : attempted ? `RECOVERY FAILED (${kind}, ${code || 'no failure code'})`
+      : wasCut ? `CUT (${code === 'STREAM_CUT' ? 'not resent by the harness' : 'no output, retryable failure'})`
     : kind === 'max-tokens' ? 'CEILING (output budget reached, not a cut)'
       : kind === 'stop' ? 'CLEAN (reached its finish token)' : `OTHER (${kind})`
-  if (verdict.startsWith('CUT')) cut++
-  else if (verdict.startsWith('CLEAN')) clean++
-  else if (verdict.startsWith('CEILING')) ceiling++
+  if (attempted) recoveryAttempts++
+  if (recoverySucceeded) recovered++
+  else if (attempted) recoveryFailed++
+  else if (wasCut) cut++
+  else if (kind === 'stop') clean++
+  else if (kind === 'max-tokens') ceiling++
+  physicalTotal += physicalRecords.length
   console.log(`  wall          : ${(elapsed / 1000).toFixed(1)}s  first delta +${firstDeltaAt === 0 ? '-' : ((firstDeltaAt - started) / 1000).toFixed(1)}s  last frame ${(lastFrameAt === started ? 0 : (lastFrameAt - started) / 1000).toFixed(1)}s`)
   console.log(`  output        : reasoning ${reasoningChars} chars, text ${textChars} chars`)
+  console.log(`  requests      : ${physicalRecords.length} physical, recoveryAttempted=${attempted}, recovered=${recoverySucceeded}`)
+  console.log(`  known usage   : ${JSON.stringify(logicalUsage ?? null)} missingSegmentUsage=${usageMissing}`)
   console.log(`  finish        : ${JSON.stringify(finish)}`)
   console.log(`  verdict       : ${verdict}`)
 }
-console.log(`\nsummary: ${clean} clean, ${ceiling} at the output ceiling, ${cut} cut-and-reported` )
-console.log('note: 0 cut-and-reported does not falsify the fix — the gateway cut these unpredictably for the reporter, and `npm test` (truncation suite) proves the detection against a stream that really closes without a terminal frame.')
+console.log(`\nsummary: ${physicalTotal} physical requests, ${clean} clean originals, ${ceiling} at the output ceiling, ${cut} unrecovered cuts, ${recoveryAttempts} recovery attempts (${recovered} succeeded, ${recoveryFailed} failed)`)
+console.log('note: a clean original is not a recovery test. Live cuts depend on the upstream; use the offline recovery and truncation suites for controlled EOF cases. Known usage is incomplete whenever missingSegmentUsage=true.')

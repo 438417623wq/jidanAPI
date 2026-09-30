@@ -79,5 +79,31 @@ console.log('\n=== 5. a caller with no tools at all ===')
   check('a caller that brought tools keeps tool_choice unset so the model decides', withTools.tool_choice, undefined)
 }
 
+// Messages 使用自己的工具结构，不能把 Chat 的 function 包装发到上游。
+console.log('\n=== 6. Messages 工具指纹和 Windows Shell 回译 ===')
+{
+  const body = {}
+  applyFingerprint(body, 'claude')
+  check('Messages 无工具时仍声明四个指纹工具', declared(body), ['bash', 'glob', 'grep', 'read'])
+  check('Messages 无工具时禁止工具选择', body.tool_choice, { type: 'none' })
+  check('Messages 补齐工具使用 input_schema', body.tools.every(tool => tool.input_schema?.type === 'object' && tool.function === undefined && tool.parameters === undefined), true)
+
+  const claudeTool = name => ({ name, description: `the ${name} tool`, input_schema: { type: 'object', properties: { command: { type: 'string' } } } })
+  const partial = { tools: [claudeTool('read')] }
+  applyFingerprint(partial, 'claude')
+  check('Messages 部分工具只补缺项', declared(partial).filter(name => name === 'read').length, 1)
+  check('Messages 部分工具补齐四个指纹工具', FINGERPRINT_TOOLS.every(name => declared(partial).includes(name)), true)
+  check('Messages 调用者携带工具时保留自主工具选择', partial.tool_choice, undefined)
+
+  const original = claudeTool('pwsh')
+  const promoted = { tools: [original, claudeTool('read'), claudeTool('glob'), claudeTool('grep')] }
+  const map = applyFingerprint(promoted, 'claude')
+  check('Messages 的 pwsh 推广为 bash', declared(promoted), ['bash', 'read', 'glob', 'grep'])
+  check('Messages 推广保留真实 Shell 的 schema', promoted.tools[0].input_schema, original.input_schema)
+  check('Messages 推广保留真实 Shell 的描述', promoted.tools[0].description, 'the pwsh tool')
+  check('Messages 工具名能回译为 pwsh', restoreToolName('bash', map), 'pwsh')
+  check('Messages 推广不增加假 Shell', promoted.tools.some(tool => tool.description?.includes('must not be used')), false)
+}
+
 console.log(failures === 0 ? '\nall fingerprint checks passed' : `\n${failures} fingerprint check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1

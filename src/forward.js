@@ -113,11 +113,11 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       return
     }
     if (req.method === 'POST' && (path === '/v1/chat/completions' || path === '/chat/completions')) {
-      await chatCompletions(req, res, complete)
+      await serveCompletion(req, res, complete, chatCompletions)
       return
     }
     if (req.method === 'POST' && (path === '/v1/responses' || path === '/responses')) {
-      await responsesEndpoint(req, res, complete)
+      await serveCompletion(req, res, complete, responsesEndpoint)
       return
     }
     openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
@@ -143,6 +143,18 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       server.closeAllConnections?.()
       server.close(() => resolve())
     }),
+  }
+}
+
+/** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
+async function serveCompletion(req, res, complete, endpoint) {
+  const controller = new AbortController()
+  const onClose = () => controller.abort()
+  res.once('close', onClose)
+  try {
+    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk))
+  } finally {
+    res.removeListener('close', onClose)
   }
 }
 
@@ -188,11 +200,8 @@ async function chatCompletions(req, res, complete) {
 
   if (!wantsStream) {
     const outcome = await complete({ model, openAi: body })
-    // A turn the lane refused has to come back as a failure. `complete` reports
-    // it in `outcome.error`, and without this guard the caller got 200 with
-    // `content: null` and `finish_reason: stop` — indistinguishable from a model
-    // that chose to say nothing.
-    if (outcome.error !== undefined && (outcome.text ?? '') === '' && (outcome.toolCalls?.length ?? 0) === 0) {
+    // 截断或恢复失败即使已有部分正文，也不能返回正常完成。
+    if (outcome.error !== undefined) {
       openAiError(res, 502, 'server_error', outcome.error)
       return
     }
@@ -216,20 +225,17 @@ async function chatCompletions(req, res, complete) {
   openStreamHeaders(res)
   sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })
   const seenToolStart = new Set()
-  let forwarded = false
   const outcome = await complete({ model, openAi: body }, (chunk) => {
+    if (res.destroyed) return
     if (chunk.type === 'text-delta') {
-      if (chunk.text !== '') forwarded = true
       sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { content: chunk.text }, finish_reason: null }] })
       return
     }
     if (chunk.type === 'reasoning-delta') {
-      if (chunk.text !== '') forwarded = true
       sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { reasoning: chunk.text }, finish_reason: null }] })
       return
     }
     if (chunk.type === 'tool-call-delta') {
-      forwarded = true
       const first = !seenToolStart.has(chunk.index)
       if (first) seenToolStart.add(chunk.index)
       sendSse(res, {
@@ -260,11 +266,9 @@ async function chatCompletions(req, res, complete) {
     // clean `finish_reason: stop` and no content is the empty-200 this endpoint's
     // non-streaming branch fixed, arriving by the other door.
     sendSse(res, { error: { message: String(outcome.error), type: 'server_error' } })
-    if (!forwarded) {
-      res.write('data: [DONE]\n\n')
-      res.end()
-      return
-    }
+    res.write('data: [DONE]\n\n')
+    res.end()
+    return
   }
   sendSse(res, {
     id, object: 'chat.completion.chunk', created, model,
@@ -280,7 +284,7 @@ async function responsesEndpoint(req, res, complete) {
   const model = baseModelId(String(body.model ?? ''))
   const id = `resp-${crypto.randomBytes(8).toString('hex')}`
   const outcome = await complete({ model, openAi: { ...body, input: body.input ?? body.messages ?? [] }, responses: true })
-  if (outcome.error !== undefined && (outcome.text ?? '') === '' && (outcome.toolCalls?.length ?? 0) === 0) {
+  if (outcome.error !== undefined) {
     openAiError(res, 502, 'server_error', outcome.error)
     return
   }

@@ -25,18 +25,23 @@ function mintToolCallId() {
 }
 
 class BlockSink {
-  constructor(yieldChunk) {
+  constructor(yieldChunk, startIndex, checkpointLimit) {
     this.emit = yieldChunk
-    this.next = 0
+    this.next = startIndex
     /** @type {Map<string, {index:number, kind:string, text:string, id?:string, name?:string, args?:string}>} */
     this.open = new Map()
     this.usage = undefined
     this.sawReasoning = false
+    this.sawToolCall = false
+    this.reasoningText = ''
+    this.checkpointLimit = checkpointLimit
+    this.checkpointTruncated = false
     this.brokenToolCall = false
   }
 
   /** Open (or fetch) the block a given stream slot maps to. */
   slot(key, kind) {
+    if (kind === 'tool-call') this.sawToolCall = true
     const existing = this.open.get(key)
     if (existing !== undefined) return existing
     // A tool call without a provider id would come back next turn with an empty
@@ -60,6 +65,10 @@ class BlockSink {
   reasoning(key, delta) {
     if (delta === undefined || delta === null || delta === '') return
     this.sawReasoning = true
+    const text = String(delta)
+    const remaining = this.checkpointLimit - this.reasoningText.length
+    if (text.length > remaining) this.checkpointTruncated = true
+    this.reasoningText += text.slice(0, remaining)
     const block = this.slot(key, 'reasoning')
     block.text += delta
     this.emit({ type: 'reasoning-delta', index: block.index, text: delta })
@@ -72,6 +81,7 @@ class BlockSink {
   }
 
   toolArgs(key, delta) {
+    this.sawToolCall = true
     if (!delta) return
     const block = this.slot(key, 'tool-call')
     block.args += delta
@@ -147,6 +157,7 @@ function feedChat(sink, payload, renameMap, onFinish) {
     }
     if (typeof delta.content === 'string') sink.text('t', delta.content)
     for (const call of delta.tool_calls ?? []) {
+      sink.sawToolCall = true
       const key = `c${call.index ?? 0}`
       const name = call.function?.name
       if (typeof name === 'string' && name !== '') sink.toolStart(key, call.id ?? '', restoreToolName(name, renameMap))
@@ -238,7 +249,9 @@ function feedResponses(sink, event, onFinish, renameMap) {
         })
         if (mapped) onFinish(mapped, 'usage')
       }
-      const status = response?.status
+      const status = response?.status ?? (event.type === 'response.failed' ? 'failed'
+        : event.type === 'response.incomplete' ? 'incomplete'
+          : event.type === 'response.completed' ? 'completed' : undefined)
       const incomplete = response?.incomplete_details?.reason
       onFinish(undefined, 'finish', incomplete === 'max_output_tokens' ? 'length' : status === 'completed' ? 'stop' : status)
       return
@@ -282,13 +295,29 @@ export function windowTokens(usage, sawReasoning) {
  * @param {'chat'|'messages'|'responses'} wire
  * @param {Map<string, string>} renameMap - fingerprint spelling -> caller spelling
  * @param {() => number} [now] - clock stamping the first delivered delta
+ * @param {object} [options] - 本次读取的索引与续写检查点限制
+ * @param {number} [options.startIndex=0] - 新块的起始索引
+ * @param {number} [options.checkpointLimit=131072] - 推理检查点的最大字符串长度
+ * @param {(snapshot: object) => void} [options.onState] - 发布本次读取的已知状态
  * @yields {object} harness StreamChunk
- * @returns {Promise<{ usage: object, finish?: string, sawFinish: boolean, sawUsage: boolean, sawToolCall: boolean, sawReasoning: boolean, firstDeltaAt?: number }>}
+ * @returns {Promise<{ usage: object, finish?: string, sawFinish: boolean, sawUsage: boolean, sawToolCall: boolean, sawReasoning: boolean, firstDeltaAt?: number, nextIndex: number, reasoningText: string, checkpointTruncated: boolean }>}
  */
-export async function * readStream(lines, wire, renameMap, now = () => Date.now()) {
+export async function * readStream(lines, wire, renameMap, now = () => Date.now(), options = {}) {
   const outbox = []
-  const sink = new BlockSink(chunk => outbox.push(chunk))
+  const startIndex = Number.isSafeInteger(options?.startIndex) && options.startIndex >= 0 ? options.startIndex : 0
+  const checkpointLimit = Number.isSafeInteger(options?.checkpointLimit) && options.checkpointLimit >= 0 ? options.checkpointLimit : 131072
+  const sink = new BlockSink(chunk => outbox.push(chunk), startIndex, checkpointLimit)
   const state = { usage: undefined, finish: undefined, sawFinish: false, sawUsage: false, sawToolCall: false, firstDeltaAt: undefined, sawReasoning: false, sawText: false, brokenToolCall: false }
+  const snapshot = () => ({
+    ...state,
+    nextIndex: sink.next,
+    reasoningText: sink.reasoningText,
+    checkpointTruncated: sink.checkpointTruncated,
+    usage: state.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
+  })
+  const publishState = () => {
+    if (typeof options?.onState === 'function') options.onState(snapshot())
+  }
 
   const onFinish = (usage, kind, token) => {
     if (kind === 'usage' && usage !== undefined) {
@@ -312,40 +341,47 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
     if (token !== undefined) state.finish = token
   }
 
-  for await (const raw of lines) {
-    if (typeof raw !== 'string') continue
-    const text = raw.trim()
-    if (!text.startsWith('{')) continue
-    let payload
-    try { payload = JSON.parse(text) } catch { continue }
-    if (payload.type === 'error' || payload.error) {
-      // Classify an in-stream refusal exactly as an error *envelope* is
-      // classified, because everything downstream decides off `code`. This throw
-      // used to carry only `llmCode`, which nothing reads: the failure reached
-      // `toFailure` unrecognized and came out as `TRANSPORT` — a retryable code —
-      // so the harness re-sent a turn whose partial answer had already been
-      // streamed, and a mid-turn geography refusal never reached the re-probe
-      // that watches for `CODE.region`.
-      const failure = payload.error ?? payload
-      const classified = classifyFailure(undefined, payload)
-      if (typeof failure.message !== 'string') classified.message = 'upstream error'
-      throw Object.assign(classified, { upstream: payload })
+  try {
+    for await (const raw of lines) {
+      if (typeof raw !== 'string') continue
+      const text = raw.trim()
+      if (!text.startsWith('{')) continue
+      let payload
+      try { payload = JSON.parse(text) } catch { continue }
+      if (payload.type === 'error' || payload.error) {
+        // Classify an in-stream refusal exactly as an error *envelope* is
+        // classified, because everything downstream decides off `code`. This throw
+        // used to carry only `llmCode`, which nothing reads: the failure reached
+        // `toFailure` unrecognized and came out as `TRANSPORT` — a retryable code —
+        // so the harness re-sent a turn whose partial answer had already been
+        // streamed, and a mid-turn geography refusal never reached the re-probe
+        // that watches for `CODE.region`.
+        const failure = payload.error ?? payload
+        const classified = classifyFailure(undefined, payload)
+        if (typeof failure.message !== 'string') classified.message = 'upstream error'
+        throw Object.assign(classified, { upstream: payload })
+      }
+      if (state.firstDeltaAt === undefined && carriesDelta(payload, wire)) state.firstDeltaAt = now()
+      if (wire === 'chat') feedChat(sink, payload, renameMap, onFinish)
+      else if (wire === 'messages') feedClaude(sink, payload, onFinish, renameMap)
+      else feedResponses(sink, payload, onFinish, renameMap)
+      if (sink.sawReasoning) state.sawReasoning = true
+      if (sink.sawText) state.sawText = true
+      if (sink.brokenToolCall) state.brokenToolCall = true
+      if (sink.sawToolCall) state.sawToolCall = true
+      publishState()
+      while (outbox.length > 0) yield outbox.shift()
     }
-    if (state.firstDeltaAt === undefined && carriesDelta(payload, wire)) state.firstDeltaAt = now()
-    if (wire === 'chat') feedChat(sink, payload, renameMap, onFinish)
-    else if (wire === 'messages') feedClaude(sink, payload, onFinish, renameMap)
-    else feedResponses(sink, payload, onFinish, renameMap)
-    if (sink.sawReasoning) state.sawReasoning = true
-    if (sink.sawText) state.sawText = true
-    if (sink.brokenToolCall) state.brokenToolCall = true
-    for (const block of sink.open.values()) if (block.kind === 'tool-call') state.sawToolCall = true
-    while (outbox.length > 0) yield outbox.shift()
-  }
 
-  sink.closeAll()
-  if (sink.brokenToolCall) state.brokenToolCall = true
-  while (outbox.length > 0) yield outbox.shift()
-  return { ...state, usage: state.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 } }
+    sink.closeAll()
+    if (sink.brokenToolCall) state.brokenToolCall = true
+    publishState()
+    while (outbox.length > 0) yield outbox.shift()
+    return snapshot()
+  } catch (error) {
+    publishState()
+    throw error
+  }
 }
 
 function carriesDelta(payload, wire) {
