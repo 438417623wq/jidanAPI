@@ -1,7 +1,7 @@
 {
   "version": "1.3.1",
   "base": "../",
-  "publishedAt": "2026-09-30T16:51:26.057Z",
+  "publishedAt": "2026-09-30T17:36:27.252Z",
   "notes": "",
   "files": [
     {
@@ -96,8 +96,8 @@
     },
     {
       "path": "src/http.js",
-      "size": 18542,
-      "sha256": "5ddb83a0292761d9b0853b43c536786c75e2041679abf9e8b66dd976c9d8eaa7"
+      "size": 18932,
+      "sha256": "3561a934eb2c8a90dbcd27bc8d04e0cbcf1eacd01927a2073ee8376dde7703b5"
     },
     {
       "path": "src/messages.js",

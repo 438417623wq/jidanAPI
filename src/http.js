@@ -200,19 +200,25 @@ async function headRead(reader, signal, deadline) {
  * Turn a head that was already read, plus the reader that follows it, back into
  * one byte stream.
  */
-async function* replayStream(head) {
-  try {
-    for (const chunk of head.chunks) yield chunk
-    if (head.done) return
-    while (true) {
-      const row = await head.reader.read()
-      if (row.done) return
-      if (row.value !== undefined) yield row.value
+function replayStream(head) {
+  const stream = (async function* () {
+    try {
+      for (const chunk of head.chunks) yield chunk
+      if (head.done) return
+      while (true) {
+        const row = await head.reader.read()
+        if (row.done) return
+        if (row.value !== undefined) yield row.value
+      }
+    } finally {
+      if (!head.done) await head.reader.cancel().catch(() => {})
+      head.reader.releaseLock?.()
     }
-  } finally {
-    if (!head.done) await head.reader.cancel().catch(() => {})
-    head.reader.releaseLock?.()
-  }
+  })()
+  // Async-generator return() waits behind an already pending next(). Expose a
+  // direct cancel so readSse can close the underlying response immediately.
+  stream.cancel = () => head.done ? undefined : head.reader.cancel()
+  return stream
 }
 
 /**
@@ -329,8 +335,9 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
     if (stopped) return
     stopped = true
     try {
-      const pending = reader !== null ? reader.cancel() : iterator?.return?.()
+      const pending = reader !== null ? reader.cancel() : iterator?.cancel?.()
       void Promise.resolve(pending).catch(() => {})
+      if (reader === null) void Promise.resolve(iterator?.return?.()).catch(() => {})
     } catch { /* already closed */ }
   }
   // Cancelling a reader is best effort: undici can leave an already pending
