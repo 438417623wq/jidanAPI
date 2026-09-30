@@ -323,15 +323,42 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
   const decoder = new TextDecoder()
   let buffer = ''
   let deadline = Date.now() + timeoutMs
+  let stopped = false
+  const hasSignal = signal !== undefined && signal !== null
   const stop = () => {
-    if (reader !== null) void reader.cancel().catch(() => {})
-    else void iterator?.return?.()
+    if (stopped) return
+    stopped = true
+    try {
+      const pending = reader !== null ? reader.cancel() : iterator?.return?.()
+      void Promise.resolve(pending).catch(() => {})
+    } catch { /* already closed */ }
   }
-  const onAbort = () => { stop() }
-  signal?.addEventListener('abort', onAbort, { once: true })
+  // Cancelling a reader is best effort: undici can leave an already pending
+  // `next()` unresolved until the peer closes. Race that read with the caller's
+  // abort so a held response cannot keep the adapter waiting.
+  const next = async () => {
+    if (signal?.aborted) throw new UpstreamError('request aborted', CODE.aborted)
+    let onAbort
+    const halted = new Promise((_, reject) => {
+      onAbort = () => {
+        stop()
+        reject(new UpstreamError('request aborted', CODE.aborted))
+      }
+      signal?.addEventListener('abort', onAbort, { once: true })
+    })
+    const pending = Promise.resolve().then(() => iterator.next())
+    try {
+      return hasSignal ? await Promise.race([pending, halted]) : await pending
+    } finally {
+      signal?.removeEventListener('abort', onAbort)
+      // The losing read settles after the source is cancelled; do not let its
+      // rejection become an unhandled promise after the caller has returned.
+      pending.catch(() => {})
+    }
+  }
   try {
     while (true) {
-      const { value, done } = await iterator.next()
+      const { value, done } = await next()
       if (done) break
       if (Date.now() > deadline) throw new UpstreamError('our-free-model: upstream stream idle past its deadline', CODE.timeout)
       if (value !== undefined) buffer += decoder.decode(value, { stream: true })
@@ -351,9 +378,10 @@ export async function readSse(source, onData, signal, timeoutMs = 300000) {
   } catch (error) {
     throw classifyStreamFailure(error, signal)
   } finally {
-    signal?.removeEventListener('abort', onAbort)
-    if (reader !== null) reader.releaseLock?.()
-    else void iterator?.return?.()
+    stop()
+    if (reader !== null) {
+      try { reader.releaseLock?.() } catch { /* pending read is still unwinding */ }
+    }
   }
 }
 

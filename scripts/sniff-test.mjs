@@ -73,7 +73,7 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
 server.unref()
 process.env.OUR_FREE_MODEL_BASE = `http://127.0.0.1:${server.address().port}`
 
-const { CODE, postStreamed, sniffBody } = await import('../src/http.js')
+const { CODE, postStreamed, readSse, sniffBody } = await import('../src/http.js')
 
 /** Ask the real `postStreamed` one question and collect what it handed back. */
 async function ask(model, options = {}) {
@@ -217,6 +217,25 @@ const abortedMid = await new Promise(resolve => {
 })
 check('a stream aborted after the head reads as aborted too', abortedMid, CODE.aborted)
 check('with the tokens it had already streamed', delivered > 0, true)
+
+// A held response may never resolve its pending read or its iterator return.
+// Aborting must still settle the caller immediately instead of waiting for the
+// peer to close, which is the Linux/undici failure mode covered by issue #16.
+const controller3 = new AbortController()
+const heldSource = {
+  [Symbol.asyncIterator]() {
+    return {
+      next: () => new Promise(() => {}),
+      return: () => new Promise(() => {}),
+    }
+  },
+}
+const heldAbort = readSse(heldSource, () => {}, controller3.signal, 1000)
+  .then(() => 'resolved')
+  .catch(error => error?.code ?? 'uncoded')
+setTimeout(() => controller3.abort(), 50)
+const heldOutcome = await Promise.race([heldAbort, new Promise(resolve => setTimeout(() => resolve('hung'), 500))])
+check('a never-ending pending read still settles on abort', heldOutcome, CODE.aborted)
 
 // ── the classifier on its own ────────────────────────────────────────────────
 check('leading blank lines do not hide it', sniffBody('\n\n  data: {"a":1}'), 'sse')

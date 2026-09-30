@@ -30,7 +30,15 @@ const server = http.createServer((req, res) => {
     const ordinal = scenario.requests.length
     scenario.requests.push({ body, path: req.url, headers: req.headers })
     scenario.responses.add(res)
-    res.on('close', () => { scenario.responses.delete(res); scenario.closed++ })
+    let released = false
+    const release = () => {
+      if (released) return
+      released = true
+      scenario.responses.delete(res)
+      scenario.closed++
+    }
+    res.on('finish', release)
+    res.on('close', release)
     const answer = scenario.answers[ordinal] ?? { status: 500, body: '{"error":{"message":"unexpected extra request"}}' }
     if (answer.socket) { req.destroy(); res.destroy(); return }
     res.writeHead(answer.status ?? 200, { 'content-type': answer.status ? 'application/json' : 'text/event-stream' })
@@ -205,8 +213,10 @@ function emptyToolMetadata(wire) {
 
 let failures = 0
 let checks = 0
+const suiteStarted = Date.now()
 const check = async (name, fn) => {
   checks++
+  console.log(`run  ${name} (${Date.now() - suiteStarted} ms)`)
   try { await fn(); console.log(`ok   ${name}`) }
   catch (error) { failures++; console.log(`FAIL ${name} - ${error.message}`) }
 }
@@ -511,8 +521,7 @@ try {
         const out = { ...run, chunks, finish: chunks.find(chunk => chunk.type === 'finish')?.reason }
         checkFinal(out, 'aborted', phase === '首段' ? 1 : 2)
         assert.equal(out.finish.failure.code, 'ABORTED')
-        await new Promise(resolve => setTimeout(resolve, 40))
-        assert.equal(run.scenario.responses.size, 0, '取消必须关闭 HTTP 连接')
+        await until(() => run.scenario.responses.size === 0, { what: '取消关闭 HTTP 连接', timeoutMs: 600 })
       } finally { cleanup(run) }
     })
   }
@@ -526,9 +535,8 @@ try {
       const pending = run.stream.next()
       const returning = run.stream.return()
       await Promise.race([Promise.all([pending, returning]), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('return 未取消正在等待的 HTTP')), 600) })])
-      await new Promise(resolve => setTimeout(resolve, 40))
       assert.equal(run.scenario.requests.length, 1)
-      assert.equal(run.scenario.responses.size, 0, 'return 必须关闭 HTTP 连接')
+      await until(() => run.scenario.responses.size === 0, { what: 'return 关闭 HTTP 连接', timeoutMs: 600 })
     } finally { clearTimeout(timer); cleanup(run) }
   })
 
