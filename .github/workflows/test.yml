@@ -17,7 +17,15 @@ jobs:
   offline:
     runs-on: ubuntu-latest
     steps:
+      # `catalog-test.mjs` compares the recorded revision against the last commit that
+      # touched the release content, and it can only do that with history to walk.
+      # checkout's default `fetch-depth: 1` leaves a single commit with no parent to
+      # diff against, so that walk answers HEAD for any path list — which made the gate
+      # fail on every commit that only refreshes the catalog records, on `main` and on
+      # pull requests alike (where HEAD is GitHub's throwaway merge ref).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       # No install step and no dependencies: the suites are plain Node scripts and
       # none of them touch the network, so this cannot spend free-lane quota.
       - uses: actions/setup-node@v4

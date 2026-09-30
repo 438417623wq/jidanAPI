@@ -292,13 +292,76 @@ ratios — one 1 ms window was enough to move a 26-call average by three orders 
 magnitude. A model whose answer lands in two frames therefore has no measurable
 output speed, and says so.
 
+### Automatic recovery after a long reasoning stream is cut (issue #12)
+
+Every model enables one bounded recovery attempt by default, across the Chat
+Completions, Messages and Responses upstream protocols. It requires a first
+stream that delivered nonempty reasoning, no answer text or tool call, and then
+reached EOF without a normal terminal frame. Cancellation, a normal ending, an
+output ceiling and an explicit upstream error do not trigger recovery.
+
+The plugin sends **one new request** containing the original input and the
+received reasoning as a text checkpoint, asking for the answer directly. This is
+not a native upstream resume, and already displayed reasoning is not replayed.
+Tools are disabled for the recovery request. A cut after answer text or a tool
+call has started is not recovered, to avoid duplicate content or execution.
+
+To avoid another long reasoning pass, the continuation prompt asks for the
+conclusion first and at most 800 words. This is a prompt instruction, not a hard
+token limit, and the model may ignore it. Recovery is a degraded answer: an
+original request for a long or step-by-step analysis may be shortened.
+
+One logical turn makes at most two physical requests: the original and one
+recovery. The default total deadline is 480 seconds; recovery gets at most 180
+seconds, bounded by the remaining total time. Recovery output is capped at 8192
+tokens and still respects the user's and model's ceilings. Known output tokens
+from the first segment are subtracted from the original budget; recovery does
+not start if fewer than 512 tokens remain. The checkpoint is limited to 131072
+characters and must pass a conservative text-byte estimate of context capacity.
+That estimate does not count image tokens and is not an exact tokenizer check.
+Exceeding a limit stops recovery. Success requires a normal ending with answer
+text that is not only whitespace. Recovery failure returns `STREAM_CUT`, which
+the harness does not resend as a whole turn; user cancellation keeps
+`aborted` / `ABORTED`.
+
+Set `streamRecovery: false` in the local settings.json to disable it. An object
+can also supply an `enabled` switch and lower numeric limits; limits cannot
+exceed the defaults. There is no model allowlist.
+
+The local dashboard counts **physical requests**, with a separate sample for
+each segment and recovery identity, attempt index and `noUsage` markers. A
+shared `recoveryId` associates those segment markers to identify missing usage.
+Final usage sent to the harness sums only counts the upstream actually reported;
+if one segment has no usage report, this is not the full turn's token total.
+Reasoning checkpoints are not written to the statistics file.
+
+One live MiMo V2.6 Flash · Deep request recovered successfully; an earlier
+attempt failed at the 480-second deadline. This does not establish live coverage
+of every model or guarantee completion of every long reasoning turn. The
+v1.3.1 records below describe behaviour before recovery was added.
+
 ## Verification
 
 Tested on Windows against the live upstream. The table is kept per release round,
 and each row says which way it was checked — only the rows marked *live upstream*
 or *hands-on* are behaviour a user sees in the interface.
 
-### v1.3.1 (issues #8, #9, #10)
+### Issue #12: verification status
+
+Implementation, offline regression and live results are tracked separately in
+[`docs/issue-12-recovery.md`](docs/issue-12-recovery.md). Recovery 100/100,
+truncation 35/35, 11 new fingerprint checks and typecheck have passed. Twelve
+checks use the real plugin over local HTTP to verify forward success, failures,
+client disconnection and stored statistics. The technical record carries the
+final full-suite result. In a live MiMo Deep run, the first
+stream reached natural EOF at 304.161 seconds; recovery took 32.777 seconds and
+produced 4264 characters of answer text, ending with `stop`, usage and `[DONE]`.
+There were two requests over 336.942 seconds. The first segment had no usage
+report, so the summary contains only known counts. The earlier failed
+480-second attempt remains in the technical record. Real dsh UI and other
+models have not been individually accepted.
+
+### Historical: v1.3.1 (issues #8, #9, #10)
 
 | Item | How | Result |
 | --- | --- | --- |
@@ -380,6 +443,7 @@ it never touches files.
 - **"No usage cap" means no cap to buy.** There is no balance, no plan and no per-token billing; the lane is metered by session rate, though, and hammering it surfaces as `429`. The plugin marks the model *quota reached* rather than hiding it, and the next probe clears the state.
 - **Some upstream models are slow.** `nemotron-3.5-lightning-free` measured over 30 s to first token in one run. That is upstream latency, and the dashboard reports it rather than hiding it.
 - **Output speed is sometimes `—`.** A model that answers in one or two large frames, or whose thinking never streams, has no window worth dividing. The panel says so instead of publishing the model's thinking time as decoding speed.
+- **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
 - **Capabilities are what probes can confirm.** Anything the public listing and a live probe do not evidence is left unlabelled.
 - **Source is plain JavaScript.** It has to be, to load as a local plugin. Anyone with the folder can read the gateway logic; treat that as an accepted property of this distribution form, not as something obfuscation would fix.
 - **Desktop installs need a real directory**, for the reason given in [Install](#install).

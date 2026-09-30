@@ -431,6 +431,7 @@ export function apply(ctx, config) {
       ...typeof openAi.max_tokens === 'number' ? { maxTokens: openAi.max_tokens } : {},
       ...typeof openAi.reasoning_effort === 'string' ? { reasoningEffort: openAi.reasoning_effort } : {},
       sessionId: `forward:${String(openAi.user ?? openAi.conversation ?? 'shared')}`,
+      signal: request.signal,
     }
 
     for await (const chunk of adapter.stream(options, entry, state())) {
