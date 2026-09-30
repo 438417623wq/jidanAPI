@@ -349,7 +349,7 @@ or *hands-on* are behaviour a user sees in the interface.
 ### Issue #12: verification status
 
 Implementation, offline regression and live results are tracked separately in
-[`docs/issue-12-recovery.md`](docs/issue-12-recovery.md). Recovery 100/100,
+[`docs/issue-12-recovery.md`](docs/issue-12-recovery.md). Recovery 99/99,
 truncation 35/35, 11 new fingerprint checks and typecheck have passed. Twelve
 checks use the real plugin over local HTTP to verify forward success, failures,
 client disconnection and stored statistics. The technical record carries the

@@ -303,7 +303,7 @@ token，并非精确 tokenizer 校验。超限就停止恢复，不会无限续�
 
 恢复实现、离线回归与真实上游结果单独记录在
 [`docs/issue-12-recovery.md`](docs/issue-12-recovery.md)。合并前 review 修掉一处告警
-重复累积的缺陷并补了回归，recovery 100/100、truncation
+重复累积的缺陷并补了回归，recovery 99/99、truncation
 35/35、fingerprint 新增 11 项与 typecheck 已通过；其中 12 项使用真实插件和本地 HTTP
 验证转发成功、失败、客户端断开与统计落盘。最终全量结果以技术文档为准。
 真实 MiMo Deep 首段在 304.161 秒自然 EOF，
