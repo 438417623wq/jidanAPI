@@ -149,6 +149,7 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
 async function serveCompletion(req, res, complete, endpoint) {
   const controller = new AbortController()
+  const socket = req.socket
   const abort = () => {
     if (!controller.signal.aborted) controller.abort()
   }
@@ -158,13 +159,14 @@ async function serveCompletion(req, res, complete, endpoint) {
   // and its socket expose the disconnect earlier; all three signals share one
   // idempotent abort path.
   req.once('aborted', abort)
-  req.socket?.once('close', abort)
+  socket?.once('close', abort)
   res.once('close', abort)
+  if (req.aborted || req.destroyed || socket?.destroyed) abort()
   try {
     await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk))
   } finally {
     req.removeListener('aborted', abort)
-    req.socket?.removeListener('close', abort)
+    socket?.removeListener('close', abort)
     res.removeListener('close', abort)
   }
 }

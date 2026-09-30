@@ -1,7 +1,7 @@
 {
   "version": "1.3.1",
   "base": "../",
-  "publishedAt": "2026-09-30T17:50:36.663Z",
+  "publishedAt": "2026-09-30T17:57:00.178Z",
   "notes": "",
   "files": [
     {
@@ -91,8 +91,8 @@
     },
     {
       "path": "src/forward.js",
-      "size": 13023,
-      "sha256": "93b707b129d8dcdb4e919084f6fefd31a17bb01cf1ea62beba7002010d858628"
+      "size": 13108,
+      "sha256": "bc59476c127144489aefe35a781b43b75010dc10f1fbcf15cdf3b2e260664437"
     },
     {
       "path": "src/http.js",
