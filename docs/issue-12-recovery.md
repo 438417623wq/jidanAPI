@@ -124,7 +124,7 @@ README 中 304 秒、608 秒、912 秒的重试记录是旧版本的历史证据
 
 | 检查 | 已收到的结果 | 限制 |
 | --- | --- | --- |
-| `scripts/recovery-test.mjs` | 98/98 通过，退出码 0 | 本地受控上游回归，不代表真实模型成功率 |
+| `scripts/recovery-test.mjs` | 100/100 通过，退出码 0 | 本地受控上游回归，不代表真实模型成功率 |
 | `scripts/fingerprint-test.mjs` | 新增 11 项通过 | 不把新增断言数写成套件总数 |
 | `scripts/truncation-test.mjs` | 35/35 通过 | 本地截断与终帧回归 |
 | `npm run typecheck` | 退出码 0 | 静态类型检查，不替代运行时验收 |
@@ -188,3 +188,33 @@ MiMo V2.6 Flash · Deep，Chat 协议，原输出预算 32768。第一段在 303
 已通过。最终全量离线检查、发布清单一致性与静态类型检查均已通过。
 
 双语 README 属于发布文件，修改后必须重新生成并核对 `feed/manifest.json` 与 `catalog/integrity.json`。本设计文档及探测脚本不在发布文件列表中。提交、推送、tag、Release 与 CDN purge 仍由用户的发布授权决定。
+
+## 合并前 review 修复
+
+review 提出两处，均在真实插件 + 本地 HTTP 的入口上复现后再修，没有只靠读代码定案。
+
+1. **一个恢复回合把丢弃内容的告警累积了三倍。** `payloadFor` 复用回合级共享的
+   `warnings` 数组，而检查点容量估算要另建一份 payload、续写段还要再建一份，三次
+   `buildPayload` 各自向同一个数组 push。取证：构造一段带两张无法解析图片的恢复回合
+   （Chat 协议，首段纯思考 EOF，续写正常 `stop`），两段样本的 `warnings` 各含 **6** 条
+   `image-dropped`，用户可见的那行 warn 同样重复 6 次；`src/adapter.js` 改动前只有一次
+   build，因此这是本 PR 引入的。另一半问题是首段样本持有的是数组引用，后段 build 追加
+   时它也会跟着变。
+   修法：告警只由首段（canonical）payload 收集，估算与续写段各用一次性数组，丢弃内容
+   的集合本来就不会变。修后同一回合为 2 条，warn 行 1 条。
+2. **首段撞上限时的文案把没发生过的恢复说成已发生。** `expired` 只判断是否超时，不区分
+   段号，首段超时也报 "automatic recovery reached its time limit"。改为按该段实际生效的
+   deadline 报 `our free model reached its Ns time limit before its finish token`，续写段
+   另加后缀；这条只在 `streamRecovery` 启用时才会触发，关掉后仍无任何客户端时限。
+
+新增回归：`恢复回合的丢弃内容告警不按 payload 重建次数累积`（同时钉住样本数组与用户
+可见文本），整轮时限那条检查追加钉住文案里的实际秒数。recovery 由 98 项增至 100 项。
+
+本次修复改动 `src/adapter.js` 与双语 README，属于发布文件，因此
+`node scripts/build-manifest.mjs --force` 重新生成清单：29 个发布文件，
+465932 字节；`npm run manifest:check` 退出码 0。
+
+**未修，另开 issue 讨论**：一次成功恢复在本机统计里是 2 次调用加 1 次失败——首段样本
+固定 `ok:false`，`src/store.js` 按 `record.ok` 累加 `failed`，而 `recovered` /
+`recoveryScheduled` 两个标记 `client.js` 没有任何消费者。README 已声明"按物理请求计数"，
+但看板那一列的标题是"失败"，用户读到的是成功回合里的失败数。

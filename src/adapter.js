@@ -190,8 +190,11 @@ export class FreeModelAdapter {
     let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     const blocks = createBlockTracker()
 
-    const payloadFor = (input, ceiling, recovering) => {
-      const payload = buildPayload(wire, entry.id, input, options, ceiling, resolveImage, warnings)
+    // 一次逻辑回合的丢弃内容告警只由首个 payload 收集。检查点估算和续写段都要另建
+    // 一份 payload，共用同一个数组会让 `image-dropped` 按 build 次数重复累积，还会
+    // 让已经交出去的首段样本跟着后面的 build 一起变长。
+    const payloadFor = (input, ceiling, recovering, sink) => {
+      const payload = buildPayload(wire, entry.id, input, options, ceiling, resolveImage, sink)
       if (declared.length > 0) payload.tools = declared
       if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
       if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
@@ -207,7 +210,7 @@ export class FreeModelAdapter {
       }
       const attemptStarted = Date.now()
       const recovering = attempt === 1
-      const payload = payloadFor(attemptMessages, attemptBudget, recovering)
+      const payload = payloadFor(attemptMessages, attemptBudget, recovering, recovering ? [] : warnings)
       const renameMap = applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
       const controller = new AbortController()
       const onAbort = () => controller.abort(options.signal?.reason)
@@ -302,7 +305,7 @@ export class FreeModelAdapter {
           const continuationBudget = Math.min(remainingTokens, policy.maxOutputTokens)
           const continuationMessages = recoveryMessages(messages, outcome.reasoningText)
           if (continuationBudget >= MIN_BUDGET
-            && checkpointFits(payloadFor(continuationMessages, continuationBudget, true), entry, outcome.reasoningText, continuationBudget)) {
+            && checkpointFits(payloadFor(continuationMessages, continuationBudget, true, []), entry, outcome.reasoningText, continuationBudget)) {
             record(false, outcome, { truncated: true, recoveryScheduled: true })
             this.deps.warn?.('our-free-model: interrupted reasoning; continuing once from its checkpoint')
             attemptMessages = continuationMessages
@@ -346,7 +349,9 @@ export class FreeModelAdapter {
         let failure = toFailure(error)
         if (!aborted && (recovering || expired)) {
           failure = { ...failure, code: recovering || delivered || partialOutcome?.sawToolCall === true ? 'STREAM_CUT' : CODE.timeout,
-            message: expired ? 'our free model automatic recovery reached its time limit' : `our free model continuation failed: ${failure.message}` }
+            message: expired
+              ? `our free model reached its ${Math.round(timeoutMs / 1000)}s time limit before its finish token${recovering ? ', during the continuation from its checkpoint' : ''}`
+              : `our free model continuation failed: ${failure.message}` }
         }
         if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
         record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })

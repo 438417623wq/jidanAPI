@@ -478,6 +478,24 @@ try {
     checkFinal(run, 'error', 1)
     assert.equal(run.adapter.providerRetryPolicy().retryableCodes.includes(run.finish?.failure?.code), false)
     assert.ok(run.elapsedMs < 1000)
+    assert.match(run.finish.failure.message, /^our free model reached its 0s time limit before its finish token$/)
+  })
+
+  await check('恢复回合的丢弃内容告警不按 payload 重建次数累积', async () => {
+    const notices = []
+    const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) },
+      { body: deltas(wire, { text: ANSWER }) + terminal(wire) }], {
+      options: { messages: [{ role: 'user', content: [
+        { type: 'text', text: TASK }, { type: 'image', attachment: {} }, { type: 'image', attachment: {} },
+      ] }] },
+      onWarn: message => notices.push(message),
+    })
+    checkFinal(run, 'stop', 2)
+    assert.deepEqual(run.records.map(row => row.warnings?.filter(w => w === 'image-dropped').length), [2, 2],
+      '两张被丢弃的图片在本回合各记一次，不随检查点估算和续写段的重复 build 增长')
+    const dropped = notices.filter(message => message.includes('image-dropped'))
+    assert.equal(dropped.length, 1, '面向用户的丢弃告警只发一次')
+    assert.equal(dropped[0].split('image-dropped').length - 1, 2, '告警文本不得重复累积')
   })
 
   for (const phase of ['首段', '续写段']) {
