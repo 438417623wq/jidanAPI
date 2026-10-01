@@ -250,10 +250,14 @@ export function recordUsage(stats, record) {
     }
     days[day] = { ...bucket, models: perModel, total: bucket.total + record.input + record.output }
     const models = { ...(state.models ?? {}) }
-    const lifetime = models[record.model] ?? { input: 0, output: 0, calls: 0, failed: 0 }
+    const lifetime = models[record.model] ?? {
+      input: 0, output: 0, reasoning: 0, cacheRead: 0, calls: 0, failed: 0,
+    }
     models[record.model] = {
-      input: lifetime.input + record.input,
-      output: lifetime.output + record.output,
+      input: (lifetime.input ?? 0) + record.input,
+      output: (lifetime.output ?? 0) + record.output,
+      reasoning: (lifetime.reasoning ?? 0) + record.reasoning,
+      cacheRead: (lifetime.cacheRead ?? 0) + record.cacheRead,
       calls: (lifetime.calls ?? 0) + 1,
       failed: (lifetime.failed ?? 0) + (record.ok === true ? 0 : 1),
     }

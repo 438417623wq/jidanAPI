@@ -1271,16 +1271,35 @@ export function buildStats(stats, catalog) {
   const logical = stats.logical ?? {}
   const logicalModels = logical.models ?? {}
   const logicalReady = Number.isSafeInteger(logical.turns)
-  const named = Object.values(totals).map(row => ({
-    ...row,
-    turns: logicalModels[row.model]?.turns ?? (logicalReady ? 0 : row.calls),
-    failedTurns: logicalModels[row.model]?.failed ?? (logicalReady ? 0 : row.failed),
-    recoveredTurns: logicalModels[row.model]?.recovered ?? 0,
-    name: catalog.find(entry => entry.id === row.model)?.name ?? row.model,
-    // A rate over too few measurable calls is a rounding error with a unit on it.
-    tps: row.decodeMs >= MIN_DECODE_MS ? Math.round(row.decodeTokens / (row.decodeMs / 1000)) : null,
-    avgTtftMs: row.ttftSamples > 0 ? Math.round(row.ttftMs / row.ttftSamples) : null,
-  }))
+  const lifetimeModels = stats.models ?? {}
+  const empty = model => ({
+    model, input: 0, output: 0, reasoning: 0, cacheRead: 0, calls: 0, failed: 0,
+    ttftMs: 0, ttftSamples: 0, decodeMs: 0, decodeTokens: 0,
+  })
+  const modelIds = new Set([...Object.keys(totals), ...Object.keys(lifetimeModels)])
+  const named = [...modelIds].map(model => {
+    const row = totals[model] ?? empty(model)
+    const lifetime = lifetimeModels[model] ?? {}
+    const physical = {
+      ...row,
+      input: Number.isSafeInteger(lifetime.input) ? lifetime.input : row.input,
+      output: Number.isSafeInteger(lifetime.output) ? lifetime.output : row.output,
+      reasoning: Number.isSafeInteger(lifetime.reasoning) ? lifetime.reasoning : row.reasoning,
+      cacheRead: Number.isSafeInteger(lifetime.cacheRead) ? lifetime.cacheRead : row.cacheRead,
+      calls: Number.isSafeInteger(lifetime.calls) ? lifetime.calls : row.calls,
+      failed: Number.isSafeInteger(lifetime.failed) ? lifetime.failed : row.failed,
+    }
+    return {
+      ...physical,
+      turns: logicalModels[model]?.turns ?? (logicalReady ? 0 : row.calls),
+      failedTurns: logicalModels[model]?.failed ?? (logicalReady ? 0 : row.failed),
+      recoveredTurns: logicalModels[model]?.recovered ?? 0,
+      name: catalog.find(entry => entry.id === model)?.name ?? model,
+      // A rate over too few measurable calls is a rounding error with a unit on it.
+      tps: row.decodeMs >= MIN_DECODE_MS ? Math.round(row.decodeTokens / (row.decodeMs / 1000)) : null,
+      avgTtftMs: row.ttftSamples > 0 ? Math.round(row.ttftMs / row.ttftSamples) : null,
+    }
+  })
   const physicalFailed = named.reduce((sum, row) => sum + row.failed, 0)
   const turns = logicalReady ? logical.turns : named.reduce((sum, row) => sum + row.turns, 0)
   const failedTurns = Number.isSafeInteger(logical.failed) ? logical.failed : named.reduce((sum, row) => sum + row.failedTurns, 0)

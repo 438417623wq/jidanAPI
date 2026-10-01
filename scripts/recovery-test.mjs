@@ -124,7 +124,7 @@ function terminal(wire, { reason = 'stop', input = 11, output = 7, usage = true 
   })
 }
 
-function setup(model, answers, { settings = {}, options = {}, entryOverrides = {}, onWarn } = {}) {
+function setup(model, answers, { settings = {}, options = {}, entryOverrides = {}, onWarn, hideModel = false } = {}) {
   assert.ok(CATALOG.some(entry => entry.id === model), `目录缺少 ${model}`)
   const scenario = { answers, requests: [], responses: new Set(), timers: [], closed: 0 }
   activeCase = scenario
@@ -132,7 +132,7 @@ function setup(model, answers, { settings = {}, options = {}, entryOverrides = {
   const turns = []
   const controller = new AbortController()
   const adapter = new FreeModelAdapter({
-    state: () => ({ catalog: CATALOG.map(entry => entry.id === model ? { ...entry, ...entryOverrides } : entry), membership: { [ROUTE_MAIN]: MODELS }, settings: { enabled: true, defaultMaxTokens: 32768, ...settings }, attributionUserAgent: 'offline-recovery-test' }),
+    state: () => ({ catalog: hideModel ? [] : CATALOG.map(entry => entry.id === model ? { ...entry, ...entryOverrides } : entry), membership: { [ROUTE_MAIN]: MODELS }, settings: { enabled: true, defaultMaxTokens: 32768, ...settings }, attributionUserAgent: 'offline-recovery-test' }),
     recordUsage: row => records.push(row),
     recordTurn: row => turns.push(row),
     warn: message => onWarn?.(message, controller),
@@ -558,6 +558,18 @@ try {
       checkFinal({ ...run, chunks, finish: chunks.find(chunk => chunk.type === 'finish')?.reason }, 'aborted', 0)
     } finally { cleanup(run) }
   })
+
+  for (const [label, config, code] of [
+    ['插件关闭', { settings: { enabled: false } }, 'CONFIG_DISABLED'],
+    ['模型未被目录提供', { hideModel: true }, 'SERVER'],
+  ]) {
+    await check(`${label}也记录零物理请求的失败回合`, async () => {
+      const run = await drive(model, [], config)
+      checkFinal(run, 'error', 0)
+      assert.equal(run.finish.failure.code, code)
+      assert.deepEqual(run.turns[0], { at: run.turns[0].at, model, ok: false, recovered: false, attempts: 0, origin: 'harness' })
+    })
+  }
 
   const { apply, inject } = await import('../index.js')
   async function withForward(answers, fn) {

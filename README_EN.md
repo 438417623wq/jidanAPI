@@ -344,6 +344,8 @@ file.
 Pre-upgrade history has only physical request records, so migrated turn and
 failure counts are estimates and the dashboard labels them. Turns recorded
 after the upgrade use the final outcome and are exact.
+Requests, turns and token totals are lifetime values; speed, first-frame and
+heatmap details use the locally retained history window.
 
 One live MiMo V2.6 Flash · Deep request recovered successfully; an earlier
 attempt failed at the 480-second deadline. This does not establish live coverage

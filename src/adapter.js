@@ -162,19 +162,29 @@ export class FreeModelAdapter {
 
   async * runStream(options, pinned, snapshot) {
     const settings = snapshot.settings ?? {}
+    const started = Date.now()
     const modelId = baseModelId(options.model)
+    const recordRejectedTurn = () => this.deps.recordTurn?.({
+      at: started,
+      model: modelId,
+      ok: false,
+      recovered: false,
+      attempts: 0,
+      origin: 'harness',
+    })
     const entry = pinned ?? snapshot.catalog.find(candidate => candidate.id === modelId) ?? null
 
     if (settings.enabled === false) {
+      recordRejectedTurn()
       yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model is switched off in its settings page', code: 'CONFIG_DISABLED' } } }
       return
     }
     if (entry === null) {
+      recordRejectedTurn()
       yield { type: 'finish', reason: { kind: 'error', failure: { message: `our free model does not serve "${options.model}" on this egress`, code: CODE.server } } }
       return
     }
 
-    const started = Date.now()
     const wire = wireFor(entry.id)
     const style = STYLE_FOR_WIRE[wire]
     const warnings = []

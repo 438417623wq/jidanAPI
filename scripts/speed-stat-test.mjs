@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const { decodeWindow, migrateStats, recordTurn, recordUsage, JsonStore, STATS_INITIAL } = await import('../src/store.js')
+const { decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, JsonStore, STATS_INITIAL } = await import('../src/store.js')
 const { windowTokens } = await import('../src/stream.js')
 const { buildStats } = await import('../index.js')
 
@@ -79,6 +79,15 @@ const exactNoTurn = store(structuredClone(STATS_INITIAL))
 recordUsage(exactNoTurn, call({ ok: true }))
 const noTurnStats = buildStats(exactNoTurn.get(), [{ id: 'mimo-v2.6-flash-free', name: 'Mimo' }])
 check('a new physical call without a final turn is not counted as a turn', [noTurnStats.turns, noTurnStats.failedTurns, noTurnStats.logicalEstimated], [0, 0, false])
+
+const retainedWindow = store(structuredClone(STATS_INITIAL))
+recordUsage(retainedWindow, call({ at: Date.UTC(2025, 0, 1), output: 10, ok: true }))
+recordTurn(retainedWindow, { at: Date.UTC(2025, 0, 1), model: 'mimo-v2.6-flash-free', ok: true })
+recordUsage(retainedWindow, call({ at: Date.UTC(2026, 0, 1), output: 5, ok: true }))
+recordTurn(retainedWindow, { at: Date.UTC(2026, 0, 1), model: 'mimo-v2.6-flash-free', ok: true })
+retainedWindow.value = pruneDays(retainedWindow.get(), 1)
+const retainedSummary = buildStats(retainedWindow.get(), [{ id: 'mimo-v2.6-flash-free', name: 'Mimo' }])
+check('model totals remain lifetime when the speed window is pruned', [retainedSummary.days.length, retainedSummary.requests, retainedSummary.turns, retainedSummary.models[0].calls, retainedSummary.models[0].output], [1, 2, 2, 2, 15])
 
 const silent = store(structuredClone(STATS_INITIAL))
 recordUsage(silent, call({ model: 'space-bunny-free', ok: true, output: 63, decodeTokens: 3, ttftMs: 2977, decodeMs: 1 }))

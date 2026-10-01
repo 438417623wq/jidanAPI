@@ -93,6 +93,7 @@ window.__ModuleLoader__.load({
         'speed.turnFailed': '回合失败',
         'speed.recovered': '已恢复',
         'speed.estimated': '升级前历史按上游请求估算；升级后回合按最终结果精确记录。',
+        'speed.scope': '请求、回合和 Token 为累计；速度、首帧和热力图按保留历史计算。',
         'speed.none': '暂无样本',
         'speed.note': '输出速度只统计 {n}/{total} 次可测的调用：那些没流式送出的思考 token 不计入分子，解码窗口短到测不出的也不算。',
         'unit.tokPerSec': 'tok/s',
@@ -265,6 +266,7 @@ window.__ModuleLoader__.load({
         'speed.turnFailed': 'Turn failures',
         'speed.recovered': 'Recovered',
         'speed.estimated': 'Pre-upgrade history is estimated from upstream requests; turns are exact after upgrade.',
+        'speed.scope': 'Requests, turns and tokens are lifetime totals; speed, first frame and heatmap use retained history.',
         'speed.none': 'No samples yet',
         'speed.note': 'Output speed covers the {n}/{total} calls it could measure: tokens never streamed out are left out of the numerator, and windows too short to time are dropped.',
         'unit.tokPerSec': 'tok/s',
@@ -1159,7 +1161,8 @@ window.__ModuleLoader__.load({
       const historyNote = stats.logicalEstimated || stats.requestFailuresEstimated
         ? h('p', { className: 'ofm_note' }, t('speed.estimated'))
         : null
-      return h(Fragment, null, headline, historyNote, h('div', { className: 'ofm_two' }, heatmap, curve), speed, table)
+      return h(Fragment, null, headline, h('p', { className: 'ofm_note' }, t('speed.scope')), historyNote,
+        h('div', { className: 'ofm_two' }, heatmap, curve), speed, table)
     }
 
     const sparkCell = (label, values, color, format, t, summary) => {
