@@ -17,7 +17,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-const { decodeWindow, migrateStats, recordUsage, JsonStore, STATS_INITIAL } = await import('../src/store.js')
+const { decodeWindow, migrateStats, recordTurn, recordUsage, JsonStore, STATS_INITIAL } = await import('../src/store.js')
 const { windowTokens } = await import('../src/stream.js')
 const { buildStats } = await import('../index.js')
 
@@ -64,6 +64,21 @@ check('the reported rate is token-weighted', named.tps, 44)
 check('an unweighted mean of the same calls would read', Math.round((54 + 29 + 3000) / 3), 1028)
 check('mean first frame covers successes only', named.avgTtftMs, 3019)
 check('every call still counts', [named.calls, named.failed], [4, 1])
+check('physical failures are lifetime accounting', stats.get().failedRequests, 1)
+
+const recoveredStats = store(structuredClone(STATS_INITIAL))
+recordUsage(recoveredStats, call({ ok: false, recoveryId: 'turn-1', attempt: 0, recoveryScheduled: true, output: 0, decodeTokens: 0, decodeMs: 0 }))
+recordUsage(recoveredStats, call({ ok: true, recoveryId: 'turn-1', attempt: 1, recoveryAttempt: true, recovered: true, output: 80, decodeTokens: 80, decodeMs: 1000 }))
+recordTurn(recoveredStats, { at: 1, model: 'mimo-v2.6-flash-free', ok: true, recovered: true, attempts: 2 })
+const recovered = buildStats(recoveredStats.get(), [{ id: 'mimo-v2.6-flash-free', name: 'Mimo' }])
+check('a recovered turn keeps both accounting layers', [recovered.requests, recovered.requestFailures, recovered.turns, recovered.failedTurns, recovered.recoveredTurns], [2, 1, 1, 0, 1])
+check('the model row exposes turn accounting separately', [recovered.models[0].calls, recovered.models[0].failed, recovered.models[0].turns, recovered.models[0].failedTurns, recovered.models[0].recoveredTurns], [2, 1, 1, 0, 1])
+check('a logical row does not fall back to physical attempts', [recovered.models[0].turns, recovered.models[0].failedTurns], [1, 0])
+
+const exactNoTurn = store(structuredClone(STATS_INITIAL))
+recordUsage(exactNoTurn, call({ ok: true }))
+const noTurnStats = buildStats(exactNoTurn.get(), [{ id: 'mimo-v2.6-flash-free', name: 'Mimo' }])
+check('a new physical call without a final turn is not counted as a turn', [noTurnStats.turns, noTurnStats.failedTurns, noTurnStats.logicalEstimated], [0, 0, false])
 
 const silent = store(structuredClone(STATS_INITIAL))
 recordUsage(silent, call({ model: 'space-bunny-free', ok: true, output: 63, decodeTokens: 3, ttftMs: 2977, decodeMs: 1 }))
@@ -89,6 +104,35 @@ check('migration keeps what was really measured', [migrated.samples[0].ttftMs, m
 check('a failure is not promoted to a latency sample', [migrated.samples[1].ttftMs, migrated.samples[1].tps], [null, null])
 check('token totals survive', [legacyRow.input, legacyRow.output, migrated.requests], [100, 65, 3])
 check('migration is idempotent', migrateStats(migrated), migrated)
+
+const v2 = { ...legacy, version: 2, logical: undefined }
+const migratedV2 = migrateStats(v2)
+check('v2 migration keeps already-correct speed totals',
+  [migratedV2.days['2026-09-24'].models['space-bunny-free'].decodeMs, migratedV2.samples[0].tps], [2, 63000])
+check('v2 migration baselines logical turns from physical history',
+  [migratedV2.logical.turns, migratedV2.logical.failed, migratedV2.logical.recovered], [2, 1, 0])
+check('legacy logical baseline is explicitly estimated', [migratedV2.logical.estimated, migratedV2.failedRequests, migratedV2.failedRequestsEstimated], [true, 1, true])
+const mergedV2 = migrateStats({ ...v2, failedRequests: 0, logical: structuredClone(STATS_INITIAL.logical) })
+check('migration ignores default-filled v3 counters on old files', [mergedV2.failedRequests, mergedV2.failedRequestsEstimated, mergedV2.logical.turns], [1, true, 2])
+const migratedStore = store(migratedV2)
+recordTurn(migratedStore, { at: 3, model: 'space-bunny-free', ok: true })
+check('new exact turns preserve the historical estimate marker', migratedStore.get().logical.estimated, true)
+
+const retained = store(structuredClone(STATS_INITIAL))
+for (let index = 0; index < 405; index += 1) recordUsage(retained, call({ at: index + 1, ok: true }))
+check('physical samples retain a bounded audit window', retained.get().samples.length, 400)
+
+const persistedDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-stats-'))
+const persistedPath = path.join(persistedDir, 'stats.json')
+const persisted = new JsonStore(persistedPath, structuredClone(STATS_INITIAL))
+recordUsage(persisted, call({ ok: false }))
+recordTurn(persisted, { at: 1, model: 'mimo-v2.6-flash-free', ok: false })
+persisted.flush()
+const reloaded = new JsonStore(persistedPath, structuredClone(STATS_INITIAL))
+check('physical and logical counters survive reload', [reloaded.get().requests, reloaded.get().failedRequests, reloaded.get().logical.turns, reloaded.get().logical.failed], [1, 1, 1, 1])
+persisted.dispose()
+reloaded.dispose()
+fs.rmSync(persistedDir, { recursive: true, force: true })
 
 // ── the file itself ──────────────────────────────────────────────────────────
 // A half-written store file is the one failure the plugin used to answer by

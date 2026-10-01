@@ -30,7 +30,7 @@ export function resolveDshHome() {
 export const DATA_DIR_NAME = 'our-free-model'
 
 /** Bumped when the shape or the meaning of a stored field changes. */
-export const STATS_VERSION = 2
+export const STATS_VERSION = 3
 
 export class JsonStore {
   /**
@@ -179,7 +179,15 @@ export const SETTINGS_INITIAL = {
   installedVersion: '',
 }
 
-export const STATS_INITIAL = { version: STATS_VERSION, days: {}, models: {}, requests: 0, samples: [] }
+export const STATS_INITIAL = {
+  version: STATS_VERSION,
+  days: {},
+  models: {},
+  requests: 0,
+  failedRequests: 0,
+  samples: [],
+  logical: { turns: 0, failed: 0, recovered: 0, models: {} },
+}
 
 /**
  * Two bounds on what counts as a measurable decode window.
@@ -242,11 +250,12 @@ export function recordUsage(stats, record) {
     }
     days[day] = { ...bucket, models: perModel, total: bucket.total + record.input + record.output }
     const models = { ...(state.models ?? {}) }
-    const lifetime = models[record.model] ?? { input: 0, output: 0, calls: 0 }
+    const lifetime = models[record.model] ?? { input: 0, output: 0, calls: 0, failed: 0 }
     models[record.model] = {
       input: lifetime.input + record.input,
       output: lifetime.output + record.output,
-      calls: lifetime.calls + 1,
+      calls: (lifetime.calls ?? 0) + 1,
+      failed: (lifetime.failed ?? 0) + (record.ok === true ? 0 : 1),
     }
     const samples = [...(state.samples ?? []), {
       at: record.at, model: record.model, ok: record.ok === true,
@@ -272,7 +281,40 @@ export function recordUsage(stats, record) {
       ...record.recovered === true ? { recovered: true } : {},
       ...record.aborted === true ? { aborted: true } : {},
     }].slice(-400)
-    return { ...state, days, models, requests: (state.requests ?? 0) + 1, samples }
+    return {
+      ...state,
+      days,
+      models,
+      requests: (state.requests ?? 0) + 1,
+      failedRequests: (state.failedRequests ?? 0) + (record.ok === true ? 0 : 1),
+      samples,
+    }
+  })
+}
+
+/** Record one user-visible turn, separately from its physical upstream attempts. */
+export function recordTurn(stats, record) {
+  return stats.edit(state => {
+    const previous = state.logical ?? {}
+    const models = { ...(previous.models ?? {}) }
+    const row = models[record.model] ?? { turns: 0, failed: 0, recovered: 0 }
+    const failed = record.ok === true ? 0 : 1
+    const recovered = record.recovered === true ? 1 : 0
+    models[record.model] = {
+      turns: row.turns + 1,
+      failed: row.failed + failed,
+      recovered: row.recovered + recovered,
+    }
+    return {
+      ...state,
+      logical: {
+        ...previous,
+        turns: (previous.turns ?? 0) + 1,
+        failed: (previous.failed ?? 0) + failed,
+        recovered: (previous.recovered ?? 0) + recovered,
+        models,
+      },
+    }
   })
 }
 
@@ -286,25 +328,59 @@ export function recordUsage(stats, record) {
  */
 export function migrateStats(value) {
   if (value?.version === STATS_VERSION) return value
+  const version = Number.isSafeInteger(value?.version) ? value.version : 0
+  const resetSpeedTotals = version < 2
   const days = {}
   for (const [day, bucket] of Object.entries(value?.days ?? {})) {
     const models = {}
     for (const [model, row] of Object.entries(bucket.models ?? {})) {
-      models[model] = { ...row, decodeMs: 0, decodeTokens: 0, ttftMs: 0, ttftSamples: 0 }
+      models[model] = resetSpeedTotals
+        ? { ...row, decodeMs: 0, decodeTokens: 0, ttftMs: 0, ttftSamples: 0 }
+        : { ...row }
     }
     days[day] = { ...bucket, models }
   }
+  const logicalModels = {}
+  const modelFailures = {}
+  let logicalTurns = 0
+  let logicalFailed = 0
+  let failedRequests = 0
+  for (const bucket of Object.values(days)) for (const [model, row] of Object.entries(bucket.models ?? {})) {
+    const current = logicalModels[model] ?? { turns: 0, failed: 0, recovered: 0 }
+    logicalModels[model] = { turns: current.turns + (row.calls ?? 0), failed: current.failed + (row.failed ?? 0), recovered: current.recovered }
+    logicalTurns += row.calls ?? 0
+    logicalFailed += row.failed ?? 0
+    failedRequests += row.failed ?? 0
+    modelFailures[model] = (modelFailures[model] ?? 0) + (row.failed ?? 0)
+  }
+  const lifetimeModels = {}
+  for (const [model, row] of Object.entries(value?.models ?? {})) {
+    lifetimeModels[model] = { ...row, failed: Number.isSafeInteger(row.failed) ? row.failed : modelFailures[model] ?? 0 }
+  }
+  const samples = (value?.samples ?? []).map(sample => resetSpeedTotals
+    ? {
+        ...sample,
+        tps: null,
+        decodeMs: 0,
+        decodeTokens: 0,
+        ttftMs: sample.ok === true && Number.isFinite(sample.ttftMs) ? sample.ttftMs : null,
+      }
+    : sample)
   return {
     ...value,
     version: STATS_VERSION,
     days,
-    samples: (value?.samples ?? []).map(sample => ({
-      ...sample,
-      tps: null,
-      decodeMs: 0,
-      decodeTokens: 0,
-      ttftMs: sample.ok === true && Number.isFinite(sample.ttftMs) ? sample.ttftMs : null,
-    })),
+    models: lifetimeModels,
+    failedRequests: version >= 3 && Number.isSafeInteger(value?.failedRequests) ? value.failedRequests : failedRequests,
+    failedRequestsEstimated: version >= 3 && Number.isSafeInteger(value?.failedRequests) ? value.failedRequestsEstimated === true : true,
+    logical: version >= 3 && value?.logical !== undefined ? value.logical : {
+      turns: logicalTurns,
+      failed: logicalFailed,
+      recovered: 0,
+      models: logicalModels,
+      estimated: true,
+    },
+    samples,
   }
 }
 

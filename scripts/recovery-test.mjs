@@ -129,16 +129,18 @@ function setup(model, answers, { settings = {}, options = {}, entryOverrides = {
   const scenario = { answers, requests: [], responses: new Set(), timers: [], closed: 0 }
   activeCase = scenario
   const records = []
+  const turns = []
   const controller = new AbortController()
   const adapter = new FreeModelAdapter({
     state: () => ({ catalog: CATALOG.map(entry => entry.id === model ? { ...entry, ...entryOverrides } : entry), membership: { [ROUTE_MAIN]: MODELS }, settings: { enabled: true, defaultMaxTokens: 32768, ...settings }, attributionUserAgent: 'offline-recovery-test' }),
     recordUsage: row => records.push(row),
+    recordTurn: row => turns.push(row),
     warn: message => onWarn?.(message, controller),
   })
   const stream = adapter.stream({ provider: ROUTE_MAIN, model, reasoningEffort: 'deep', maxTokens: 4096,
     sessionId: `recovery:${model}`, messages: [{ role: 'user', content: [{ type: 'text', text: TASK }] }],
     tools: [TOOL], signal: controller.signal, ...options })
-  return { scenario, records, controller, adapter, stream }
+  return { scenario, records, turns, controller, adapter, stream }
 }
 
 function cleanup(run) {
@@ -190,6 +192,10 @@ function checkFinal(run, kind, requests) {
   if (kind === 'stop' || requests === 2) assert.equal(usageCount, 1, '正常或恢复路径只能有一个最终 usage')
   else assert.ok(usageCount <= 1, '首段失败或取消最多有一个 usage')
   assert.equal(run.finish?.kind, kind)
+  assert.equal(run.turns.length, 1, '一次适配器调用只能记一条逻辑回合')
+  assert.equal(run.turns[0].ok, kind === 'stop', '逻辑回合结果必须跟最终结果一致')
+  assert.equal(run.turns[0].attempts, requests, '逻辑回合保留实际物理请求数')
+  assert.equal(run.turns[0].recovered, kind === 'stop' && requests === 2, '只有成功续写才标为 recovered')
   checkBlocks(run.chunks)
 }
 
@@ -243,6 +249,7 @@ try {
       assert.notDeepEqual(continuation.body, first.body, '不能原样重发整轮')
       assert.equal(continuation.body.tool_choice?.type ?? continuation.body.tool_choice, 'none', '续写禁止工具选择')
       assert.equal(run.records.length, 2, '每次真实 HTTP 调用独立记账')
+      assert.deepEqual(run.turns, [{ at: run.turns[0].at, model, ok: true, recovered: true, attempts: 2, origin: 'harness' }])
       assert.deepEqual(run.records.map(row => row.attempt), [0, 1])
       assert.equal(typeof run.records[0].recoveryId, 'string')
       assert.ok(run.records[0].recoveryId.length > 0)
@@ -537,7 +544,19 @@ try {
       await Promise.race([Promise.all([pending, returning]), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error('return 未取消正在等待的 HTTP')), 600) })])
       assert.equal(run.scenario.requests.length, 1)
       await until(() => run.scenario.responses.size === 0, { what: 'return 关闭 HTTP 连接', timeoutMs: 600 })
+      assert.equal(run.turns.length, 1)
+      assert.deepEqual({ ok: run.turns[0].ok, recovered: run.turns[0].recovered, attempts: run.turns[0].attempts }, { ok: false, recovered: false, attempts: 1 })
     } finally { clearTimeout(timer); cleanup(run) }
+  })
+
+  await check('首个上游请求前取消也记录失败回合', async () => {
+    const run = setup(model, [])
+    run.controller.abort(new Error('cancelled before request'))
+    const chunks = []
+    try {
+      for await (const chunk of run.stream) chunks.push(chunk)
+      checkFinal({ ...run, chunks, finish: chunks.find(chunk => chunk.type === 'finish')?.reason }, 'aborted', 0)
+    } finally { cleanup(run) }
   })
 
   const { apply, inject } = await import('../index.js')

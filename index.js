@@ -27,7 +27,7 @@ import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { FreeModelAdapter, ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/adapter.js'
-import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordUsage, resolveDshHome } from './src/store.js'
+import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, resolveDshHome } from './src/store.js'
 import { buildCatalog, parseListing } from './src/catalog.js'
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
 import { generateKey, startForwardServer, toOpenAiUsage } from './src/forward.js'
@@ -228,6 +228,7 @@ export function apply(ctx, config) {
       recordUsage(stats, record)
       stats.edit(state => pruneDays(state, 120))
     },
+    recordTurn: record => recordTurn(stats, record),
     warn: message => logger.warn?.(message) ?? logger.log?.(message),
     onRegionBlocked: () => scheduleReprobe(),
   })
@@ -1267,15 +1268,32 @@ export function buildStats(stats, catalog) {
       decodeTokens: previous.decodeTokens + (row.decodeTokens ?? 0),
     }
   }
+  const logical = stats.logical ?? {}
+  const logicalModels = logical.models ?? {}
+  const logicalReady = Number.isSafeInteger(logical.turns)
   const named = Object.values(totals).map(row => ({
     ...row,
+    turns: logicalModels[row.model]?.turns ?? (logicalReady ? 0 : row.calls),
+    failedTurns: logicalModels[row.model]?.failed ?? (logicalReady ? 0 : row.failed),
+    recoveredTurns: logicalModels[row.model]?.recovered ?? 0,
     name: catalog.find(entry => entry.id === row.model)?.name ?? row.model,
     // A rate over too few measurable calls is a rounding error with a unit on it.
     tps: row.decodeMs >= MIN_DECODE_MS ? Math.round(row.decodeTokens / (row.decodeMs / 1000)) : null,
     avgTtftMs: row.ttftSamples > 0 ? Math.round(row.ttftMs / row.ttftSamples) : null,
   }))
+  const physicalFailed = named.reduce((sum, row) => sum + row.failed, 0)
+  const turns = logicalReady ? logical.turns : named.reduce((sum, row) => sum + row.turns, 0)
+  const failedTurns = Number.isSafeInteger(logical.failed) ? logical.failed : named.reduce((sum, row) => sum + row.failedTurns, 0)
+  const recoveredTurns = Number.isSafeInteger(logical.recovered) ? logical.recovered : named.reduce((sum, row) => sum + row.recoveredTurns, 0)
+  const hasLifetimeFailures = Number.isSafeInteger(stats.failedRequests)
   return {
     requests: stats.requests ?? 0,
+    requestFailures: hasLifetimeFailures ? stats.failedRequests : physicalFailed,
+    requestFailuresEstimated: stats.failedRequestsEstimated === true || !hasLifetimeFailures,
+    logicalEstimated: logical.estimated === true,
+    turns,
+    failedTurns,
+    recoveredTurns,
     days: series,
     models: named,
     samples: (stats.samples ?? []).slice(-200),
@@ -1284,7 +1302,10 @@ export function buildStats(stats, catalog) {
       output: named.reduce((sum, row) => sum + row.output, 0),
       reasoning: named.reduce((sum, row) => sum + row.reasoning, 0),
       calls: named.reduce((sum, row) => sum + row.calls, 0),
-      failed: named.reduce((sum, row) => sum + row.failed, 0),
+      failed: hasLifetimeFailures ? stats.failedRequests : physicalFailed,
+      turns,
+      failedTurns,
+      recoveredTurns,
     },
   }
 }

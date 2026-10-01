@@ -42,6 +42,7 @@ export class FreeModelAdapter {
    * @param {() => {catalog: Array<object>, membership: Record<string, string[]>, settings: object, attributionUserAgent: string}} dependencies.state
    * @param {(ref: object) => string | undefined} [dependencies.resolveImage]
    * @param {(record: object) => void} dependencies.recordUsage
+   * @param {(record: object) => void} [dependencies.recordTurn]
    * @param {(message: string) => void} [dependencies.warn]
    */
   constructor(dependencies) {
@@ -189,6 +190,19 @@ export class FreeModelAdapter {
     let nextIndex = 0
     let totalUsage = { inputTokens: 0, outputTokens: 0, totalTokens: 0 }
     const blocks = createBlockTracker()
+    let turnRecorded = false
+    const finishTurn = (ok, recovered = false, attempts = 1) => {
+      if (turnRecorded) return
+      turnRecorded = true
+      this.deps.recordTurn?.({
+        at: started,
+        model: entry.id,
+        ok,
+        recovered,
+        attempts,
+        origin: 'harness',
+      })
+    }
 
     // 一次逻辑回合的丢弃内容告警只由首个 payload 收集。检查点估算和续写段都要另建
     // 一份 payload，共用同一个数组会让 `image-dropped` 按 build 次数重复累积，还会
@@ -204,6 +218,7 @@ export class FreeModelAdapter {
 
     for (let attempt = 0; attempt < 2; attempt += 1) {
       if (options.signal?.aborted === true) {
+        finishTurn(false, false, attempt)
         if (attempt > 0) yield { type: 'usage', usage: totalUsage }
         yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted', code: CODE.aborted } } }
         return
@@ -236,6 +251,7 @@ export class FreeModelAdapter {
       let delivered = false
       let sawAnswer = false
       let recorded = false
+      let continuationScheduled = false
       let partialOutcome
       let usageAdded = false
       const record = (ok, outcome, extra = {}) => {
@@ -296,6 +312,7 @@ export class FreeModelAdapter {
         usageAdded = true
         if (options.signal?.aborted === true) {
           record(false, outcome, { aborted: true })
+          finishTurn(false, false, attempt + 1)
           yield { type: 'usage', usage: totalUsage }
           yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted', code: CODE.aborted } } }
           return
@@ -310,6 +327,7 @@ export class FreeModelAdapter {
             this.deps.warn?.('our-free-model: interrupted reasoning; continuing once from its checkpoint')
             attemptMessages = continuationMessages
             attemptBudget = continuationBudget
+            continuationScheduled = true
             continue
           }
         }
@@ -328,17 +346,20 @@ export class FreeModelAdapter {
               ? `our free model closed the stream after ${seconds}s, before its finish token; automatic recovery was not safe`
               : 'our free model closed the stream before its finish token, without answering; retrying'
           record(false, outcome, { truncated: true })
+          finishTurn(false, false, attempt + 1)
           yield { type: 'usage', usage: totalUsage }
           yield { type: 'finish', reason: { kind: 'error', failure: { message, code } } }
           return
         }
         if (outcome.sawText !== true && outcome.sawToolCall !== true && outcome.sawReasoning !== true && reason.kind === 'stop') {
           record(false, outcome)
+          finishTurn(false, false, attempt + 1)
           yield { type: 'usage', usage: totalUsage }
           yield { type: 'finish', reason: { kind: 'error', failure: { message: 'our free model returned an empty response', code: CODE.empty } } }
           return
         }
         record(true, outcome, recovering ? { recovered: reason.kind === 'stop' } : {})
+        finishTurn(true, recovering && reason.kind === 'stop', attempt + 1)
         yield { type: 'usage', usage: totalUsage }
         yield { type: 'finish', reason }
         if (warnings.length > 0) this.deps.warn?.(`our-free-model: dropped unsupported content for ${entry.id}: ${warnings.join(', ')}`)
@@ -355,6 +376,7 @@ export class FreeModelAdapter {
         }
         if (!usageAdded) totalUsage = addUsage(totalUsage, partialOutcome?.usage, partialOutcome?.sawUsage)
         record(false, partialOutcome, { ...(recovering || expired) ? { truncated: true } : {}, ...aborted ? { aborted: true } : {} })
+        finishTurn(false, false, attempt + 1)
         for (const chunk of blocks.close()) yield chunk
         if (recovering || partialOutcome?.sawUsage === true) yield { type: 'usage', usage: totalUsage }
         yield { type: 'finish', reason: { kind: aborted ? 'aborted' : 'error', failure } }
@@ -365,6 +387,7 @@ export class FreeModelAdapter {
         controller.abort()
         await request
         if (!recorded) record(false, partialOutcome, { aborted: true })
+        if (!continuationScheduled && !turnRecorded) finishTurn(false, false, attempt + 1)
       }
     }
   }
