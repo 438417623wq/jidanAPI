@@ -87,8 +87,13 @@ window.__ModuleLoader__.load({
         'speed.tps': '输出速度',
         'speed.ttft': '首帧延迟',
         'speed.model': '模型',
-        'speed.calls': '调用',
-        'speed.failed': '失败',
+        'speed.calls': '上游请求',
+        'speed.failed': '请求失败',
+        'speed.turns': '对话回合',
+        'speed.turnFailed': '回合失败',
+        'speed.recovered': '已恢复',
+        'speed.estimated': '升级前历史按上游请求估算；升级后回合按最终结果精确记录。',
+        'speed.scope': '请求、回合和 Token 为累计；速度、首帧和热力图按保留历史计算。',
         'speed.none': '暂无样本',
         'speed.note': '输出速度只统计 {n}/{total} 次可测的调用：那些没流式送出的思考 token 不计入分子，解码窗口短到测不出的也不算。',
         'unit.tokPerSec': 'tok/s',
@@ -255,8 +260,13 @@ window.__ModuleLoader__.load({
         'speed.tps': 'Output speed',
         'speed.ttft': 'First frame',
         'speed.model': 'Model',
-        'speed.calls': 'Calls',
-        'speed.failed': 'Failed',
+        'speed.calls': 'Upstream requests',
+        'speed.failed': 'Request failures',
+        'speed.turns': 'Conversation turns',
+        'speed.turnFailed': 'Turn failures',
+        'speed.recovered': 'Recovered',
+        'speed.estimated': 'Pre-upgrade history is estimated from upstream requests; turns are exact after upgrade.',
+        'speed.scope': 'Requests, turns and tokens are lifetime totals; speed, first frame and heatmap use retained history.',
         'speed.none': 'No samples yet',
         'speed.note': 'Output speed covers the {n}/{total} calls it could measure: tokens never streamed out are left out of the numerator, and windows too short to time are dropped.',
         'unit.tokPerSec': 'tok/s',
@@ -426,7 +436,8 @@ window.__ModuleLoader__.load({
 .ofm_chip{display:inline-flex;align-items:center;gap:6px;font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1);cursor:pointer;color:var(--dsw-alias-label-secondary)}
 .ofm_chip[aria-pressed="true"]{border-color:currentColor}
 .ofm_swatch{width:8px;height:8px;border-radius:2px;flex:none}
-.ofm_table{width:100%;border-collapse:collapse;font-size:11.5px}
+.ofm_table{width:100%;min-width:760px;border-collapse:collapse;font-size:11.5px}
+.ofm_tablewrap{overflow-x:auto;max-width:100%}
 .ofm_table th{text-align:left;font-weight:500;color:var(--dsw-alias-label-tertiary);padding:0 8px 6px;border-bottom:1px solid var(--dsw-alias-border-l1);white-space:nowrap}
 .ofm_table td{padding:6px 8px;border-bottom:1px solid var(--dsw-alias-border-l1);font-variant-numeric:tabular-nums}
 .ofm_table td:first-child{font-weight:600}
@@ -1093,7 +1104,10 @@ window.__ModuleLoader__.load({
         stat(kilo(stats.grand.output), t('stat.output')),
         stat(kilo(stats.grand.reasoning), t('stat.reasoning')),
         stat(String(stats.requests ?? 0), t('speed.calls')),
-        stat(String(stats.grand.failed ?? 0), t('speed.failed')))
+        stat(String(stats.requestFailures ?? stats.grand.failed ?? 0), t('speed.failed')),
+        stat(String(stats.turns ?? stats.grand.turns ?? 0), t('speed.turns')),
+        stat(String(stats.failedTurns ?? stats.grand.failedTurns ?? 0), t('speed.turnFailed')),
+        stat(String(stats.recoveredTurns ?? stats.grand.recoveredTurns ?? 0), t('speed.recovered')))
 
       const heatmap = h(Panel, { title: t('heat.title') }, h(Heatmap, { days, t }))
 
@@ -1126,21 +1140,29 @@ window.__ModuleLoader__.load({
               .replace('{total}', String(recent.length)))))
 
       const table = models.length === 0 ? null : h(Panel, { title: t('speed.model') },
-        h('table', { className: 'ofm_table' },
+        h('div', { className: 'ofm_tablewrap' }, h('table', { className: 'ofm_table' },
           h('thead', null, h('tr', null,
             h('th', null, t('speed.model')),
-            num(t('speed.calls')), num(t('speed.tps')), num(t('speed.ttft')),
-            num(t('col.reason')), num(t('col.output')), num(t('speed.failed')))),
+            num(t('speed.calls')), num(t('speed.turns')), num(t('speed.recovered')),
+            num(t('speed.tps')), num(t('speed.ttft')), num(t('col.reason')),
+            num(t('col.output')), num(t('speed.failed')), num(t('speed.turnFailed')))),
           h('tbody', null, [...models].sort((a, b) => b.output - a.output).map(m => h('tr', { key: m.model },
             h('td', { title: m.model }, m.name),
             numTd(m.calls),
+            numTd(m.turns),
+            numTd(m.recoveredTurns === 0 ? '—' : m.recoveredTurns),
             numTd(m.tps),
             numTd(m.avgTtftMs === null || m.avgTtftMs === undefined ? null : Math.round(m.avgTtftMs)),
             numTd(kilo(m.reasoning)),
             numTd(kilo(m.output)),
-            numTd(m.failed === 0 ? '—' : m.failed))))))
+            numTd(m.failed === 0 ? '—' : m.failed),
+            numTd(m.failedTurns === 0 ? '—' : m.failedTurns)))))))
 
-      return h(Fragment, null, headline, h('div', { className: 'ofm_two' }, heatmap, curve), speed, table)
+      const historyNote = stats.logicalEstimated || stats.requestFailuresEstimated
+        ? h('p', { className: 'ofm_note' }, t('speed.estimated'))
+        : null
+      return h(Fragment, null, headline, h('p', { className: 'ofm_note' }, t('speed.scope')), historyNote,
+        h('div', { className: 'ofm_two' }, heatmap, curve), speed, table)
     }
 
     const sparkCell = (label, values, color, format, t, summary) => {

@@ -328,12 +328,24 @@ Set `streamRecovery: false` in the local settings.json to disable it. An object
 can also supply an `enabled` switch and lower numeric limits; limits cannot
 exceed the defaults. There is no model allowlist.
 
-The local dashboard counts **physical requests**, with a separate sample for
-each segment and recovery identity, attempt index and `noUsage` markers. A
-shared `recoveryId` associates those segment markers to identify missing usage.
-Final usage sent to the harness sums only counts the upstream actually reported;
-if one segment has no usage report, this is not the full turn's token total.
-Reasoning checkpoints are not written to the statistics file.
+The local dashboard keeps **physical requests** and **logical turns** separate.
+Upstream requests and request failures count each HTTP request actually sent;
+conversation turns, turn failures and recovered turns count one adapter
+invocation by its final outcome. A first segment cut short and a successful
+continuation therefore show 2 upstream requests and 1 request failure, while
+remaining at 1 conversation turn with 0 turn failures and 1 recovered turn.
+Each segment still has its own sample with recovery identity, attempt index and
+`noUsage` markers. A shared `recoveryId` associates those markers to identify
+missing usage. Final usage sent to the harness sums only counts the upstream
+actually reported; if one segment has no usage report, this is not the full
+turn's token total. Reasoning checkpoints are not written to the statistics
+file.
+
+Pre-upgrade history has only physical request records, so migrated turn and
+failure counts are estimates and the dashboard labels them. Turns recorded
+after the upgrade use the final outcome and are exact.
+Requests, turns and token totals are lifetime values; speed, first-frame and
+heatmap details use the locally retained history window.
 
 One live MiMo V2.6 Flash · Deep request recovered successfully; an earlier
 attempt failed at the 480-second deadline. This does not establish live coverage
