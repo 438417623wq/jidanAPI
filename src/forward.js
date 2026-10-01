@@ -149,12 +149,25 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
 async function serveCompletion(req, res, complete, endpoint) {
   const controller = new AbortController()
-  const onClose = () => controller.abort()
-  res.once('close', onClose)
+  const socket = req.socket
+  const abort = () => {
+    if (!controller.signal.aborted) controller.abort()
+  }
+  // A non-streaming endpoint does not send its response headers until the
+  // upstream completion is done. When the caller disconnects before then,
+  // ServerResponse#close can arrive too late (notably on Linux). The request
+  // and its socket expose the disconnect earlier; all three signals share one
+  // idempotent abort path.
+  req.once('aborted', abort)
+  socket?.once('close', abort)
+  res.once('close', abort)
+  if (req.aborted || req.destroyed || socket?.destroyed) abort()
   try {
     await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk))
   } finally {
-    res.removeListener('close', onClose)
+    req.removeListener('aborted', abort)
+    socket?.removeListener('close', abort)
+    res.removeListener('close', abort)
   }
 }
 

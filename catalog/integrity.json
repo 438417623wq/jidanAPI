@@ -89,13 +89,13 @@
     },
     {
       "path": "src/forward.js",
-      "size": 12500,
-      "sha256": "d7020a35d6545689dd2d2ddfe8cf918635f2867626ea2d794adb0b7654c68124"
+      "size": 13108,
+      "sha256": "bc59476c127144489aefe35a781b43b75010dc10f1fbcf15cdf3b2e260664437"
     },
     {
       "path": "src/http.js",
-      "size": 17443,
-      "sha256": "b374c8e87dfc793912af6ba48bf044630c561ebb420180a382554cde67f7ff8e"
+      "size": 18932,
+      "sha256": "3561a934eb2c8a90dbcd27bc8d04e0cbcf1eacd01927a2073ee8376dde7703b5"
     },
     {
       "path": "src/messages.js",
