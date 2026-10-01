@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 108910,
-      "sha256": "343ece603dc13052b490aa3460ba98e100e732286cac8283e855b20406f7bbab"
+      "size": 109213,
+      "sha256": "770ea6033dc4088e3945c8be196e94f830b1cceaf7ce14a79f40a2b47a40fc49"
     },
     {
       "path": "cordis.patch.yml",
@@ -29,8 +29,8 @@
     },
     {
       "path": "index.js",
-      "size": 61541,
-      "sha256": "4c7dc8ae82c33563d545ba5540b382c8c4d1109c6aab1edbf360c3d6d77c23aa"
+      "size": 62515,
+      "sha256": "2580cb82d322c7061dcd4e7c5ebb29d9b0a67cbf5ff8d88f599f779c1842ceb8"
     },
     {
       "path": "LICENSE",
@@ -54,18 +54,18 @@
     },
     {
       "path": "README_EN.md",
-      "size": 53394,
-      "sha256": "c4a8ae0e745e507987f527a1a4d99fb23c45da8476070260023ebd041f710da4"
+      "size": 53528,
+      "sha256": "a3dd330b87945616a52ef437da56ad43ae98908bde7c8961074a932908e90cbd"
     },
     {
       "path": "README.md",
-      "size": 49934,
-      "sha256": "cec6c65a8a6a76818f5e5cce0f7cb1582d56418bc00d06e92fa2c326766cfe2a"
+      "size": 50044,
+      "sha256": "8e7d3d73b58146435eefb3c9ac5c0e131e51ac034fce9cc8452abac2869a0bcb"
     },
     {
       "path": "src/adapter.js",
-      "size": 22177,
-      "sha256": "1b4bbfade1d31c57dd6283e37b53c8e38f4f1448b37cd6b2f51a5cd7932bcc07"
+      "size": 22426,
+      "sha256": "b03ff830fd7030a32f8e10f2507c006e707d583000c247014a07c40dc46358cb"
     },
     {
       "path": "src/catalog.js",
@@ -124,8 +124,8 @@
     },
     {
       "path": "src/store.js",
-      "size": 16066,
-      "sha256": "940f845bbfc05d41d53a26b8f904b656662007e9e038b7d355a55cefb0ee727e"
+      "size": 16245,
+      "sha256": "75bd448c0ae8692dbfb14884c42f5d80fd977ec197781a4e700c231c0f25d1ce"
     },
     {
       "path": "src/stream.js",
