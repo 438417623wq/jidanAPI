@@ -219,6 +219,148 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   }
 }
 
+/** The routes the LAN relay carries — the local listener's surface and nothing else. */
+const RELAY_PATHS = new Set([
+  '/v1/models', '/models',
+  '/v1/chat/completions', '/chat/completions',
+  '/v1/responses', '/responses',
+])
+
+/** Marks a request the relay produced, so a misconfigured loop is refused. */
+const RELAY_HOP_HEADER = 'x-ofm-relay-hop'
+
+/**
+ * Start the optional LAN relay.
+ *
+ * The forward listener above binds loopback only, and on purpose: its key spends
+ * this machine's免密 quota, and issue #19 closed the door on handing that to a
+ * whole subnet through a bind address. A user who wants a second device on the
+ * same network to reach these models needs something the local listener cannot
+ * give — an address that is reachable *and* a credential that can be revoked on
+ * its own, so the two audiences never share a key.
+ *
+ * Hence a second, separate door, off unless asked for:
+ *
+ * - it binds the configured address (`0.0.0.0` by default) and authenticates
+ *   *every* request. `/health` is not exempt here as it is on the local
+ *   listener: an unauthenticated answer would confirm to any host on the
+ *   network that this machine is up and proxying;
+ * - it demands a key of its own (`lanKey`), never the local one, so a leak on a
+ *   shared network costs a rotation instead of every tool on the machine;
+ * - it re-issues the request to `127.0.0.1:<local forward port>` under the local
+ *   key. That keeps one implementation of the OpenAI surface — the relay adds
+ *   reach, not a second dialect — and it means the caller's key is the relay's
+ *   business alone.
+ *
+ * @param {object} options
+ * @param {() => {enabled: boolean, host: string, port: number, lanKey: string, localKey: string, targetPort: number}} options.config
+ * @param {(message: string) => void} [options.log]
+ * @returns {Promise<{server: http.Server, port: number, host: string, close: () => Promise<void>}>}
+ */
+export async function startLanRelay({ config, log = () => {} }) {
+  const server = http.createServer((req, res) => {
+    void relay(req, res).catch(error => {
+      log(`lan relay request failed: ${error?.message ?? error}`)
+      if (!res.headersSent) openAiError(res, 502, 'server_error', String(error?.message ?? error))
+      else res.end()
+    })
+  })
+
+  async function relay(req, res) {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const path = url.pathname.replace(/\/+$/, '') || '/'
+    // A browser cannot put a key on a preflight, and answering one spends
+    // nothing, so OPTIONS goes through unauthenticated.
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, corsHeaders())
+      res.end()
+      return
+    }
+    const settings = config()
+    if (!settings.enabled) {
+      openAiError(res, 503, 'service_unavailable', 'the LAN relay is switched off in Our Free Model settings')
+      return
+    }
+    if (!authorized(req, settings.lanKey)) {
+      openAiError(res, 401, 'invalid_request_error', 'missing or invalid LAN key')
+      return
+    }
+    // The one way this can happen is a relay port equal to the local forward
+    // port: the relay would then be dialing itself. Refuse the second pass
+    // instead of spinning until the sockets run out.
+    if (req.headers[RELAY_HOP_HEADER] !== undefined) {
+      openAiError(res, 508, 'server_error', 'the LAN relay would be dialing itself — give it a port of its own')
+      return
+    }
+    if (!(settings.targetPort > 0)) {
+      openAiError(res, 503, 'service_unavailable', 'the local forward listener is not running')
+      return
+    }
+    if (!RELAY_PATHS.has(path)) {
+      openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
+      return
+    }
+    const headers = { ...req.headers }
+    delete headers.host
+    delete headers.connection
+    delete headers['x-api-key']
+    // The caller's LAN key stops at this door; the local listener only ever sees
+    // the key that belongs to this machine.
+    headers.authorization = `Bearer ${settings.localKey}`
+    headers[RELAY_HOP_HEADER] = '1'
+    const target = http.request({
+      host: '127.0.0.1',
+      port: settings.targetPort,
+      method: req.method,
+      path: `${path}${url.search}`,
+      headers,
+    })
+    target.on('response', upstream => {
+      const relayed = { ...upstream.headers }
+      // Hop-by-hop headers belong to the hop that is ending here, not the next.
+      delete relayed.connection
+      delete relayed['keep-alive']
+      delete relayed['transfer-encoding']
+      res.writeHead(upstream.statusCode ?? 502, relayed)
+      upstream.pipe(res)
+    })
+    target.on('error', error => {
+      log(`lan relay upstream failed: ${error?.message ?? error}`)
+      if (!res.headersSent) openAiError(res, 502, 'server_error', 'the local forward listener did not answer')
+      else res.end()
+    })
+    // A caller that walks away takes its upstream request with it, the same rule
+    // the local listener applies to the upstream behind it.
+    res.once('close', () => {
+      if (!res.writableEnded) target.destroy()
+    })
+    req.pipe(target)
+  }
+
+  const desired = config()
+  const host = String(desired.host ?? '').trim() || '0.0.0.0'
+  const port = await new Promise((resolve, reject) => {
+    const onError = error => reject(error)
+    server.once('error', onError)
+    const wanted = Number(desired.port)
+    server.listen(Number.isFinite(wanted) && wanted > 0 ? Math.trunc(wanted) : 0, host, () => {
+      server.off('error', onError)
+      server.on('error', error => log(`lan relay error: ${error?.message ?? error}`))
+      resolve(server.address()?.port ?? 0)
+    })
+  })
+
+  return {
+    server,
+    port,
+    host,
+    close: () => new Promise(resolve => {
+      server.closeAllConnections?.()
+      server.close(() => resolve())
+    }),
+  }
+}
+
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
 async function serveCompletion(req, res, complete, endpoint) {
   const controller = new AbortController()

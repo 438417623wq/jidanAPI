@@ -36,7 +36,7 @@ fs.mkdirSync(path.join(scratch, 'our-free-model'), { recursive: true })
 // killed it with nothing printed to say why.
 const forwardPort = await freePort()
 fs.writeFileSync(path.join(scratch, 'our-free-model', 'settings.json'), JSON.stringify({
-  version: 1, enabled: true, forward: { enabled: true, host: '127.0.0.1', port: forwardPort },
+  version: 1, enabled: true, forward: { enabled: true, host: '127.0.0.1', port: forwardPort, lan: { enabled: true, port: 0 } },
 }), { mode: 0o600 })
 
 const { apply, inject } = await import('../index.js')
@@ -144,6 +144,25 @@ check('a forwarded /v1/responses call sends the tool call upstream',
 check('…and sends its result, keyed to the call it answers',
   (forwarded.messages ?? []).filter(row => row.role === 'tool').map(row => `${row.tool_call_id}=${row.content}`),
   ['call_1={"temp":22}'])
+
+// The LAN relay is the second door a headless user's settings file can open: off
+// unless it says so, and then a listener of its own. The machine's key must not
+// work there, and the liveness probe that answers keyless on loopback must not
+// answer on an address the whole subnet can reach.
+const written = JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8'))
+const lanPort = written.forward?.lan?.port ?? 0
+check('the LAN relay came up and wrote back the port it settled on', lanPort > 0, true)
+const lanKey = written.forwardLanKey
+check('with a key of its own, minted apart from the local one', typeof lanKey === 'string' && lanKey !== '' && lanKey !== key, true)
+const lanModels = await fetch(`http://127.0.0.1:${lanPort}/v1/models`, { headers: { authorization: `Bearer ${lanKey}` } })
+check('the network key reaches the model list', lanModels.status, 200)
+check('…with the roster the local listener serves', (await lanModels.json()).data.map(row => row.id).sort(), ['mimo-v2.6-flash-free', 'space-bunny-free'])
+check('the local key is not accepted on the network door',
+  (await fetch(`http://127.0.0.1:${lanPort}/v1/models`, { headers: { authorization: `Bearer ${key}` } })).status, 401)
+check('and a keyless liveness probe answers nothing on a routable address',
+  (await fetch(`http://127.0.0.1:${lanPort}/health`)).status, 401)
+check('the relay carries the API paths, not whatever else answers on loopback',
+  (await fetch(`http://127.0.0.1:${lanPort}/health`, { headers: { authorization: `Bearer ${lanKey}` } })).status, 404)
 
 // A turn the lane refuses must not arrive as an empty 200.
 stub.api.refuseAll = true
