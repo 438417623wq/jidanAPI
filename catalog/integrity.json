@@ -29,8 +29,8 @@
     },
     {
       "path": "index.js",
-      "size": 64959,
-      "sha256": "4ded8dada3adeec05c9b52857240542fd31897feb4888ad22c00ef01f01b8e61"
+      "size": 65300,
+      "sha256": "9337c0e13acd6b93b02cf0ef830321cc1d6bb15ac5e01cec762c8e83c4259e77"
     },
     {
       "path": "LICENSE",
@@ -99,8 +99,8 @@
     },
     {
       "path": "src/messages.js",
-      "size": 17173,
-      "sha256": "adb840efc95948f94cc2e662af8f9139c80271a31e7df30a9748bb67e1cb617b"
+      "size": 17812,
+      "sha256": "319259c452aca22859060b62574f063a38a5eda6e3d0289019dad9b1eb79cc00"
     },
     {
       "path": "src/probe.js",
