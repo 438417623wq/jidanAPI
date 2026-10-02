@@ -138,7 +138,7 @@ function isLoopbackIp(ip) {
  * @param {(message: string) => void} [options.log]
  * @returns {Promise<{server: http.Server, port: number, close: () => Promise<void>}>}
  */
-export async function startForwardServer({ config, complete, modelRows, log = () => {} }) {
+export async function startForwardServer({ config, complete, modelRows, log = () => {}, heartbeatMs = SSE_HEARTBEAT_MS }) {
   const server = http.createServer((req, res) => {
     void handle(req, res).catch(error => {
       log(`request failed: ${error?.message ?? error}`)
@@ -182,11 +182,11 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       return
     }
     if (req.method === 'POST' && (path === '/v1/chat/completions' || path === '/chat/completions')) {
-      await serveCompletion(req, res, complete, chatCompletions)
+      await serveCompletion(req, res, complete, chatCompletions, heartbeatMs)
       return
     }
     if (req.method === 'POST' && (path === '/v1/responses' || path === '/responses')) {
-      await serveCompletion(req, res, complete, responsesEndpoint)
+      await serveCompletion(req, res, complete, responsesEndpoint, heartbeatMs)
       return
     }
     openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
@@ -220,7 +220,7 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
 }
 
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
-async function serveCompletion(req, res, complete, endpoint) {
+async function serveCompletion(req, res, complete, endpoint, heartbeatMs) {
   const controller = new AbortController()
   const socket = req.socket
   const abort = () => {
@@ -236,7 +236,7 @@ async function serveCompletion(req, res, complete, endpoint) {
   res.once('close', abort)
   if (req.aborted || req.destroyed || socket?.destroyed) abort()
   try {
-    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk))
+    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk), { heartbeatMs })
   } finally {
     req.removeListener('aborted', abort)
     socket?.removeListener('close', abort)
@@ -262,7 +262,41 @@ function sendSse(res, event) {
   res.write(`data: ${JSON.stringify(event)}\n\n`)
 }
 
-function openStreamHeaders(res) {
+/**
+ * How long a streaming answer may stay silent before an SSE comment frame goes
+ * out.
+ *
+ * Reasoning models on this lane think for a minute or more before the first
+ * token, and the newest ones never stream that thinking at all: measured live,
+ * a call sat silent for 70 seconds while the lane billed 3024 reasoning tokens.
+ * Every client-side idle watchdog reads that silence as a dead socket — pi-ai
+ * aborts the turn once `streamIdleTimeoutMs` passes with nothing on the wire —
+ * so the wait has to be kept visible.
+ */
+export const SSE_HEARTBEAT_MS = 15000
+
+/**
+ * Feed a streaming response's idle watchdog until the response ends.
+ *
+ * A comment frame is ignored by every client that speaks SSE, and it is a real
+ * byte on the socket, which is what a watchdog counts. The timer is unref'd so
+ * a closing listener never waits on it, and it is stopped on `close` — the one
+ * event every way of ending this response goes through, including a client that
+ * walked away mid-stream.
+ */
+export function startHeartbeat(res, intervalMs = SSE_HEARTBEAT_MS) {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return () => {}
+  const timer = setInterval(() => {
+    if (res.writableEnded === true || res.destroyed === true) return
+    res.write(': ping\n\n')
+  }, intervalMs)
+  timer.unref?.()
+  const stop = () => clearInterval(timer)
+  res.once('close', stop)
+  return stop
+}
+
+function openStreamHeaders(res, heartbeatMs = SSE_HEARTBEAT_MS) {
   res.writeHead(200, {
     ...corsHeaders(),
     'content-type': 'text/event-stream; charset=utf-8',
@@ -270,6 +304,9 @@ function openStreamHeaders(res) {
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
   })
+  // Both streaming endpoints open their headers here, so both of them — and
+  // anything relaying them — inherit the heartbeat from this one place.
+  startHeartbeat(res, heartbeatMs)
 }
 
 /** Per-request tool-wire state: harness block index → OpenAI tool index. */
@@ -334,7 +371,7 @@ function createToolWire(body) {
 }
 
 /** Drive one chat-completion through `complete`, in either response style. */
-async function chatCompletions(req, res, complete) {
+async function chatCompletions(req, res, complete, options = {}) {
   const body = await readBody(req)
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
@@ -376,7 +413,7 @@ async function chatCompletions(req, res, complete) {
     return
   }
 
-  openStreamHeaders(res)
+  openStreamHeaders(res, options.heartbeatMs)
   sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })
   const outcome = await complete({ model, openAi: body }, (chunk) => {
     if (res.destroyed) return
@@ -457,7 +494,7 @@ function executableCalls(outcome, tools) {
 }
 
 /** Responses-API spelling, so Codex-shaped local clients work too. */
-async function responsesEndpoint(req, res, complete) {
+async function responsesEndpoint(req, res, complete, options = {}) {
   const body = await readBody(req)
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
@@ -493,7 +530,7 @@ async function responsesEndpoint(req, res, complete) {
   ]
 
   if (body.stream === true) {
-    openStreamHeaders(res)
+    openStreamHeaders(res, options.heartbeatMs)
     const say = (type, payload) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`)
     const response = (over = {}) => ({
       id, object: 'response', created_at: created, model, status: 'in_progress',

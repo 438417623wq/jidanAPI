@@ -169,6 +169,39 @@ function number(value) {
 }
 
 /**
+ * The names a gateway may file streamed thinking under, in the order this
+ * reader prefers them.
+ *
+ * `reasoning` is what this lane sends today. `reasoning_content` and
+ * `reasoning_text` are the two other spellings in the wild — and the three of
+ * them are exactly what pi-ai reads — so a turn whose thinking arrived under
+ * one of the latter used to reach the harness as a turn with no thinking at
+ * all: no reasoning block on screen, an empty `reasoningText` that keeps the
+ * recovery path from firing, and a client left to call the answer empty.
+ */
+const REASONING_FIELDS = ['reasoning', 'reasoning_content', 'reasoning_text']
+
+/**
+ * The thinking this frame carries, in whichever spelling it used.
+ *
+ * Only the first non-empty spelling is taken: some gateways report the same
+ * text under two names at once (`reasoning_content` beside `reasoning`), and
+ * reading every name would double the block and inflate the accounting.
+ */
+function reasoningOf(delta) {
+  for (const field of REASONING_FIELDS) {
+    const value = delta[field]
+    if (typeof value === 'string' && value !== '') return value
+  }
+  if (Array.isArray(delta.reasoning_details)) {
+    let text = ''
+    for (const part of delta.reasoning_details) if (typeof part?.text === 'string') text += part.text
+    if (text !== '') return text
+  }
+  return undefined
+}
+
+/**
  * Consume one parsed Chat Completions SSE payload.
  * @returns optional usage, and the provider finish token when present.
  */
@@ -176,10 +209,8 @@ function feedChat(sink, payload, renameMap, onFinish) {
   if (payload.usage) onFinish(mapUsage(payload.usage), 'usage')
   for (const choice of payload.choices ?? []) {
     const delta = choice.delta ?? {}
-    if (typeof delta.reasoning === 'string') sink.reasoning('r', delta.reasoning)
-    else if (Array.isArray(delta.reasoning_details)) {
-      for (const part of delta.reasoning_details) if (typeof part?.text === 'string') sink.reasoning('r', part.text)
-    }
+    const reasoning = reasoningOf(delta)
+    if (reasoning !== undefined) sink.reasoning('r', reasoning)
     if (typeof delta.content === 'string') sink.text('t', delta.content)
     for (const call of delta.tool_calls ?? []) {
       sink.sawToolCall = true
@@ -412,12 +443,12 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
 function carriesDelta(payload, wire) {
   if (wire === 'chat') return (payload.choices ?? []).some(choice => {
     const delta = choice.delta ?? {}
+    // Every shape `feedChat` reads has to start the window here too: a spelling
+    // it consumes while this test missed it made the first observed frame the
+    // first *visible* one, which on a reasoning-heavy model is minutes after
+    // decoding began.
     return (typeof delta.content === 'string' && delta.content !== '')
-      || (typeof delta.reasoning === 'string' && delta.reasoning !== '')
-      // feedChat consumes this shape, so the window has to start here too; missing
-      // it made the first observed frame the first *visible* one, which on a
-      // reasoning-heavy model is minutes after decoding began.
-      || (Array.isArray(delta.reasoning_details) && delta.reasoning_details.some(part => typeof part?.text === 'string' && part.text !== ''))
+      || reasoningOf(delta) !== undefined
       || (delta.tool_calls ?? []).length > 0
   })
   if (wire === 'responses') return (typeof payload.delta === 'string' && payload.delta !== '') || payload.type === 'response.output_item.added'
