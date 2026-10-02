@@ -197,14 +197,32 @@ export class AnnouncementFeed {  /**
   /** True when the poll has never succeeded on this installation. */
   get neverFetched() { return this.cache.at === 0 }
 
-  /** Sources for this installation: the owner's override first, then the defaults. */
+  /** Sources for this installation: the owner's override first, then the defaults.
+   *
+   * The override must be https and carry no embedded credentials — a plaintext
+   * URL would hand any local writer of settings.json a whisper network to the
+   * LAN. Loopback http stays allowed: those requests never leave the machine,
+   * which keeps a locally-hosted mirror (and the test suites) legitimate. The
+   * update channel deliberately does not read this field at all (see
+   * src/updater.js). */
   sources() {
     const override = typeof this.deps.settings()?.feedUrl === 'string' ? this.deps.settings().feedUrl.trim() : ''
     const defaults = this.deps.defaultSources
     if (override === '') return defaults
-    return override.includes('{repo}')
-      ? [override.replace('{repo}', REPO), ...defaults]
-      : [override, ...defaults]
+    const expanded = override.includes('{repo}') ? override.replace('{repo}', REPO) : override
+    let parsed = null
+    try { parsed = new URL(expanded) } catch { parsed = null }
+    // URL.hostname keeps brackets on IPv6 (`[::1]`); everything loopback never
+    // leaves the machine, so plain http stays acceptable there.
+    const host = (parsed?.hostname ?? '').toLowerCase()
+    const loopback = host === 'localhost' || host === '[::1]' || host === '::1' || host.startsWith('127.')
+    const acceptable = parsed !== null && parsed.username === '' && parsed.password === ''
+      && (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && loopback))
+    if (!acceptable) {
+      this.deps.log?.('our-free-model: ignoring feedUrl override — it must be an https URL (loopback http is allowed) without credentials')
+      return defaults
+    }
+    return [expanded, ...defaults]
   }
 
   /**

@@ -10,6 +10,15 @@
  * so the file URLs resolve beside the manifest — i.e. the repository root the
  * manifest lives in. Pushing the result to GitHub is the whole release.
  *
+ * Every manifest must carry an Ed25519 `signature` made with the release
+ * signing key — the in-app upgrader refuses to install anything else (issue
+ * #19: the sha256 pins travel inside the manifest, so whoever forges the
+ * manifest forges the pins; the signature is the step the forger cannot take).
+ * Point the tool at the private key with `--key <pem-path>` or the
+ * `OFM_MANIFEST_KEY` environment variable. The private key is not in this
+ * repository and must never be; without it the build writes an unsigned
+ * manifest, refuses to bless it, and says so loudly.
+ *
  * `--check` writes nothing and exits non-zero when the committed manifest no
  * longer matches the files it describes:
  *
@@ -29,12 +38,32 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
+import { parseManifest, signManifest, verifyManifestSignature, PINNED_MANIFEST_PUBLIC_KEY } from '../src/updater.js'
 import { publishedBytes } from './lib/published-bytes.mjs'
 
 const root = path.join(fileURLToPath(new URL('..', import.meta.url)))
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const manifestPath = path.join(root, 'feed', 'manifest.json')
 const integrityPath = path.join(root, 'catalog', 'integrity.json')
+
+const keyArg = process.argv.indexOf('--key') === -1 ? null : process.argv[process.argv.indexOf('--key') + 1]
+const keyPath = keyArg ?? process.env.OFM_MANIFEST_KEY ?? ''
+let signingKey = null
+if (keyPath !== '') {
+  try {
+    signingKey = crypto.createPrivateKey(fs.readFileSync(keyPath, 'utf8'))
+  } catch (error) {
+    console.error(`could not load the signing key from ${keyPath} (${error?.message ?? error})`)
+    process.exit(1)
+  }
+  // Refuse to operate with a key that does not answer to the pinned public one:
+  // a release signed by any other key bricks the upgrade path for every user.
+  const probe = { version: pkg.version, files: [] }
+  if (!verifyManifestSignature({ ...probe, signature: signManifest(probe, signingKey) }, PINNED_MANIFEST_PUBLIC_KEY)) {
+    console.error(`${keyPath} does not match the public key pinned in src/updater.js — refusing to sign`)
+    process.exit(1)
+  }
+}
 
 // `private: true` guards against accidental npm publishes; building the manifest
 // is the project's own release path, so it proceeds either way.
@@ -107,11 +136,29 @@ const manifest = {
   files,
 }
 
+// Sign over the exact document shape the verifier reconstructs (parseManifest's
+// output), so the signature is stable no matter what extra fields a future
+// manifest version carries.
+if (signingKey !== null) {
+  manifest.signature = signManifest(parseManifest(manifest), signingKey)
+}
+
 if (process.argv.includes('--check')) {
   const problems = describeDrift(previous, manifest)
   // The catalog's integrity record is the same promise, addressed to ecosystem
   // consumers instead of the in-app upgrader, so it is checked in the same pass.
   const integrityProblems = describeDrift(previousIntegrity, { version: pkg.version, files }, 'catalog/integrity.json')
+  // A committed manifest whose signature no longer verifies (or that lost it)
+  // fails every user's upgrade exactly as surely as a stale hash does.
+  if (previous !== undefined) {
+    try {
+      if (!verifyManifestSignature(parseManifest(previous), PINNED_MANIFEST_PUBLIC_KEY)) {
+        problems.push('the committed manifest is not signed with the pinned release key')
+      }
+    } catch (error) {
+      problems.push(`the committed manifest does not parse (${error?.message ?? error})`)
+    }
+  }
   if (problems.length === 0 && integrityProblems.length === 0) {
     console.log(`feed/manifest.json and catalog/integrity.json match the ${files.length} files they describe (${files.reduce((sum, file) => sum + file.size, 0)} bytes)`)
     process.exit(0)
@@ -119,6 +166,12 @@ if (process.argv.includes('--check')) {
   console.error('the committed digests do not describe the files on disk:')
   for (const problem of [...problems, ...integrityProblems]) console.error(`  ${problem}`)
   console.error('every user who upgrades now fails verification — run: node scripts/build-manifest.mjs')
+  process.exit(1)
+}
+
+if (signingKey === null) {
+  console.error('refusing to write an unsigned manifest — pass --key <pem-path> or set OFM_MANIFEST_KEY')
+  console.error('the in-app upgrader rejects unsigned manifests, so a release without a signature cannot be installed')
   process.exit(1)
 }
 

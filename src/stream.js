@@ -37,6 +37,31 @@ class BlockSink {
     this.checkpointLimit = checkpointLimit
     this.checkpointTruncated = false
     this.brokenToolCall = false
+    this.lastToolKey = undefined
+  }
+
+  /**
+   * Resolve the block a Chat tool delta belongs to.
+   *
+   * `tool_calls[].index` is the wire's accumulator key and is what real servers
+   * send; keying calls without one to a constant merged every parallel call
+   * into a single block with the ids overwriting each other. The call id —
+   * present on exactly the shapes that omit the index — separates them, and a
+   * bare arguments continuation continues the call in front of it.
+   */
+  toolKey(call) {
+    if (call.index !== undefined && call.index !== null) {
+      this.lastToolKey = `c${call.index}`
+      return this.lastToolKey
+    }
+    if (typeof call.id === 'string' && call.id !== '') {
+      for (const [key, block] of this.open) {
+        if (block.kind === 'tool-call' && block.id === call.id) { this.lastToolKey = key; return key }
+      }
+      this.lastToolKey = `cid:${call.id}`
+      return this.lastToolKey
+    }
+    return this.lastToolKey ?? 'c0'
   }
 
   /** Open (or fetch) the block a given stream slot maps to. */
@@ -158,7 +183,7 @@ function feedChat(sink, payload, renameMap, onFinish) {
     if (typeof delta.content === 'string') sink.text('t', delta.content)
     for (const call of delta.tool_calls ?? []) {
       sink.sawToolCall = true
-      const key = `c${call.index ?? 0}`
+      const key = sink.toolKey(call)
       const name = call.function?.name
       if (typeof name === 'string' && name !== '') sink.toolStart(key, call.id ?? '', restoreToolName(name, renameMap))
       else if (call.id) sink.toolStart(key, call.id, '')

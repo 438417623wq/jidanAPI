@@ -115,6 +115,12 @@ const dataDir = home => path.join(home, 'our-free-model')
   }).catch(() => null)
   const body = refused === null ? null : await refused.json().catch(() => null)
   check('a forwarded turn fails cleanly against a dead gateway', [refused?.status, body?.error !== undefined], [502, true])
+  const unknown = await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: 'no-such-model-free', messages: [{ role: 'user', content: 'hi' }] }),
+  }).catch(() => null)
+  check('a model the roster does not carry answers 404 model-shaped', unknown?.status, 404)
   await callRoute(api(), 'POST', '/api/our-free-model/settings', { forward: { enabled: false, host: '127.0.0.1', port: forwardPort } })
 
   dispose(ctx)

@@ -130,10 +130,10 @@ export function apply(ctx, config) {
   const generation = (globalThis[Symbol.for('our-free-model.generation')] ?? 0) + 1
   globalThis[Symbol.for('our-free-model.generation')] = generation
 
-  const settings = new JsonStore(path.join(dataDir, 'settings.json'), SETTINGS_INITIAL)
-  const stats = new JsonStore(path.join(dataDir, 'stats.json'), STATS_INITIAL)
-  const availability = new JsonStore(path.join(dataDir, 'availability.json'), { version: 1, at: 0, egress: null, results: {} })
-  const catalogStore = new JsonStore(path.join(dataDir, 'catalog.json'), { version: 1, at: 0, entries: FALLBACK_CATALOG.map(entry => entry.id) })
+  const settings = new JsonStore(path.join(dataDir, 'settings.json'), SETTINGS_INITIAL, { log: message => logger.warn?.(message) })
+  const stats = new JsonStore(path.join(dataDir, 'stats.json'), STATS_INITIAL, { log: message => logger.warn?.(message) })
+  const availability = new JsonStore(path.join(dataDir, 'availability.json'), { version: 1, at: 0, egress: null, results: {} }, { log: message => logger.warn?.(message) })
+  const catalogStore = new JsonStore(path.join(dataDir, 'catalog.json'), { version: 1, at: 0, entries: FALLBACK_CATALOG.map(entry => entry.id) }, { log: message => logger.warn?.(message) })
 
   if (stats.get().version !== STATS_VERSION) stats.edit(migrateStats)
 
@@ -216,7 +216,7 @@ export function apply(ctx, config) {
     if (reprobeTimer !== undefined) return
     reprobeTimer = setTimeout(() => {
       reprobeTimer = undefined
-      void refreshAvailability().catch(() => {})
+      void refreshAvailability(true).catch(() => {})
     }, 4000)
     reprobeTimer.unref?.()
   }
@@ -245,7 +245,7 @@ export function apply(ctx, config) {
   // all must not be addable to a profile just because it still appears in the
   // upstream listing.
   ctx.llm.registerModelDiscovery?.(ctx.fiber?.entry?.options?.id ?? name, async () => {
-    await refreshCatalog({ probe: true })
+    await refreshCatalog({ probe: true, force: true })
     const advertised = new Set(Object.values(state().membership).flat())
     return catalog
       .filter(entry => advertised.has(entry.id))
@@ -263,7 +263,7 @@ export function apply(ctx, config) {
   })
 
   // ── catalog + availability ──────────────────────────────────────────────────
-  async function refreshCatalog({ probe = true } = {}) {
+  async function refreshCatalog({ probe = true, force = false } = {}) {
     let ids = []
     try {
       ids = parseListing(await fetchListing())
@@ -278,7 +278,7 @@ export function apply(ctx, config) {
     } else {
       catalog = materializeCatalog(catalogStore.get().entries ?? [])
     }
-    if (probe) await refreshAvailability()
+    if (probe) await refreshAvailability(force)
     emitTopology()
     return catalog
   }
@@ -307,6 +307,20 @@ export function apply(ctx, config) {
     if (verdicts.length > 0 && verdicts.every(row => row.state === STATE.unavailable)) {
       logger.warn?.(`our-free-model: the gateway refused all ${verdicts.length} models this round (${verdicts[0].detail ?? 'no detail'}); keeping them advertised`)
     }
+    // A round the lane answered with nothing but 429s is the lane saying "this
+    // egress is out of quota". The probe draws from the same per-IP pool as the
+    // user's turns, so answering "how full is the pool?" by draining it again
+    // every period makes the shortage permanent. Back the next periodic round
+    // off (doubling, capped) and let real traffic — a manual reprobe, an egress
+    // change, the boot round — through regardless: those are worth their cost.
+    const allThrottled = verdicts.length > 0 && verdicts.every(row => row.state === STATE.throttled)
+    probeThrottleStreak = allThrottled ? probeThrottleStreak + 1 : 0
+    probeBackoffUntil = allThrottled
+      ? Date.now() + Math.min(30 * 2 ** (probeThrottleStreak - 1), 120) * 60_000
+      : 0
+    if (allThrottled) {
+      logger.warn?.(`our-free-model: the probe round hit the lane's quota; availability probes pause for ${Math.round((probeBackoffUntil - Date.now()) / 60_000)} minutes (your own requests are unaffected, and the reprobe button forces a round)`)
+    }
     emitTopology()
     return results
   }
@@ -321,9 +335,17 @@ export function apply(ctx, config) {
    * `retry-after`, that is the user's own quota spent on the same question. A
    * caller that arrives mid-round joins the round in flight instead of starting
    * another, which is what the feed poll above already does.
+   *
+   * `force` is for the callers whose round is worth its quota no matter what the
+   * lane just said: a manual reprobe, the boot round, an egress change. The
+   * periodic loop passes nothing and is the one that gets held off while a
+   * quota-backoff window is open (see {@link runProbeRound}).
    */
   let probeRound = null
-  async function refreshAvailability() {
+  let probeThrottleStreak = 0
+  let probeBackoffUntil = 0
+  async function refreshAvailability(force = false) {
+    if (!force && probeBackoffUntil > Date.now()) return {}
     if (probeRound !== null) return probeRound
     const round = runProbeRound()
     probeRound = round
@@ -346,7 +368,7 @@ export function apply(ctx, config) {
       availability.update({ egress: seen })
       availability.flush()
       logger.info?.(`our-free-model: egress changed to ${seen.ip}${seen.country ? ` (${seen.country})` : ''}; re-probing availability`)
-      await refreshAvailability()
+      await refreshAvailability(true)
     }
   }
 
@@ -416,7 +438,10 @@ export function apply(ctx, config) {
    */
   async function runForwarded(request, onChunk) {
     const entry = catalog.find(candidate => candidate.id === request.model)
-    if (entry === undefined) throw new UpstreamError(`unknown model "${request.model}"`, CODE.server)
+    // OpenAI semantics: a model the roster does not carry is the caller's
+    // mistake (404 model_not_found), not the gateway's — a 502 here read as
+    // "the plugin is broken" to every client that inspects the status.
+    if (entry === undefined) throw httpError(404, `model "${request.model}" not found`)
     const openAi = request.openAi ?? {}
     const messages = fromOpenAiMessages(openAi, request.responses === true)
     const tools = toToolDefs((openAi.tools ?? []).map(normalizeTool).filter(Boolean), request.responses === true ? 'flat' : 'chat')
@@ -698,7 +723,7 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     void (async () => {
       attributionUserAgent = await resolveAttributionUserAgent(logger)
-      await refreshCatalog({ probe: true })
+      await refreshCatalog({ probe: true, force: true })
       await syncForward()
       syncWatcher()
       emitTopology()
@@ -1145,11 +1170,11 @@ function createApiRoutes(deps) {
         return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo()) })
       }
       if (method === 'POST' && routePath === '/refresh') {
-        await deps.refreshCatalog({ probe: true })
+        await deps.refreshCatalog({ probe: true, force: true })
         return send(200, { ok: true, ...buildSummary(deps) })
       }
       if (method === 'POST' && routePath === '/reprobe') {
-        await deps.refreshAvailability()
+        await deps.refreshAvailability(true)
         return send(200, { ok: true, ...buildSummary(deps) })
       }
       if (method === 'GET' && routePath === '/forward/key') {
@@ -1182,9 +1207,20 @@ function pick(source, keys) {
   return out
 }
 
+/** The most a browser-API request body may weigh. The settings patch and the
+ *  announcement acks are the largest real payloads here by orders of magnitude;
+ *  without a cap, any caller past the fence could buffer unbounded bytes into
+ *  the host process — a different standard than the forward listener's 8 MB. */
+const MAX_API_BODY_BYTES = 1024 * 1024
+
 async function readJson(req) {
   const chunks = []
-  for await (const chunk of req) chunks.push(chunk)
+  let size = 0
+  for await (const chunk of req) {
+    size += chunk.length
+    if (size > MAX_API_BODY_BYTES) throw httpError(413, 'request body too large')
+    chunks.push(chunk)
+  }
   if (chunks.length === 0) return {}
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return {} }
 }

@@ -36,13 +36,17 @@ export class JsonStore {
   /**
    * @param {string} file - absolute path
    * @param {object} initial - value used when the file does not exist yet
+   * @param {{log?: (message: string) => void}} [options] - write-failure channel;
+   *   without it a flush that cannot write (disk full, permissions) stays silent
    */
-  constructor(file, initial) {
+  constructor(file, initial, { log } = {}) {
     this.file = file
     this.value = initial
     this.dirty = false
     this.timer = undefined
     this.disposed = false
+    this.log = log
+    this.writeFailed = false
     this.load()
   }
 
@@ -105,8 +109,17 @@ export class JsonStore {
       const temp = `${this.file}.${process.pid}.tmp`
       fs.writeFileSync(temp, JSON.stringify(this.value, undefined, 2), { mode: 0o600 })
       fs.renameSync(temp, this.file)
-    } catch {
-      // fail-soft: the next mutation retries, and nothing downstream depends on it
+      this.writeFailed = false
+    } catch (error) {
+      // fail-soft: the next mutation retries, and nothing downstream depends on
+      // it — but a home that cannot be written to loses every statistic and
+      // every acknowledged setting, so the first failure gets said out loud
+      // instead of rotting silently (repeat failures stay quiet: one line per
+      // incident, not one per scheduled flush).
+      if (!this.writeFailed) {
+        this.writeFailed = true
+        this.log?.(`our-free-model: could not persist ${path.basename(this.file)} (${error?.message ?? error}); changes are kept in memory only`)
+      }
     }
   }
 

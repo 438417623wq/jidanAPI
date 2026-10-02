@@ -93,7 +93,7 @@ window.__ModuleLoader__.load({
         'speed.turnFailed': '回合失败',
         'speed.recovered': '已恢复',
         'speed.estimated': '升级前历史按上游请求估算；升级后回合按最终结果精确记录。',
-        'speed.scope': '请求、回合和 Token 为累计；速度、首帧和热力图按保留历史计算。',
+        'speed.scope': '请求、回合和 Token 为累计；速度和首帧按最近 40 次调用计算，热力图按天汇总。',
         'speed.none': '暂无样本',
         'speed.note': '输出速度只统计 {n}/{total} 次可测的调用：那些没流式送出的思考 token 不计入分子，解码窗口短到测不出的也不算。',
         'unit.tokPerSec': 'tok/s',
@@ -266,7 +266,7 @@ window.__ModuleLoader__.load({
         'speed.turnFailed': 'Turn failures',
         'speed.recovered': 'Recovered',
         'speed.estimated': 'Pre-upgrade history is estimated from upstream requests; turns are exact after upgrade.',
-        'speed.scope': 'Requests, turns and tokens are lifetime totals; speed, first frame and heatmap use retained history.',
+        'speed.scope': 'Requests, turns and tokens are lifetime totals; speed and first frame use the last 40 calls, the heatmap is daily.',
         'speed.none': 'No samples yet',
         'speed.note': 'Output speed covers the {n}/{total} calls it could measure: tokens never streamed out are left out of the numerator, and windows too short to time are dropped.',
         'unit.tokPerSec': 'tok/s',
@@ -420,8 +420,8 @@ window.__ModuleLoader__.load({
 .ofm_paneltitle{font-size:12px;font-weight:650;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;gap:8px}
 .ofm_paneltitle .ofm_sec_hint{font-weight:400}
 .ofm_row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.ofm_heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:3px;overflow-x:auto;padding:2px 0 6px}
-.ofm_cell{width:12px;height:12px;border-radius:3px;background:var(--dsw-alias-bg-layer-1);outline:1px solid var(--dsw-alias-border-l1);outline-offset:-1px}
+.ofm_heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:0;overflow-x:auto;padding:2px 0 6px}
+.ofm_cell{width:12px;height:12px;border-radius:2px;background:var(--dsw-alias-bg-layer-1);outline:1px solid var(--dsw-alias-border-l1);outline-offset:-1px}
 .ofm_cell.l1{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 22%,transparent);outline-color:transparent}
 .ofm_cell.l2{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent);outline-color:transparent}
 .ofm_cell.l3{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 66%,transparent);outline-color:transparent}
@@ -554,10 +554,15 @@ window.__ModuleLoader__.load({
       // （onboarding /announcement、设置页 /announcements /update/status、面板 /summary /stats
       // /forward/key 等）无任何超时，一个不响应端点即可阻塞 settings.onboarding 协调流程
       // 并长期占用同源连接池。超时按 AbortError 抛给调用方，走各自 .catch 降级路径。
+      // 慢路由按需放宽（options.timeout，毫秒）：/bench 要等一整段真实生成（本车道
+      // 首帧动辄数十秒），/update/apply 要下载+校验+安装整包，/refresh /reprobe 要
+      // 跑完一整轮探测——8 秒兜底套在它们身上只会“前端报失败、后端继续烧”，
+      // 测速按钮因此几乎必失败而配额照付。
+      const { timeout = 8000, ...fetchOptions } = options ?? {}
       const ctrl = new AbortController()
-      const timer = setTimeout(() => ctrl.abort(), 8000)
+      const timer = setTimeout(() => ctrl.abort(), timeout)
       try {
-        const response = await fetch(`${API}${path}`, { ...options, redirect: 'error', signal: ctrl.signal })
+        const response = await fetch(`${API}${path}`, { ...fetchOptions, redirect: 'error', signal: ctrl.signal })
         const text = await response.text()
         let payload
         try { payload = text === '' ? {} : JSON.parse(text) } catch { payload = { error: text.slice(0, 200) } }
@@ -568,10 +573,11 @@ window.__ModuleLoader__.load({
       }
     }
 
-    const post = (path, body) => api(path, {
+    const post = (path, body, timeout) => api(path, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       ...body === undefined ? {} : { body: JSON.stringify(body) },
+      ...timeout === undefined ? {} : { timeout },
     })
 
     function useAsync(loader, deps) {
@@ -1279,7 +1285,7 @@ window.__ModuleLoader__.load({
       }
       const refresh = async () => {
         setBusy(true)
-        try { await post('/announcements/refresh'); news.reload() } finally { setBusy(false) }
+        try { await post('/announcements/refresh', undefined, 60_000); news.reload() } finally { setBusy(false) }
       }
       const enableOs = async () => {
         setOsError('')
@@ -1344,6 +1350,7 @@ window.__ModuleLoader__.load({
         const handler = event => {
           const version = event.detail?.version ?? ''
           setPhase('')
+          setError('')
           setMessage(version === '' ? '' : t('upgrade.done').replace('{version}', version))
           status.reload()
         }
@@ -1353,12 +1360,12 @@ window.__ModuleLoader__.load({
       const data = status.data
       const check = async () => {
         setPhase('checking'); setError('')
-        try { await post('/update/check'); status.reload() } catch (err) { setError(String(err?.message ?? err)) } finally { setPhase('') }
+        try { await post('/update/check', undefined, 60_000); status.reload() } catch (err) { setError(String(err?.message ?? err)) } finally { setPhase('') }
       }
       const applyUpgrade = async () => {
         setPhase('applying'); setError(''); setMessage(t('upgrade.phase.download'))
         try {
-          const result = await post('/update/apply', {})
+          const result = await post('/update/apply', {}, 600_000)
           // The successor instance has already pushed `upgraded` by the time the
           // request settles; this message only covers a stream that never arrived.
           setMessage(t('upgrade.phase.install'))
@@ -1423,7 +1430,10 @@ window.__ModuleLoader__.load({
       const bench = async model => {
         setBenches(current => ({ ...current, [model.id]: { running: true } }))
         try {
-          const result = await post('/bench', { model: model.id, effort: 'deep' })
+          // 默认档（balanced）而不是 deep：测速要回答的是“这个模型日常多快”，
+          // 默认档就是日常档；deep 每次最多烧 32K 输出 token，且经常把固定
+          // bench 会话自己打到 429。
+          const result = await post('/bench', { model: model.id }, 240_000)
           setBenches(current => ({ ...current, [model.id]: { running: false, result: t('bench.result').replace('{ttft}', result.ttftMs).replace('{tps}', result.tokensPerSecond ?? '—').replace('{reasoning}', result.reasoningTokens) } }))
         } catch (error) {
           setBenches(current => ({ ...current, [model.id]: { running: false, result: String(error?.message ?? error) } }))
@@ -1451,8 +1461,8 @@ window.__ModuleLoader__.load({
               h(Pill, null, `${t('pref.probedAt')} ${ago(data.probedAt, t.locale)}`))),
           h('p', { className: 'ofm_tagline' }, t('subtitle'), ' · ', t('meta.description')),
           h('div', { className: 'ofm_actions' },
-            h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/refresh'); summary.reload(); stats.reload() } finally { setBusy(false) } } }, summary.status === 'loading' ? t('probing') : t('refresh')),
-            h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/reprobe'); summary.reload() } finally { setBusy(false) } } }, t('reprobe')))),
+            h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/refresh', undefined, 600_000); summary.reload(); stats.reload() } finally { setBusy(false) } } }, summary.status === 'loading' ? t('probing') : t('refresh')),
+            h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/reprobe', undefined, 600_000); summary.reload() } finally { setBusy(false) } } }, t('reprobe')))),
         h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t: tagged, onBench: bench, benches })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t: tagged })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
@@ -1565,17 +1575,30 @@ window.__ModuleLoader__.load({
         let osEnabled = false
         let disposed = false
         let source
+        let retryTimer
+        // 重连轮次必须活在 open() 之外：open() 每次重连都会重入，计数器若在里面
+        // 会被清零，退避就永远是第一档而不是 30s 翻倍到 5 分钟。
+        let retries = 0
         api('/announcements').then(payload => { osEnabled = payload?.notifyOs === true }).catch(() => {})
         const open = () => {
           if (disposed) return
           source = new EventSource(`${API}/events`)
-          // 断连保护：服务端不可达时 EventSource 默认无限自动重连（持续占连接池）；
-          // 连续失败达到上限 → 关闭停止重连，避免长期占用同源连接。
+          // 断连保护：服务端不可达时 EventSource 默认无限自动重连（持续占连接池）。
+          // 连续失败达到上限先关闭让出连接，但按退避（30s 翻倍、封顶 5 分钟）定时
+          // 重新打开——永久关闭让公告/更新/升级推送在宿主重启或休眠后整体静默失效，
+          // 只有刷新页面才能恢复；退避重连在恢复连接性的同时保住连接池。
           let errCount = 0
-          source.onopen = () => { errCount = 0 }
+          source.onopen = () => { errCount = 0; retries = 0 }
           source.onerror = () => {
             errCount += 1
-            if (errCount >= 5) { try { source.close() } catch { /* 已关闭 */ } }
+            if (errCount < 5) return
+            try { source.close() } catch { /* 已关闭 */ }
+            if (disposed || retryTimer !== undefined) return
+            retryTimer = setTimeout(() => {
+              retryTimer = undefined
+              open()
+            }, Math.min(30_000 * 2 ** retries, 300_000))
+            retries += 1
           }
           source.addEventListener('announcements', event => {
             errCount = 0
@@ -1621,6 +1644,7 @@ window.__ModuleLoader__.load({
         open()
         return () => {
           disposed = true
+          if (retryTimer !== undefined) { clearTimeout(retryTimer); retryTimer = undefined }
           try { source?.close() } catch { /* already closed */ }
         }
       }, 'our-free-model: push subscription')

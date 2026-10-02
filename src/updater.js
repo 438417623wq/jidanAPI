@@ -32,12 +32,84 @@ const REPO = 'zouyuxuan122/dsh-our-free-model'
 
 /** Manifest locations, in preference order — jsDelivr first, for the same
  *  reachability reason as the feed (see src/feed.js): raw.githubusercontent.com
- *  is TLS-interfered on the networks this plugin most serves. */
+ *  is TLS-interfered on the networks this plugin most serves. jsDelivr is a
+ *  third-party trust domain, which used to make it the weakest link of this
+ *  channel; the Ed25519 signature on every manifest is now the actual trust
+ *  root (see {@link PINNED_MANIFEST_PUBLIC_KEY}), so a mirror that lies fails
+ *  verification instead of shipping code. */
 export const DEFAULT_MANIFEST_SOURCES = [
   `https://raw.githubusercontent.com/${REPO}/main/feed/manifest.json`,
   `https://cdn.jsdelivr.net/gh/${REPO}@main/feed/manifest.json`,
   `https://raw.githubusercontent.com/${REPO}/master/feed/manifest.json`,
 ]
+
+/**
+ * The Ed25519 public key (SPKI, base64) every release manifest must be signed
+ * with before it may be applied. The matching private key lives with the
+ * publisher (`scripts/build-manifest.mjs` signs when pointed at it); it is
+ * deliberately not in this repository, because a trust root committed beside
+ * the code it authenticates authenticates nothing.
+ *
+ * The sha256 per file pins content, but those hashes travel inside the manifest
+ * itself — whoever forges the manifest forges the hashes. This key is the step
+ * the forger cannot take.
+ */
+export const PINNED_MANIFEST_PUBLIC_KEY = 'MCowBQYDK2VwAyEAeLdSVwYFyazc2PIBC0oLsvo4LghGEQz9iXIl3CqRuXI='
+
+/** The manifest fields a signature covers, in canonical (sorted-key) JSON. */
+const SIGNED_FIELDS = ['version', 'base', 'publishedAt', 'notes', 'files', 'minSupported']
+
+/**
+ * Deterministic JSON: sorted keys, no whitespace, `undefined` dropped (object
+ * fields) or nulled (array slots) — the same rules JSON.stringify applies, plus
+ * key order. Both signer and verifier reduce the manifest to this form, so the
+ * signature is over meaning, not byte layout.
+ */
+export function stableStringify(value) {
+  if (Array.isArray(value)) return `[${value.map(row => stableStringify(row ?? null)).join(',')}]`
+  if (value !== null && typeof value === 'object') {
+    const keys = Object.keys(value).filter(key => value[key] !== undefined).sort()
+    return `{${keys.map(key => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value ?? null)
+}
+
+/** Reduce a manifest to exactly the fields a signature covers. */
+function signaturePayload(payload) {
+  const source = payload !== null && typeof payload === 'object' ? payload : {}
+  const picked = {}
+  for (const key of SIGNED_FIELDS) if (source[key] !== undefined) picked[key] = source[key]
+  return picked
+}
+
+/**
+ * Sign one manifest's canonical form with an Ed25519 private key (PEM).
+ * @param {object} payload - the manifest document (any superset of the signed fields)
+ * @param {string|crypto.KeyObject} privateKey - PKCS8 PEM, or a loaded key
+ * @returns {string} base64 signature to store as the manifest's `signature`
+ */
+export function signManifest(payload, privateKey) {
+  const key = privateKey instanceof crypto.KeyObject ? privateKey : crypto.createPrivateKey(privateKey)
+  return crypto.sign(null, Buffer.from(stableStringify(signaturePayload(payload))), key).toString('base64')
+}
+
+/**
+ * Verify a manifest's `signature` against an Ed25519 public key (SPKI, base64).
+ * Any malformed input answers `false` — a signature that cannot be checked is
+ * a signature that is not there.
+ */
+export function verifyManifestSignature(payload, publicKeyBase64) {
+  const signature = payload !== null && typeof payload === 'object' && typeof payload.signature === 'string'
+    ? payload.signature
+    : ''
+  if (signature === '' || typeof publicKeyBase64 !== 'string' || publicKeyBase64 === '') return false
+  try {
+    const key = crypto.createPublicKey({ key: Buffer.from(publicKeyBase64, 'base64'), format: 'der', type: 'spki' })
+    return crypto.verify(null, Buffer.from(stableStringify(signaturePayload(payload))), key, Buffer.from(signature, 'base64'))
+  } catch {
+    return false
+  }
+}
 
 /** Mirror of the feed's cache-buster: a minute-stamp keeps upgrades fresh. */
 export function bustCdnCache(url, now = Date.now()) {
@@ -103,6 +175,14 @@ export function parseManifest(payload) {
   const version = typeof payload.version === 'string' ? payload.version.trim() : ''
   if (parseVersion(version) === null) throw new Error(`manifest version "${version}" is not a valid semver`)
   const base = typeof payload.base === 'string' && payload.base !== '' ? payload.base : '../'
+  // The base is resolved against the manifest's own URL, so it must stay
+  // relative: an absolute or protocol-relative value would point every download
+  // at a host of the manifest author's choosing, and the sha256 pins would ride
+  // along inside the same forged document. A relative URL cannot leave the
+  // origin it resolves against.
+  if (/^[a-z][a-z0-9+.-]*:/i.test(base) || base.startsWith('//') || base.startsWith('/') || base.includes('\\')) {
+    throw new Error(`manifest base "${base}" must be a path relative to the manifest`)
+  }
   const rows = payload.files
   if (!Array.isArray(rows) || rows.length === 0) throw new Error('manifest carries no file list')
   if (rows.length > MAX_FILES) throw new Error(`manifest lists ${rows.length} files, above the ${MAX_FILES} cap`)
@@ -122,6 +202,7 @@ export function parseManifest(payload) {
     notes: typeof payload.notes === 'string' ? payload.notes.slice(0, 32 * 1024) : '',
     publishedAt: timestampOf(payload.publishedAt) ?? 0,
     ...typeof payload.minSupported === 'string' ? { minSupported: payload.minSupported } : {},
+    ...typeof payload.signature === 'string' ? { signature: payload.signature } : {},
   }
 }
 
@@ -152,7 +233,20 @@ export function fileUrlOf(manifestUrl, manifest, relativePath) {
   return new URL(manifest.base + relativePath.split('/').map(encodeURIComponent).join('/'), manifestUrl).href
 }
 
-export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl = fetch } = {}) {
+/**
+ * Fetch the first source that answers with a manifest this installation accepts.
+ *
+ * A source is only believed when its document carries a signature made with
+ * `verifyKey` (see {@link verifyManifestSignature}): every mirror — the
+ * repository's own raw URLs and third-party CDNs alike — is equally untrusted
+ * as a *code* source, and equally usable once the manifest itself is the thing
+ * being authenticated.
+ *
+ * @param {string[]} sources
+ * @param {{timeoutMs?: number, fetchImpl?: typeof fetch, verifyKey?: string}} [options]
+ * @returns {Promise<{manifest: object, source: string, signed: boolean}>}
+ */
+export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl = fetch, verifyKey = PINNED_MANIFEST_PUBLIC_KEY } = {}) {
   const failures = []
   for (const source of sources) {
     try {
@@ -164,7 +258,12 @@ export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl =
       if (!response.ok) { failures.push(`${source} -> HTTP ${response.status}`); continue }
       const text = await response.text()
       if (text.length > MAX_MANIFEST_BYTES) { failures.push(`${source} -> manifest too large`); continue }
-      return { manifest: parseManifest(JSON.parse(text)), source }
+      const manifest = parseManifest(JSON.parse(text))
+      if (!verifyManifestSignature(manifest, verifyKey)) {
+        failures.push(`${source} -> manifest signature missing or not made with the release key`)
+        continue
+      }
+      return { manifest, source, signed: true }
     } catch (error) {
       failures.push(`${source} -> ${error?.message ?? error}`)
     }
@@ -349,9 +448,11 @@ export class PluginUpdater {
    * @param {() => {updateCheckHours?: number}} deps.settings
    * @param {(message: string) => void} [deps.log]
    * @param {typeof fetch} [deps.fetchImpl]
+   * @param {string} [deps.manifestPublicKey] - SPKI base64; tests substitute a
+   *   throwaway keypair here, installs pin the release key
    */
-  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES }) {
-    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources }
+  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES, manifestPublicKey = PINNED_MANIFEST_PUBLIC_KEY }) {
+    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources, manifestPublicKey }
     this.latest = undefined
     this.checkedAt = 0
     this.error = ''
@@ -405,16 +506,12 @@ export class PluginUpdater {
     }
   }
 
-  /** Manifest sources: the owner's feed override also redirects update checks. */
+  /** Manifest sources. Deliberately immune to the `feedUrl` setting: an update
+   *  source is a code source, and a settings value pointing it anywhere else is
+   *  the one-step path from "wrote a config field" to "executed arbitrary code
+   *  in the host process". Announcements may be mirrored by their user; the
+   *  update channel may not. */
   sources() {
-    const override = typeof this.deps.settings()?.feedUrl === 'string' ? this.deps.settings().feedUrl.trim() : ''
-    if (override !== '') {
-      const root = override.includes('{repo}')
-        ? override.replace('{repo}', REPO)
-        : override
-      const manifestFromFeed = root.replace(/announcements\.json[^/]*$/, 'manifest.json')
-      return [manifestFromFeed, ...this.deps.defaultSources]
-    }
     return this.deps.defaultSources
   }
 
@@ -424,7 +521,7 @@ export class PluginUpdater {
    */
   async check() {
     try {
-      const { manifest, source } = await downloadManifest(this.sources(), { fetchImpl: this.deps.fetchImpl })
+      const { manifest, source } = await downloadManifest(this.sources(), { fetchImpl: this.deps.fetchImpl, verifyKey: this.deps.manifestPublicKey })
       const current = this.currentVersion()
       if (manifest.minSupported !== undefined && current !== '' && compareVersions(current, manifest.minSupported) < 0) {
         throw new Error(`update path requires at least ${manifest.minSupported}; ${current} is installed`)
@@ -461,6 +558,12 @@ export class PluginUpdater {
       if (compareVersions(manifest.version, previous) < 0) throw new Error(`installed ${previous} is newer than ${manifest.version}`)
 
       onProgress({ phase: 'download' })
+      // `check` above only accepts signed manifests, but this guard is cheap and
+      // keeps `apply` honest on its own: a manifest that cannot be attributed to
+      // the release key must not reach the file swap, whatever path delivered it.
+      if (manifest.signature === undefined || !verifyManifestSignature(manifest, this.deps.manifestPublicKey)) {
+        throw new Error('the manifest is not signed with the pinned release key')
+      }
       const staged = await stageRelease({
         manifest, manifestUrl: this.manifestUrl ?? this.sources()[0], stageDir: this.stageDir,
         fetchImpl: this.deps.fetchImpl, onProgress,
