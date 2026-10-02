@@ -373,6 +373,21 @@ report, so the summary contains only known counts. The earlier failed
 480-second attempt remains in the technical record. Real dsh UI and other
 models have not been individually accepted.
 
+### Historical: v1.3.2 (issues #11, #13, #19, #20, #21)
+
+| Item | Fix | Verification |
+| --- | --- | --- |
+| #19 self-update trust chain | Ed25519-signed manifests (public key pinned in the plugin, private key out of the repo), the update channel fully decoupled from `feedUrl`, manifest `base` restricted to relative paths | updater-test: four new cases (signature, tamper, foreign key, feedUrl not followed); release-e2e's negative control now refuses at the signature |
+| #19 forward surface | `localhost` binds resolve first and require all-loopback answers; a 1 MB cap (413) on plugin API bodies; the forward endpoint answers 400 for a non-JSON body and 404 for an unknown model | forward-test `resolveLoopbackBind` cases; offline-test 404 case |
+| #20/#21 tools unusable through the forward port (#21's `Unknown tool 'bash'/'read'/'grep'` is exactly the fingerprint decoy quartet: the lane forces those names to be declared, the model dials them, the forwarded client never registered them) | streaming `tool_calls[].index` renumbered from 0 (no longer shares the block counter with reasoning); fingerprint-decoy calls suppressed per block on the forward wire (unnamed blocks have their arguments held); a ceiling-cut turn finishes as `length` on the stream too | forward-test: four streaming/non-streaming cases against the real listener with a scripted lane |
+| #20 dsh-side decoy hazard | `stream.js` keys parallel tool calls without an `index` by call id; bare argument continuations join the preceding call | existing truncation/fingerprint suites stay green |
+| #13 quota experience | 429 removed from the retryable codes (no more three automatic retries of the same wall); a probe round answered by nothing but 429s backs the next periodic round off 30→120 minutes (manual reprobe, egress change and the boot round are exempt); the probe recognizes in-stream error frames inside a 200; the bench button uses the default effort and a realistic client timeout | retry-safety-test assertion updated; probe logic covered by the offline suites |
+| #13 concentrated forward quota | 429 no longer auto-retried (above); the forward session key stays derived from `user`/`conversation` (deliberate: the lane accounts per session) | behavior unchanged, no new spend |
+| #11 heatmap | cell gap removed and corners tightened for a GitHub contribution-graph ribbon; the layout was already column-major week-aligned | client-lint green |
+| Other | per-route client timeouts (bench 240 s, upgrade 600 s — the 8 s guard now covers only fast routes); EventSource reconnects with backoff (30 s → 5 min) instead of closing forever; a completed upgrade clears the stale error banner; the speed-scope copy now says what the panel really averages (last 40 calls); a failed store flush is logged once | client-lint; speed-stat green |
+
+All 20 offline suites (including the new `forward-test`) and `tsc --noEmit` pass; `host-selftest` costs real network and real free-lane quota, so it did not run with this round.
+
 ### Historical: v1.3.1 (issues #8, #9, #10)
 
 | Item | How | Result |
@@ -459,7 +474,7 @@ it never touches files.
 - **Capabilities are what probes can confirm.** Anything the public listing and a live probe do not evidence is left unlabelled.
 - **Source is plain JavaScript.** It has to be, to load as a local plugin. Anyone with the folder can read the gateway logic; treat that as an accepted property of this distribution form, not as something obfuscation would fix.
 - **Desktop installs need a real directory**, for the reason given in [Install](#install).
-- **Upgrade and hot-reload trust boundary**: the in-app upgrader trusts the plugin repository itself — whoever can push the repository can push code. That is the same trust model as installing a plugin update. File integrity is enforced by the SHA-256 manifest; content safety by the client-side allowlist renderer and the host's plugin isolation.
+- **Upgrade and hot-reload trust boundary**: as of v1.3.2 the in-app upgrader's trust root is the Ed25519 public key pinned inside the plugin, not "HTTPS to the repository" — a manifest must carry the release key's signature before anything is installed, so a poisoned mirror (jsDelivr included) fails the upgrade instead of executing code. Whoever holds the **release private key** can push arbitrary code, the same trust model as whoever can push the repository, but a repository account takeover is now a failed-upgrade outage for every user rather than a direct RCE. File integrity is enforced by signature + SHA-256 manifest; content safety by the client-side allowlist renderer and the host's plugin isolation.
 - **The AIO build's WebView2 permission policy may deny notification permission** (measured `denied` on this machine). The announcement center says so plainly; plain-browser access to dsh web is unaffected.
 - **The plugin routes' auth depends on the composition**: with a connection service mounted (dsh web, the AIO desktop) it matches the kernel's `/api` (the app's own cookie/token); in minimal compositions without one, a structural fence applies (loopback + same-origin), and other local processes can still reach the routes — the same behaviour the kernel has in those compositions.
 
@@ -482,6 +497,13 @@ node scripts/picker-test.mjs        # only usable models are advertised, and the
 node scripts/tui-test.mjs           # the plugin activates and serves with no web server in the composition
 node scripts/host-selftest.mjs      # host half end to end against the live upstream
 ```
+
+Release manifests must be signed with the release private key (`--key <pem-path>`
+or the `OFM_MANIFEST_KEY` environment variable); the builder refuses to write an
+unsigned one — the in-app upgrader installs only manifests whose signature
+matches the public key pinned in the plugin, as of v1.3.2. The private key lives
+in neither the repository nor any artifact; rotating it means rotating the trust
+root: change the pinned key in `src/updater.js` and cut a full release.
 
 `scripts/probes/` holds the one-off evidence scripts behind the findings report —
 capability matrix, region gate, the `reasoning_effort` no-op sampling, budget
@@ -540,7 +562,9 @@ On privacy and trust, plainly:
 - The forward key is minted at runtime by `crypto`, compared with `timingSafeEqual`, and stored in a `0600` file. No hardcoded credential ships in this repository. `/` and `/health` answer ahead of the key check because they are liveness probes — they answer only "is it there"; the model roster requires the key.
 - The plugin's HTTP routes carry a **request trust fence** (fixed in v1.1): the plugin's `/api/our-free-model` prefix outranks the kernel's `/api` in webServer's longest-prefix dispatch and used to bypass kernel auth. Every request now goes through the composition's `connection` admission first (exactly the kernel's `/api` check: cookie/token); compositions without a connection service fall back to a structural fence — loopback Host, cross-site `sec-fetch-site` refused, `Origin`/`Referer` must match the Host authority and port, and a **missing or empty Host is refused too** (fail closed; there is no fallback to the socket's local address). Measured: foreign Host/Origin 403, cookieless loopback 401. `connection` is resolved per request, because the browser half provides it only after plugins load — reading it once at apply time silently degrades the fence to its structural layer for the life of the process.
 - **Announcement HTML renders through a strict client-side allowlist**: `scripts/sanitize-test.mjs` runs an XSS corpus (script injection, event handlers, `javascript:`/`data:` URLs, iframe/svg/form, style injection, mangled tags) and asserts all of it is dropped; nothing ever reaches an `innerHTML` sink. The feed URL is user-overridable, so the renderer treats feed content as untrusted.
-- **The in-app upgrade integrity chain**: manifest validation (semver, path traversal, hash shape) → per-file SHA-256 + byte size on download → read-back verification of staging → read-back verification after install → backup restore on any failure. The manifest is re-fetched immediately before installing so a stale one can never vouch for different bytes. The upgrade's trust root is the plugin repository itself (same as installing an update); boundaries in [Known limitations](#known-limitations).
+- **The in-app upgrade integrity chain (signed as of v1.3.2)**: manifest Ed25519 signature verification (public key pinned in `src/updater.js`; unsigned or unverified manifests are refused outright, so no mirror can serve an installable forgery) → manifest validation (semver, path traversal, hash shape, `base` restricted to manifest-relative paths) → per-file SHA-256 + byte size on download → read-back verification of staging → read-back verification after install → backup restore on any failure. The manifest is re-fetched immediately before installing so a stale one can never vouch for different bytes. Boundaries in [Known limitations](#known-limitations).
+- **The update channel is fully decoupled from `feedUrl`** (v1.3.2): the setting redirects the announcement feed only, never the upgrade manifest — previously one settings value could point the update channel at any server with self-consistent hashes, turning "wrote a config field" into "executed arbitrary code in the host process". The announcement override itself is now restricted to https (loopback http excepted, so a locally-hosted mirror and the test suites still work) and may not carry credentials.
+- **The forward listener binds loopback by resolution, not by spelling** (v1.3.2): a hostname such as `localhost` is resolved with `dns.lookup` first and every answer must be loopback; the listener binds the resolved IP — so a hosts file or enterprise DNS pointing `localhost` at a routable interface can no longer pass the check while the listener hands the lane to the subnet.
 - Uninstalling removes the bundle entry; the plugin leaves no patches behind. Its data directory is plain JSON you can delete.
 
 ## License

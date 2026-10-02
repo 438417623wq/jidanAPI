@@ -2,10 +2,18 @@
   "$schema": "./announcements.schema.md",
   "announcements": [
     {
+      "id": "2026-10-02-v1.3.2-release",
+      "title": "v1.3.2：自更新信任链加签名（#19）；转发端口工具调用修复（#20/#21）；限额退避（#13）；热力图贴合并（#11）",
+      "level": "update",
+      "pinned": true,
+      "createdAt": "2026-10-02T12:00:00Z",
+      "html": "<p><strong>Our Free Model v1.3.2</strong> 处理了 issue 追踪单上的五条：</p><ul><li><strong>自更新信任链换根（#19）</strong>——此前升级清单就是一份 HTTPS 拉下来的裸 JSON，文件哈希写在清单里，伪造清单的人连哈希一起伪造；jsDelivr 这个第三方 CDN 也在信任链上。现在每份清单必须带发布私钥的 <strong>Ed25519 签名</strong>，公钥 pin 在插件内，私钥不入仓：镜像（含 jsDelivr）被投毒只会导致升级失败，不再可能变成代码执行。<code>feedUrl</code> 设置与更新源彻底解耦（只重定向公告）；清单 <code>base</code> 只允许相对路径；插件 API 请求体加 1MB 上限；转发监听改按 DNS 解析绑定、要求全回环，hosts 文件把 localhost 指到可路由接口不再能漏配额。</li><li><strong>转发端口下工具调用修复（#20/#21）</strong>——流式 <code>tool_calls[].index</code> 此前与 reasoning 块共用计数器，首个工具调用常以 index 2+ 到达，按 index 累积的客户端拿到带洞数组、参数被并丢；现在按调用重编从 0 起。模型去调 <code>bash</code>/<code>read</code>/<code>grep</code> 这些为过指纹门而追加的诱饵工具（#21 报的 <code>Unknown tool 'bash'</code> 正是它们）时，调用在转发口被按块抑制，不再把客户端没注册的工具递过去。被输出上限截断的工具参数回合，流式也如实回 <code>length</code>。<code>/v1/responses</code> 支持 <code>instructions</code>/<code>max_output_tokens</code>/流式，流式 output_index 不再碰撞。</li><li><strong>达到限额的体验（#13）</strong>——车道的 429 自带递增的 retry-after，插件此前还会自动重试两次，把一面墙撞成三面；现在 429 当场上报。可用性探测整轮全 429 后按 30→120 分钟指数退避（手动 reprobe、出口变化、启动轮不受限），探测不再和你的回合抢同一个按 IP 计额的池子。测速按钮改用默认档并放宽前端超时，不再几乎必失败还烧配额。</li><li><strong>热力图贴合并（#11）</strong>——格子 gap 归零、圆角收小，GitHub contribution graph 式连贯观感。</li><li><strong>其它</strong>——前端按路由放宽超时（测速 240s、升级 600s）；公告推送断连后按 30s→5min 退避重连，不再永久失效；升级完成会清掉旧错误横幅；store 落盘失败会在日志说一次。</li></ul><p>全部 20 个离线套件与 <code>tsc --noEmit</code> 通过，并在真实 dsh 宿主上完成安装与升级链路验收。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
+    },
+    {
       "id": "2026-09-27-v1.3.1-release",
       "title": "v1.3.1：工具结果终于送达模型（#9）；被掐断的长思考不再算成功（#10）；上游来源写进 README（#8）",
       "level": "update",
-      "pinned": true,
+      "pinned": false,
       "createdAt": "2026-09-27T04:00:00Z",
       "html": "<p><strong>Our Free Model v1.3.1</strong> 处理了 issue 追踪单上的三条：</p><ul><li><strong>工具调用与工具结果没有送给模型（#9）</strong>——dsh 在两个世代里用了两种消息形状记录工具结果：V4 之前是<strong>带 <code>tool-result</code> 内容块的 user 消息</strong>，V4 起才是 <code>role:'tool'</code> 消息。插件只认后者，于是在 <code>dsh</code> 0.1.5 / AIO 6.9.3 这一代内核上，免费车道的每一个 agent 任务都发不出工具结果：模型反复发出同一个调用、坚持说「图片读取未返回内容」，直到你手动停止。现在两种形状都会被识别并投影到三条线格式上，嵌在工具结果里的图像也不再被丢掉。同一轮里还有一个附带修复：为了过免费层指纹门而追加的 <code>bash</code> 诱饵工具会被模型真的去调用（一次会话里 24 次全部 unknown tool），现在改为把内核真实的 shell 工具（Windows 上这一代叫 <code>pwsh</code>）提升去占那个名字，调用回来时再还原成真实工具名，因此是可执行的。</li><li><strong>流被上游提前关闭时被当成正常说完（#10）</strong>——网关在既没发 finish token 也没发 usage 帧的情况下直接关闭 SSE 流时，插件会落到兜底的 <code>stop</code>，于是「模型思考了五分钟然后没了动静」这一轮被标记为完成，统计里还是 <code>ok:true / 0 tokens</code>。现在这会当场判为失败：界面上写出「本轮运行失败」和截断发生在第几秒，统计行留下 <code>truncated</code> 与 <code>noUsage</code> 以便审计。重发只留给「一个 token 都没出来」那种截断——在一次真实 <code>dsh</code> web 会话里实测过：这条车道稳定在 304 秒掐断纯思考轮次，而当时代码可重试，harness 就把同一个五分钟的回答重发两遍（<code>llm/retry</code> 落在 304s 与 608s，<code>turn/end</code> 在 912s），三次同样的失败、十五分钟，最后仍然没有回答。上限是这轮长度带来的，不是网络抖动，重发拦不住它。</li><li><strong>上游来源写进 README（#8）</strong>——新增「上游是哪些源」一节：只有一个，OpenCode 的 Zen 网关（<code>https://opencode.ai</code>），用其公开免密额度，不经任何第三方中转或号池；会出网的目标一共四类，逐项列出。</li></ul><p>已在 <code>dsh</code> 0.1.5 与 0.1.7 两代内核的真实会话记录上交叉验证。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
     },

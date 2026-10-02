@@ -125,7 +125,10 @@ const cases = [
   ['model not served on this egress', 'no-such-model-free', {}, 'error', CODE.server, true, undefined, false],
   ['plugin switched off mid-call', 'test-model-free', { state: () => ({ ...STATE(), settings: { ...STATE().settings, enabled: false } }) }, 'error', 'CONFIG_DISABLED', false, undefined, false],
   ['a geography refusal inside the stream', 'region-model-free', {}, 'error', CODE.region, false, 'region-model-free', false],
-  ['the free usage limit inside the stream', 'quota-model-free', {}, 'error', CODE.quota, true, undefined, false],
+  // Issue #13: the lane's 429 carries a growing retry-after, so the automatic
+  // retries turned one quota wall into three. A quota refusal now surfaces to
+  // the harness immediately, the same way a geography refusal does.
+  ['the free usage limit inside the stream', 'quota-model-free', {}, 'error', CODE.quota, false, undefined, false],
 ]
 
 let failed = 0

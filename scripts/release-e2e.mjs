@@ -80,10 +80,12 @@ function updaterFor(pkgDir, dataDir) {
   fs.mkdirSync(dataDir, { recursive: true })
   return new PluginUpdater({
     pkgDir, dataDir,
+    // The feed override never reaches the update channel (issue #19); the
+    // local server stands in for the repository sources instead. The manifest
+    // under test is the real signed one, verified against the pinned key.
     settings: () => ({ feedUrl: `${base}/feed/announcements.json` }),
     fetchImpl: fetch,
-    // The published CDN sources stay out of a test run: only this server.
-    defaultSources: [],
+    defaultSources: [`${base}/feed/manifest.json`],
     log: () => {},
   })
 }
@@ -203,7 +205,11 @@ await check('NEGATIVE CONTROL: a manifest that lies about one byte is refused', 
   try { await updaterFor(pkgDir, dataDir).apply({ version: '9.9.9' }) } catch (reason) { error = reason }
   tampered = null
   assert(error !== undefined, 'the upgrade SUCCEEDED against a lying manifest — verification is not happening')
-  assert(/size \d+ != manifest \d+/.test(String(error?.message)), `refused for the wrong reason: ${error?.message}`)
+  // Since the release key exists, a manifest edited after signing never gets
+  // as far as staging: the signature check refuses it first. The size-lie path
+  // itself (signed manifest, lying digests) is covered in updater-test with a
+  // throwaway keypair — 'a hash mismatch aborts staging'.
+  assert(/signature/.test(String(error?.message)), `refused for the wrong reason: ${error?.message}`)
   const after = JSON.parse(fs.readFileSync(path.join(pkgDir, 'package.json'), 'utf8'))
   assert(after.version === PREVIOUS, `the bad release was installed anyway (${after.version})`)
   console.log(`     refused as designed: ${String(error.message).slice(0, 74)}…`)

@@ -15,7 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
-import { parseVersion, compareVersions, parseManifest, fileUrlOf, PluginUpdater, stageRelease, verifyStaged, backupPackage, restoreBackup, installStaged, verifyInstalled } from '../src/updater.js'
+import { parseVersion, compareVersions, parseManifest, fileUrlOf, PluginUpdater, stageRelease, verifyStaged, backupPackage, restoreBackup, installStaged, verifyInstalled, signManifest, verifyManifestSignature, stableStringify, PINNED_MANIFEST_PUBLIC_KEY } from '../src/updater.js'
 const CONTROLLED_DEFAULTS = ['http://127.0.0.1:1/never.json']
 
 let failures = 0
@@ -64,6 +64,13 @@ check('manifest rejects missing or malformed hashes', () => {
   assert.throws(() => parseManifest(manifestOf({ files: [{ path: 'index.js', sha256: 'nope', size: 1 }] })))
   assert.throws(() => parseManifest(manifestOf({ files: [{ path: 'index.js', sha256: 'a'.repeat(64), size: -5 }] })))
 })
+check('manifest base must stay manifest-relative (issue #19)', () => {
+  for (const base of ['https://evil.example/', '//evil.example/', '/abs', 'C:\escape']) {
+    assert.throws(() => parseManifest(manifestOf({ base })), /relative/, `base "${base}" must be refused`)
+  }
+  assert.equal(parseManifest(manifestOf({ base: '../' })).base, '../')
+  assert.equal(parseManifest(manifestOf()).base, '../', 'absent base falls back to ../')
+})
 check('fileUrlOf joins base and encodes segments', () => {
   const url = fileUrlOf('https://raw.example/main/feed/manifest.json', parseManifest(manifestOf()), 'src/adapter.js')
   assert.equal(url, 'https://raw.example/main/src/adapter.js')
@@ -88,10 +95,19 @@ function serveFrom(files) {
     res.end(body)
   })
 }
-const manifestFor = files => ({
-  version: NEW, base: '../', publishedAt: '2026-09-25T00:00:00Z', notes: '<p>fresh</p>',
-  files: Object.entries(files).map(([rel, body]) => ({ path: rel, size: Buffer.byteLength(body), sha256: sha(body) })),
-})
+// Issue #19: the upgrader now refuses manifests it cannot attribute to the
+// release key, so every fixture is signed with a throwaway keypair handed to
+// the updater in place of the pinned public one.
+const { publicKey: testPublicKey, privateKey: testPrivateKey } = crypto.generateKeyPairSync('ed25519')
+const TEST_PUBLIC_KEY = testPublicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+const manifestFor = files => {
+  const unsigned = {
+    version: NEW, base: '../', publishedAt: '2026-09-25T00:00:00Z', notes: '<p>fresh</p>',
+    files: Object.entries(files).map(([rel, body]) => ({ path: rel, size: Buffer.byteLength(body), sha256: sha(body) })),
+  }
+  // Sign over the exact shape the verifier reconstructs (parseManifest's output).
+  return { ...unsigned, signature: signManifest(parseManifest(unsigned), testPrivateKey) }
+}
 const newManifest = manifestFor(newFiles)
 // The manifest hashes the real release; the corrupt server serves different
 // bytes for index.js, so the staged copy can never hash-verify.
@@ -137,7 +153,7 @@ await checkAsync('a hash mismatch aborts staging', async () => {
 await checkAsync('PluginUpdater.check detects the newer version', async () => {
   const pkg = makePackage(OLD)
   const data = makeDataDir()
-  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${base}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: CONTROLLED_DEFAULTS })
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${base}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: [`${base}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY })
   const status = await updater.check()
   assert.deepEqual(status, { available: true, current: OLD, latest: NEW })
   fs.rmSync(pkg, { recursive: true, force: true })
@@ -146,15 +162,84 @@ await checkAsync('PluginUpdater.check detects the newer version', async () => {
 await checkAsync('PluginUpdater rejects an unparsable manifest', async () => {
   const pkg = makePackage(OLD)
   const data = makeDataDir()
-  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${badBase}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: CONTROLLED_DEFAULTS })
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`${badBase}/repo/feed/manifest.json`] })
   await assert.rejects(() => updater.check())
   fs.rmSync(pkg, { recursive: true, force: true })
   fs.rmSync(data, { recursive: true, force: true })
 })
+await checkAsync('a manifest without a signature is refused', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const unsigned = JSON.parse(JSON.stringify(newManifest))
+  delete unsigned.signature
+  const unsignedServer = serveFrom({ 'repo/feed/manifest.json': JSON.stringify(unsigned) })
+  await new Promise(resolve => unsignedServer.listen(0, '127.0.0.1', resolve))
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`http://127.0.0.1:${unsignedServer.address().port}/repo/feed/manifest.json`] })
+  await assert.rejects(() => updater.check(), /signature/)
+  unsignedServer.close()
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
+await checkAsync('a manifest tampered after signing is refused', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const tampered = JSON.parse(JSON.stringify(newManifest))
+  tampered.version = '9.9.9'
+  const tamperedServer = serveFrom({ 'repo/feed/manifest.json': JSON.stringify(tampered) })
+  await new Promise(resolve => tamperedServer.listen(0, '127.0.0.1', resolve))
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`http://127.0.0.1:${tamperedServer.address().port}/repo/feed/manifest.json`] })
+  await assert.rejects(() => updater.check(), /signature/)
+  tamperedServer.close()
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
+await checkAsync('a manifest signed by another key is refused', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const stranger = crypto.generateKeyPairSync('ed25519').privateKey
+  const foreign = { ...JSON.parse(JSON.stringify(newManifest)), signature: signManifest(parseManifest(newManifest), stranger) }
+  const foreignServer = serveFrom({ 'repo/feed/manifest.json': JSON.stringify(foreign) })
+  await new Promise(resolve => foreignServer.listen(0, '127.0.0.1', resolve))
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`http://127.0.0.1:${foreignServer.address().port}/repo/feed/manifest.json`] })
+  await assert.rejects(() => updater.check(), /signature/)
+  foreignServer.close()
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
+await checkAsync('the feedUrl setting no longer redirects update checks', async () => {
+  // Issue #19: a settings value that could point the update channel anywhere
+  // was one step from arbitrary code execution. The override now reaches the
+  // announcements only; this server answers, but the updater must not call it.
+  let hits = 0
+  const watched = http.createServer(() => { hits += 1 })
+  await new Promise(resolve => watched.listen(0, '127.0.0.1', resolve))
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const updater = new PluginUpdater({
+    pkgDir: pkg, dataDir: data,
+    settings: () => ({ feedUrl: `http://127.0.0.1:${watched.address().port}/repo/feed/announcements.json` }),
+    fetchImpl: fetch, defaultSources: [`${base}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY,
+  })
+  const status = await updater.check()
+  assert.equal(status.available, true)
+  assert.equal(hits, 0, 'the update check never touched the feed override')
+  watched.close()
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
+check('stableStringify is key-order independent', () => {
+  assert.equal(stableStringify({ b: 1, a: [2, { z: null, y: 'x' }] }), stableStringify({ a: [2, { y: 'x', z: null }], b: 1 }))
+})
+check('verifyManifestSignature answers false on malformed input', () => {
+  assert.equal(verifyManifestSignature(null, TEST_PUBLIC_KEY), false)
+  assert.equal(verifyManifestSignature({ version: '1.0.0' }, TEST_PUBLIC_KEY), false)
+  assert.equal(verifyManifestSignature({ version: '1.0.0', signature: 'not base64!!' }, TEST_PUBLIC_KEY), false)
+  assert.equal(verifyManifestSignature({ ...newManifest }, ''), false, 'an empty pinned key refuses everything')
+})
 await checkAsync('apply() upgrades the package in place and records history', async () => {
   const pkg = makePackage(OLD)
   const data = makeDataDir()
-  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${base}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: CONTROLLED_DEFAULTS })
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`${base}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY })
   const phases = []
   const result = await updater.apply({ onProgress: progress => { if (progress?.phase !== undefined) phases.push(progress.phase) } })
   assert.deepEqual(result, { version: NEW, previous: OLD, files: 4, bytes: Object.values(newFiles).reduce((sum, body) => sum + Buffer.byteLength(body), 0) })
@@ -187,7 +272,7 @@ await checkAsync('apply() drops files the new release removed', async () => {
   fs.mkdirSync(path.join(pkg, '.git'), { recursive: true })
   fs.writeFileSync(path.join(pkg, '.git', 'HEAD'), 'ref: refs/heads/main\n')
   const data = makeDataDir()
-  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${base}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: CONTROLLED_DEFAULTS })
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`${base}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY })
   await updater.apply({})
   assert.equal(fs.existsSync(path.join(pkg, 'obsolete.js')), false, 'a file absent from the manifest is removed')
   assert.equal(fs.existsSync(path.join(pkg, 'scripts', 'picker-test.mjs')), true, 'the development scaffolding survives')
@@ -202,7 +287,7 @@ await checkAsync('a failed apply leaves the installed package and history consis
   const data = makeDataDir()
   // The corrupt server's bytes never hash-verify, so staging aborts before the
   // installed package is touched; the failure lands in the history log.
-  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({ feedUrl: `${corruptBase}/repo/feed/announcements.json` }), fetchImpl: fetch, defaultSources: CONTROLLED_DEFAULTS })
+  const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl: fetch, defaultSources: [`${corruptBase}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY })
   await assert.rejects(() => updater.apply({}), /staging failed/)
   assert.equal(updater.currentVersion(), OLD)
   assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), oldFiles['index.js'])

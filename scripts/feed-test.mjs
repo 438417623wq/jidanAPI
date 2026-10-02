@@ -171,6 +171,26 @@ check('owner override is consulted first, {repo} expands', () => {
   assert.ok(DEFAULT_FEED_SOURCES.every(source => sources.includes(source)), 'defaults stay as fallback')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+check('a plaintext, non-loopback override is refused (issue #19)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-'))
+  const logs = []
+  const store = new AnnouncementFeed({ settings: () => ({ feedUrl: 'http://lan.example/feed.json' }), cacheFile: path.join(dir, 'f.json'), log: message => logs.push(message) })
+  assert.deepEqual(store.sources(), DEFAULT_FEED_SOURCES, 'the override never reaches the source list')
+  assert.ok(logs.some(message => message.includes('feedUrl')), 'the refusal is said out loud')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+check('an override with embedded credentials is refused', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-'))
+  const store = new AnnouncementFeed({ settings: () => ({ feedUrl: 'https://user:pass@example.com/feed.json' }), cacheFile: path.join(dir, 'f.json') })
+  assert.deepEqual(store.sources(), DEFAULT_FEED_SOURCES)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+check('a loopback http override stays allowed for local mirrors', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-'))
+  const store = new AnnouncementFeed({ settings: () => ({ feedUrl: 'http://127.0.0.1:8099/announcements.json' }), cacheFile: path.join(dir, 'f.json') })
+  assert.equal(store.sources()[0], 'http://127.0.0.1:8099/announcements.json')
+  fs.rmSync(dir, { recursive: true, force: true })
+})
 
 server.close()
 if (failures === 0) console.log('feed-test: OK')

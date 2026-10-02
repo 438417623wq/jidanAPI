@@ -67,8 +67,11 @@ export class FreeModelAdapter {
       mode: 'normal',
       maxRetries: 2,
       // A regional refusal is a property of the egress, not a transient fault;
-      // retrying it only spends quota. It is deliberately absent here.
-      retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
+      // retrying it only spends quota. It is deliberately absent here. So is
+      // RATE_LIMIT: this lane's 429 carries a *growing* retry-after, and the two
+      // automatic retries turned every quota wall into three walls — the same
+      // turn, paid thrice, arriving later (issue #13).
+      retryableCodes: Object.freeze(['EMPTY_RESPONSE', 'SERVER', 'TIMEOUT', 'TRANSPORT']),
       initialDelayMs: 700,
       maxDelayMs: 8000,
       jitterRatio: 0.2,

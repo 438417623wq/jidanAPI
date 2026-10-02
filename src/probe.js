@@ -53,6 +53,7 @@ export async function probeModel(model, { attributionUserAgent, signal, timeoutM
   applyFingerprint(body, wire === 'responses')
 
   let firstDelta
+  let streamError
   try {
     await postStreamed({
       path: endpointFor(model.id),
@@ -63,10 +64,29 @@ export async function probeModel(model, { attributionUserAgent, signal, timeoutM
       signal,
       timeoutMs,
       onData: payload => {
+        // The lane answers some refusals inside a 200 stream — a `{"type":
+        // "error"}` or `{"error": …}` frame arrives where the deltas were
+        // expected (src/stream.js classifies the same frames for real turns).
+        // Reading only "did a delta look like a delta" called such a stream
+        // available, and a model that fails every honest turn sat in the picker
+        // with a green badge.
+        if (streamError === undefined && /"(?:type"\s*:\s*"error"|"error"\s*:)/.test(payload)) {
+          try {
+            const parsed = JSON.parse(payload)
+            const failure = parsed?.error ?? (parsed?.type === 'error' ? parsed : undefined)
+            if (failure !== undefined && failure !== null) {
+              streamError = typeof failure.message === 'string' ? failure.message : 'upstream error'
+              return
+            }
+          } catch { /* not JSON the lane emits; the delta regex below still runs */ }
+        }
         if (firstDelta !== undefined) return
         if (/"(delta|content|text|output_item)"|response\.(output_item|output_text|function_call)/.test(payload)) firstDelta = Date.now()
       },
     })
+    if (streamError !== undefined) {
+      return { state: STATE.unknown, detail: streamError.slice(0, 200), latencyMs: Date.now() - started }
+    }
     return { state: STATE.available, latencyMs: Date.now() - started, ttftMs: firstDelta === undefined ? undefined : firstDelta - started }
   } catch (error) {
     return {
@@ -179,7 +199,10 @@ export async function detectEgress({ signal, timeoutMs = 8000 } = {}) {
  *
  * Concurrency stays low on purpose: this lane accounts quota per session and
  * answers 429 with growing retry-after, so a wide burst would throttle the very
- * user whose availability we are establishing.
+ * user whose availability we are establishing. A round probes every model —
+ * partial rounds leave verdicts stale and the picker half-explained — and the
+ * periodic loop holds *whole rounds* off while a quota backoff window is open
+ * (the caller's concern, see index.js) instead of truncating this one.
  */
 export async function probeCatalog(models, options = {}, onResult = () => {}, concurrency = 2) {
   const results = {}
