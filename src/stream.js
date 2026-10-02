@@ -177,6 +177,7 @@ function feedChat(sink, payload, renameMap, onFinish) {
   for (const choice of payload.choices ?? []) {
     const delta = choice.delta ?? {}
     if (typeof delta.reasoning === 'string') sink.reasoning('r', delta.reasoning)
+    else if (typeof delta.reasoning_content === 'string') sink.reasoning('r', delta.reasoning_content)
     else if (Array.isArray(delta.reasoning_details)) {
       for (const part of delta.reasoning_details) if (typeof part?.text === 'string') sink.reasoning('r', part.text)
     }
@@ -414,9 +415,9 @@ function carriesDelta(payload, wire) {
     const delta = choice.delta ?? {}
     return (typeof delta.content === 'string' && delta.content !== '')
       || (typeof delta.reasoning === 'string' && delta.reasoning !== '')
-      // feedChat consumes this shape, so the window has to start here too; missing
-      // it made the first observed frame the first *visible* one, which on a
-      // reasoning-heavy model is minutes after decoding began.
+      // The co-paid relay streams DeepSeek-style reasoning on `reasoning_content`;
+      // a reasoning-heavy turn there starts the window at its first frame too.
+      || (typeof delta.reasoning_content === 'string' && delta.reasoning_content !== '')
       || (Array.isArray(delta.reasoning_details) && delta.reasoning_details.some(part => typeof part?.text === 'string' && part.text !== ''))
       || (delta.tool_calls ?? []).length > 0
   })
