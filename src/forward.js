@@ -128,6 +128,110 @@ function isLoopbackIp(ip) {
 }
 
 /**
+ * Read a failed `listen` into something a settings page can show.
+ *
+ * `EACCES` is the interesting one. On Windows a port already owned by a
+ * wildcard (`0.0.0.0`) listener does not answer `EADDRINUSE` on a loopback
+ * bind — it answers `EACCES`, which reads like a permission problem and sends
+ * the reader looking at the wrong thing. The usual owner is a
+ * `netsh interface portproxy` rule (served by IP Helper) or a Hyper-V/WinNAT
+ * reservation, both of which outlive the process that needed them.
+ *
+ * @returns {{kind: 'held'|'in-use'|'unavailable'|'unknown', code: string, retryable: boolean, hint: string}}
+ */
+export function classifyBindError(error) {
+  const code = String(error?.code ?? '')
+  if (code === 'EACCES' || code === 'EPERM') {
+    return {
+      kind: 'held',
+      code,
+      retryable: true,
+      hint: 'another process already owns this port; on Windows a listener on 0.0.0.0 — a "netsh interface portproxy" rule served by IP Helper, for one — makes the loopback bind fail with EACCES instead of EADDRINUSE',
+    }
+  }
+  if (code === 'EADDRINUSE') {
+    return { kind: 'in-use', code, retryable: true, hint: 'another process already owns this port' }
+  }
+  if (code === 'EADDRNOTAVAIL') {
+    return { kind: 'unavailable', code, retryable: false, hint: 'the resolved loopback address is not on this machine' }
+  }
+  return { kind: 'unknown', code, retryable: false, hint: '' }
+}
+
+/** Shape one bind failure for the settings payload. */
+function bindFailure(error) {
+  const verdict = classifyBindError(error)
+  return { code: verdict.code, kind: verdict.kind, message: String(error?.message ?? error), hint: verdict.hint }
+}
+
+function listenOnce(server, port, address) {
+  return new Promise((resolve, reject) => {
+    const onError = error => {
+      server.off('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.off('error', onError)
+      resolve(server.address()?.port ?? 0)
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, address)
+  })
+}
+
+const delay = ms => new Promise(resolve => { setTimeout(resolve, ms) })
+
+const BIND_ATTEMPTS = 4
+const BIND_BACKOFF_MS = 150
+const BIND_SCAN = 10
+
+/**
+ * Bind the listener, tolerating a port that is *temporarily* or *permanently*
+ * someone else's.
+ *
+ * Two failure shapes matter and they need different answers. A listener that is
+ * closing, or a portproxy rule that was just removed, frees the port within a
+ * few hundred milliseconds — so the same port is worth a few retries before the
+ * listener is declared dead. A port that is genuinely taken never frees, and the
+ * old behaviour (one `listen`, one rejected promise) left the forward listener
+ * down until the user guessed a different port or restarted the host. Walking to
+ * the next free port keeps the feature usable; the caller publishes the real
+ * port, so nothing is silent about it.
+ *
+ * @returns {Promise<{port: number, requested: number, fellBack: boolean, bindError: object|null}>}
+ */
+export async function bindForwardPort(server, { address, port, attempts = BIND_ATTEMPTS, backoffMs = BIND_BACKOFF_MS, scan = BIND_SCAN, log = () => {} } = {}) {
+  const requested = Number.isFinite(Number(port)) && Number(port) > 0 ? Math.trunc(Number(port)) : 0
+  if (requested === 0) {
+    // An ephemeral port was asked for; the OS picks and there is nothing to fall back to.
+    return { port: await listenOnce(server, 0, address), requested: 0, fellBack: false, bindError: null }
+  }
+  let last = null
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    try {
+      return { port: await listenOnce(server, requested, address), requested, fellBack: false, bindError: null }
+    } catch (error) {
+      last = error
+      const verdict = classifyBindError(error)
+      if (!verdict.retryable) throw error
+      log(`port ${requested} is not available yet (${verdict.code}); retrying`)
+      if (attempt < attempts - 1) await delay(backoffMs * 2 ** attempt)
+    }
+  }
+  for (let offset = 1; offset <= Math.max(0, scan) && requested + offset <= 65535; offset += 1) {
+    try {
+      return { port: await listenOnce(server, requested + offset, address), requested, fellBack: true, bindError: last }
+    } catch (error) {
+      last = error
+      if (!classifyBindError(error).retryable) throw error
+    }
+  }
+  // Every nearby port is taken too; an ephemeral port still beats no listener.
+  return { port: await listenOnce(server, 0, address), requested, fellBack: true, bindError: last }
+}
+
+/**
  * Start the listener.
  *
  * @param {object} options
@@ -196,20 +300,23 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   // past the loopback-only rule. The reported `host` below stays the configured
   // spelling: the settings reconciliation compares it, not the resolved IP.
   const bindAddress = await resolveLoopbackBind(config().host)
-  const port = await new Promise((resolve, reject) => {
-    const onError = error => reject(error)
-    server.once('error', onError)
-    const desired = config()
-    server.listen(Number.isFinite(desired.port) ? desired.port : 0, bindAddress, () => {
-      server.off('error', onError)
-      server.on('error', error => log(`listener error: ${error?.message ?? error}`))
-      resolve(server.address()?.port ?? 0)
-    })
-  })
+  const requestedPort = Number.isFinite(Number(config().port)) ? Math.trunc(Number(config().port)) : 0
+  const bound = await bindForwardPort(server, { address: bindAddress, port: requestedPort, log: message => log(`bind: ${message}`) })
+  server.on('error', error => log(`listener error: ${error?.message ?? error}`))
+  if (bound.fellBack) {
+    const verdict = classifyBindError(bound.bindError)
+    log(`port ${bound.requested} is taken (${verdict.code}); listening on ${bound.port} instead${verdict.hint === '' ? '' : ` — ${verdict.hint}`}`)
+  }
 
   return {
     server,
-    port,
+    port: bound.port,
+    /** The port the settings asked for, which differs from `port` exactly when
+     *  the bind had to move. */
+    requestedPort: bound.requested,
+    fellBack: bound.fellBack,
+    /** `{code, kind, message, hint}` when the bind moved, `null` otherwise. */
+    bindError: bound.fellBack ? bindFailure(bound.bindError) : null,
     /** The address actually bound, so a caller can tell a restart from a no-op. */
     host: config().host || '127.0.0.1',
     close: () => new Promise(resolve => {

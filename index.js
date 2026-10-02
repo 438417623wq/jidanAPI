@@ -150,6 +150,8 @@ export function apply(ctx, config) {
   let egress = availability.get().egress ?? null
   let forward = null
   let forwardError = ''
+  // Non-fatal: the listener is up, but not where the settings asked for it.
+  let forwardNotice = ''
 
   // ── push channel ────────────────────────────────────────────────────────────
   const push = createPushHub({ logger })
@@ -390,6 +392,7 @@ export function apply(ctx, config) {
     }
     if (!wanted) {
       forwardError = ''
+      forwardNotice = ''
       return
     }
     // Checked again here, not only where the settings page posts: a headless
@@ -411,6 +414,15 @@ export function apply(ctx, config) {
         log: message => logger.warn?.(`our-free-model forward: ${message}`),
       })
       forwardError = ''
+      // The requested port is somebody else's for good — a `netsh interface
+      // portproxy` rule outlives this plugin, and on Windows it surfaces as
+      // EACCES on a loopback bind. `startForwardServer` walks to a free port
+      // rather than leaving the feature down; the port it settled on is what
+      // gets persisted below, and this notice is what says so.
+      forwardNotice = forward.fellBack === true && forward.bindError !== null
+        ? `port ${forward.requestedPort} is not available on this machine (${forward.bindError.code}); the listener is on port ${forward.port} instead`
+        : ''
+      if (forwardNotice !== '') logger.warn?.(`our-free-model forward: ${forwardNotice}`)
       settings.update({ forward: { ...desired, port: forward.port, host: desired.host || '127.0.0.1' } })
       settings.flush()
     } catch (error) {
@@ -577,7 +589,7 @@ export function apply(ctx, config) {
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward,
-    forwardInfo: () => ({ running: forward !== null, port: forward?.port ?? 0, error: forwardError, egress }),
+    forwardInfo: () => ({ running: forward !== null, port: forward?.port ?? 0, error: forwardError, notice: forwardNotice, egress }),
     rotateKey: () => {
       const minted = generateKey()
       settings.update({ forwardKey: minted })
@@ -1244,7 +1256,7 @@ function publicSettings(settings, forwardInfo) {
     autoReloadWatch: settings.autoReloadWatch === true,
     reloadedAt: settings.reloadedAt ?? 0,
     reloadCount: settings.reloadCount ?? 0,
-    forward: { ...(settings.forward ?? {}), running: forwardInfo.running, actualPort: forwardInfo.port, error: forwardInfo.error },
+    forward: { ...(settings.forward ?? {}), running: forwardInfo.running, actualPort: forwardInfo.port, error: forwardInfo.error, notice: forwardInfo.notice ?? '' },
   }
 }
 
