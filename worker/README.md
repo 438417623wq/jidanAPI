@@ -21,7 +21,41 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 
 ## 部署
 
-### 方式一：面板粘贴（无需本地工具）
+三种方式任选其一（Cloudflare 与自建二选一即可，核心验签逻辑是同一份 `worker.js`）。
+
+### 方式零：宝塔面板自建 Node 网关（无需 Cloudflare）
+
+前提：服务器装了宝塔面板（Linux 版），有一个能解析到这台服务器的域名（比如在 DNS 服务商给 `eac.你的域名` 加一条 A 记录指向服务器 IP）。
+
+1. **装 Node**：宝塔 → 软件商店 → 搜索「Node.js版本管理器」→ 安装，再在其中安装 Node 20 或 22（LTS）。
+2. **上传文件**：宝塔 → 文件 → 新建目录 `/www/eac-gateway/`，把本目录的 **两个文件** 上传进去：`worker.js` 和 `gateway-node.mjs`（必须同目录）。
+3. **写配置**：在 `/www/eac-gateway/` 新建文件 `.env`，内容（三个真实值取自 `D:\our free model\eac-channel.private.json`：`base`→UPSTREAM_URL、`apiKey`→UPSTREAM_API_KEY、`signingSecret`→SIGNING_SECRETS）：
+   ```ini
+   UPSTREAM_URL=https://<中继地址>/v1
+   UPSTREAM_API_KEY=粘贴私有 JSON 的 apiKey（不要把任何真实 key 写进本仓库的任何文件）
+   SIGNING_SECRETS=这里粘贴 signingSecret（43 位左右的一串）
+   MODELS=deepseek-ai/deepseek-v4.1-flash,moonshotai/kimi-k2.6,moonshotai/kimi-k3,openai/gpt-oss-20b,z-ai/glm-5.3,z-ai/glm-5.3-flash
+   HOST=127.0.0.1
+   PORT=17788
+   RATE_LIMIT_PER_MINUTE=60
+   ```
+   把 `.env` 权限改成 600（右键 → 权限），不要让其它用户可读。
+4. **建 Node 项目**：宝塔 → 网站 → Node 项目 → 添加 Node 项目：
+   - 项目目录：`/www/eac-gateway`
+   - 启动方式/运行脚本：`node gateway-node.mjs`（启动文件选 `gateway-node.mjs`）
+   - 端口：`17788`
+   - 运行用户随意（www 即可），提交并启动。日志里应出现 `eac gateway listening on 127.0.0.1:17788 → …`。
+   - 旧版面板没有 Node 项目功能：用 PM2 管理器添加同目录 `gateway-node.mjs` 即可，效果一样。
+5. **域名 + 证书**：宝塔 → 网站 → 添加站点（域名填第 0 步那个，PHP 版本选纯静态）→ 站点设置 → 反向代理 → 添加反向代理，目标 URL `http://127.0.0.1:17788`，发送域名 `$host`；再到 SSL → Let's Encrypt 申请证书 → 开启「强制 HTTPS」。
+6. **安全**：确认宝塔安全组/防火墙**没有**放行 17788（网关只监听本机回环，外网只走 Nginx 的 443）。
+7. **自检**：在你自己电脑上（本仓库目录）跑：
+   ```
+   node worker\verify-deployment.mjs https://eac.你的域名/v1 "D:\our free model\eac-channel.private.json"
+   ```
+   三行全 ok 即部署成功。服务器时间要准（签名有 ±10 分钟防重放窗口，宝塔机器一般 NTP 已同步；若 401 且本地同配置正常，先查服务器时间）。
+8. **上线切换**：自检通过后，把 `https://eac.你的域名/v1` 填进私有 JSON 的 `workerBase` → 重跑 `node scripts/eac-vault-mint.mjs "D:\our free model\eac-channel.private.json"` → 走发布流程 → 最后在中继侧轮换旧 key。
+
+### 方式一：Cloudflare 面板粘贴（无需服务器）
 
 1. Cloudflare Dashboard → Workers & Pages → **Create** → Create Worker，名字随意（如 `ofm-eac-gateway`），Deploy 后 **Edit code**，把本目录 `worker.js` 全文粘进去，Deploy。
 2. Worker → **Settings → Variables and Secrets**，添加：

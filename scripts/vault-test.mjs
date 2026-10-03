@@ -342,6 +342,44 @@ const gateway = await import('../worker/worker.js')
 
   await new Promise(resolve => shell.close(resolve))
   await new Promise(resolve => relay.close(resolve))
+
+  // The self-hosted form: the same core behind the Node host shim, driven over
+  // a real socket exactly like a 宝塔/PM2 deployment would serve it.
+  const { createGatewayServer } = await import('../worker/gateway-node.mjs')
+  const nodeRelay = http.createServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
+    })
+  })
+  await new Promise(resolve => nodeRelay.listen(0, '127.0.0.1', resolve))
+  nodeRelay.unref()
+  const nodeEnv = {
+    UPSTREAM_URL: `http://127.0.0.1:${nodeRelay.address().port}`,
+    UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
+    SIGNING_SECRETS: GATEWAY_SECRET,
+    RATE_LIMIT_PER_MINUTE: '2',
+  }
+  const nodeServer = createGatewayServer(nodeEnv)
+  await new Promise(resolve => nodeServer.listen(0, '127.0.0.1', resolve))
+  nodeServer.unref()
+  const nodeBase = `http://127.0.0.1:${nodeServer.address().port}/v1`
+
+  const nodeCall = async () => {
+    const body = ''
+    const headers = { ...signSealedRequest(GATEWAY_SECRET, { method: 'GET', path: '/v1/models', body }), accept: 'application/json' }
+    return fetch(`${nodeBase}/models`, { headers })
+  }
+  const nodeOk = await nodeCall()
+  check('the node host serves a signed listing', [nodeOk.status, (await nodeOk.json()).data?.[0]?.id], [200, 'deepseek-ai/deepseek-v4.1-flash'])
+  const refusals = []
+  for (let i = 0; i < 3; i += 1) refusals.push((await nodeCall()).status)
+  check('the node host rate-limits per ip past its window', refusals, [200, 429, 429])
+  const unsignedNode = await fetch(`${nodeBase}/models`)
+  check('the node host refuses unsigned requests like the Worker', unsignedNode.status, 401)
+  await new Promise(resolve => nodeServer.close(resolve))
+  await new Promise(resolve => nodeRelay.close(resolve))
 }
 
 // ── roster shape ─────────────────────────────────────────────────────────────
