@@ -239,6 +239,10 @@ const DASHBOARD_HTML = () => {
   try { return fs.readFileSync(path.join(here, 'dashboard.html'), 'utf8') } catch { return '<!doctype html><meta charset="utf-8"><title>EAC 网关</title><p>dashboard.html 缺失。</p>' }
 }
 
+const ENTRY_JS = () => {
+  try { return fs.readFileSync(path.join(here, 'entry.js'), 'utf8') } catch { return '/* entry.js 缺失 */' }
+}
+
 /**
  * Build the host server around the shared gateway core. Exported so the
  * offline suite can drive the exact process a deployment would run.
@@ -292,8 +296,12 @@ export function createGatewayServer(hostEnv = {}) {
       const clientIp = clientIpOf(req)
       const ipHash = analytics.ipHash(clientIp, logSalt)
 
-      // ── admin dashboard + feed (token-gated, never signature-routed) ─────
-      if ((url.pathname === prefix + '/stats' || url.pathname === prefix + '/stats-data') && adminToken === '') {
+      // ── admin dashboard + feed (data token-gated; the page self-gates) ────
+      if (url.pathname === prefix + '/entry.js') {
+        res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'public, max-age=300' })
+        return res.end(ENTRY_JS())
+      }
+      if (url.pathname === prefix + '/stats-data' && adminToken === '') {
         return json(res, 403, { error: 'admin dashboard disabled: ADMIN_TOKEN is not configured' })
       }
       if (url.pathname === prefix + '/stats-data') {
@@ -303,9 +311,9 @@ export function createGatewayServer(hostEnv = {}) {
         return json(res, 200, analytics.snapshot())
       }
       if (url.pathname === prefix + '/stats') {
-        if (!timingSafeEqual(String(url.searchParams.get('t') ?? req.headers['x-admin-token'] ?? ''), adminToken)) {
-          return json(res, 401, { error: 'bad admin token' })
-        }
+        // The page itself is public: it self-gates on the token (prompted once
+        // and remembered in the admin's browser localStorage) before asking
+        // for data, which is where the real check lives.
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
         return res.end(DASHBOARD_HTML())
       }

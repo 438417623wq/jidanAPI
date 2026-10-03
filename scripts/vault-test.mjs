@@ -449,7 +449,9 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
     const badFeed = await fetch(`http://127.0.0.1:${concServer.address().port}/stats-data?t=wrong`)
     check('the stats feed refuses a bad admin token', badFeed.status, 401)
     const noTokenPage = await fetch(`http://127.0.0.1:${concServer.address().port}/stats`)
-    check('the dashboard refuses a bad admin token', noTokenPage.status, 401)
+    check('the dashboard page serves its self-gate without a token', noTokenPage.status, 200)
+    const entry = await fetch(`http://127.0.0.1:${concServer.address().port}/entry.js`)
+    check('the sidebar entry script is served by the gateway', [entry.status, (await entry.text()).includes('EAC ' + '看板')], [200, true])
 
     const chatBodyText = JSON.stringify({ model: 'deepseek-ai/deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }] })
     const signedChat = () => new Request(`${concBase}/chat/completions`, {

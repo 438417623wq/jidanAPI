@@ -28,6 +28,12 @@
   button { background: #2b3b5e; color: #dbe2f0; border: 0; border-radius: 6px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
   button:hover { background: #354a75; }
   svg text { fill: #7d8aa3; font-size: 9.5px; }
+  #gate { position: fixed; inset: 0; background: rgba(8, 12, 20, 0.88); display: flex; align-items: center; justify-content: center; z-index: 50; }
+  #gate .box { background: #171e2e; border: 1px solid #26324a; border-radius: 12px; padding: 26px 30px; width: 340px; }
+  #gate h2 { font-size: 15px; margin: 0 0 6px; }
+  #gate p { color: #7d8aa3; font-size: 12px; margin: 0 0 14px; }
+  #gate input { width: 100%; background: #0f1420; border: 1px solid #26324a; color: #dbe2f0; border-radius: 6px; padding: 8px 10px; font-size: 13px; margin-bottom: 12px; }
+  #gate .gerr { color: #ff8484; font-size: 12px; margin-bottom: 10px; min-height: 16px; }
 </style>
 </head>
 <body>
@@ -38,6 +44,17 @@
 
 <div class="panel"><h2>请求热力图 · 星期 × 小时（近 7 天，颜色越亮请求越多）</h2><div id="heat"></div></div>
 <div class="panel"><h2>请求曲线 · 近 72 小时（每小时请求数）</h2><div id="curve"></div></div>
+<div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+  <div id="gate" style="display:none">
+  <div class="box">
+    <h2>EAC 网关管理令牌</h2>
+    <p>输入 .env 里的 ADMIN_TOKEN，本浏览器会记住（存于 localStorage，不动服务器）。</p>
+    <input id="gateToken" type="password" placeholder="ADMIN_TOKEN" autocomplete="off">
+    <div class="gerr" id="gateErr"></div>
+    <button onclick="useGateToken()">进入看板</button>
+  </div>
+</div>
+
 <div style="display:grid; grid-template-columns: 1fr 1fr; gap: 16px;">
   <div class="panel"><h2>Token 消耗占比 · 按 IP</h2><div id="pieIp"></div><div class="legend" id="pieIpL"></div></div>
   <div class="panel"><h2>Token 消耗占比 · 按模型</h2><div id="pieModel"></div><div class="legend" id="pieModelL"></div></div>
@@ -54,16 +71,33 @@
 
 <script>
 const QS = new URLSearchParams(location.search)
-const T = QS.get('t') ?? ''
+let T = QS.get('t') ?? localStorage.getItem('eacStatsToken') ?? ''
 const PALETTE = ['#4f8cff','#38d1b2','#ffb648','#ff6f91','#a78bfa','#7ee081','#ff9f6e','#5ad0f0','#f072ae','#c2d94c']
 const esc = s => String(s).replace(/[<>&"]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;','"':'&quot;'}[c]))
 const ago = ts => { const s = Math.max(0, (Date.now() - ts) / 1000); if (s < 60) return Math.floor(s) + ' 秒前'; if (s < 3600) return Math.floor(s/60) + ' 分钟前'; if (s < 86400) return Math.floor(s/3600) + ' 小时前'; return Math.floor(s/86400) + ' 天前' }
 const fmt = n => Number(n ?? 0).toLocaleString('en-US')
 
+function showGate(message) {
+  document.getElementById('gate').style.display = 'flex'
+  if (message) document.getElementById('gateErr').textContent = message
+}
+function useGateToken() {
+  T = document.getElementById('gateToken').value.trim()
+  if (T === '') { document.getElementById('gateErr').textContent = '请输入令牌'; return }
+  load()
+}
+
 async function load() {
   try {
     const res = await fetch('stats-data?t=' + encodeURIComponent(T), { cache: 'no-store' })
-    if (res.status === 401 || res.status === 403) { document.getElementById('err').textContent = '管理令牌无效：URL 需要带 ?t=<ADMIN_TOKEN>' ; return }
+    if (res.status === 401 || res.status === 403) {
+      document.getElementById('gen').textContent = ''
+      showGate(res.status === 403 ? '看板未启用：服务器 .env 需要配置 ADMIN_TOKEN' : '')
+      if (res.status === 401) document.getElementById('gateErr').textContent = '令牌无效，请重新输入'
+      return
+    }
+    document.getElementById('gate').style.display = 'none'
+    if (T !== '') { try { localStorage.setItem('eacStatsToken', T) } catch { /* 隐私模式忽略 */ } }
     const d = await res.json()
     document.getElementById('err').textContent = ''
     document.getElementById('gen').textContent = '生成于 ' + new Date(d.generatedAt).toLocaleTimeString('zh-CN')
