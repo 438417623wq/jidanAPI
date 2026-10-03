@@ -192,6 +192,23 @@ check('a loopback http override stays allowed for local mirrors', () => {
   fs.rmSync(dir, { recursive: true, force: true })
 })
 
+check('an announcement that expires while the process runs stops rendering (view recheck)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-'))
+  const store = new AnnouncementFeed({ settings: () => ({}), cacheFile: path.join(dir, 'f.json'), onArrival: () => {}, defaultSources: CONTROLLED_DEFAULTS })
+  store.load()
+  // parseFeed only filters on ingest; a cache that outlives its expiry has to
+  // drop the item at read time, not whenever the next poll happens to land.
+  store.cache.announcements = [
+    item({ id: 'gone', expiresAt: Date.now() - 60_000 }),
+    item({ id: 'kept', expiresAt: Date.now() + 60_000 }),
+    item({ id: 'plain' }),
+  ]
+  assert.deepEqual(store.view({}).items.map(row => row.id), ['kept', 'plain'], 'expired item filtered at read time')
+  assert.equal(store.view({}).unread, 2)
+  assert.equal(store.view({ ackedIds: ['kept'] }).unread, 1)
+  fs.rmSync(dir, { recursive: true, force: true })
+})
+
 server.close()
 if (failures === 0) console.log('feed-test: OK')
 else { console.error(`feed-test: ${failures} failure(s)`); process.exit(1) }
