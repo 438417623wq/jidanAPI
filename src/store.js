@@ -116,6 +116,10 @@ export class JsonStore {
       // every acknowledged setting, so the first failure gets said out loud
       // instead of rotting silently (repeat failures stay quiet: one line per
       // incident, not one per scheduled flush).
+      // Re-arm `dirty`: it was cleared before the attempt, so dispose()'s
+      // final flush would otherwise skip a write that never landed and drop
+      // the session's last changes silently.
+      this.dirty = true
       if (!this.writeFailed) {
         this.writeFailed = true
         this.log?.(`our-free-model: could not persist ${path.basename(this.file)} (${error?.message ?? error}); changes are kept in memory only`)
