@@ -23,8 +23,9 @@
  * Run: node scripts/forward-test.mjs
  */
 import http from 'node:http'
+import net from 'node:net'
 import assert from 'node:assert/strict'
-import { startForwardServer, resolveLoopbackBind, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
+import { startForwardServer, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
 import { toToolDefs } from '../src/messages.js'
 import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
@@ -65,6 +66,35 @@ async function serve(lane) {
   })
   openServers.push(server)
   return `http://127.0.0.1:${server.port}`
+}
+
+/**
+ * Port squatters for the availability tests: plain TCP listeners that hold a
+ * port the way a stray process — or a `netsh interface portproxy` rule — does.
+ */
+const occupants = []
+const releaseWhenIdle = server => new Promise(resolve => {
+  if (!server.listening) {
+    resolve()
+    return
+  }
+  server.close(() => resolve())
+})
+async function occupyAt(port) {
+  const server = net.createServer()
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(port, '127.0.0.1', resolve)
+    })
+  } catch {
+    return null
+  }
+  occupants.push(server)
+  return { port: server.address()?.port ?? port, release: () => releaseWhenIdle(server) }
+}
+async function occupy() {
+  return occupyAt(0)
 }
 
 const authFetch = (base, path, body) => fetch(`${base}${path}`, {
@@ -491,6 +521,73 @@ await checkAsync('resolveLoopbackBind accepts loopback literals and localhost', 
   assert.ok(resolved === '127.0.0.1' || resolved === '::1', `localhost must resolve to a loopback address, got ${resolved}`)
 })
 
+// ── port availability ────────────────────────────────────────────────────────
+check('classifyBindError names what the OS reported', () => {
+  assert.equal(classifyBindError({ code: 'EACCES' }).kind, 'held')
+  assert.equal(classifyBindError({ code: 'EACCES' }).retryable, true)
+  assert.match(classifyBindError({ code: 'EACCES' }).hint, /portproxy/)
+  assert.equal(classifyBindError({ code: 'EPERM' }).kind, 'held')
+  assert.equal(classifyBindError({ code: 'EADDRINUSE' }).kind, 'in-use')
+  assert.equal(classifyBindError({ code: 'EADDRNOTAVAIL' }).kind, 'unavailable')
+  assert.equal(classifyBindError({ code: 'EADDRNOTAVAIL' }).retryable, false)
+  assert.equal(classifyBindError(new Error('boom')).kind, 'unknown')
+  assert.equal(classifyBindError(null).code, '')
+})
+
+await checkAsync('bindForwardPort waits out a port that is still closing', async () => {
+  const squat = await occupy()
+  const server = http.createServer()
+  const timer = setTimeout(() => { void squat.release() }, 150)
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: squat.port, attempts: 8, backoffMs: 60 })
+  clearTimeout(timer)
+  await squat.release()
+  assert.equal(bound.fellBack, false, 'a port that frees inside the retry window must be used, not skipped')
+  assert.equal(bound.port, squat.port)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('bindForwardPort keeps a port that is free', async () => {
+  const probe = await occupy()
+  const free = probe.port
+  await probe.release()
+  const server = http.createServer()
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: free, attempts: 2, backoffMs: 20 })
+  assert.equal(bound.fellBack, false)
+  assert.equal(bound.port, free)
+  assert.equal(bound.bindError, null)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('bindForwardPort walks past a port that stays taken', async () => {
+  const held = await occupy()
+  const heldNext = await occupyAt(held.port + 1)
+  const server = http.createServer()
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: held.port, attempts: 2, backoffMs: 20, scan: 5 })
+  assert.equal(bound.fellBack, true, 'a permanently taken port must not leave the listener down')
+  assert.notEqual(bound.port, held.port)
+  assert.ok(bound.port > 0)
+  if (heldNext !== null) assert.notEqual(bound.port, heldNext.port, 'a taken neighbour must be skipped too')
+  assert.equal(bound.bindError?.code, 'EADDRINUSE', `expected the occupant's code, got ${bound.bindError?.code}`)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('startForwardServer reports the port it settled on and still serves', async () => {
+  const held = await occupy()
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: held.port, enabled: true, key: 'k-test' }),
+    complete: async () => { throw new Error('must not be called') },
+    modelRows: () => [],
+  })
+  openServers.push(server)
+  assert.equal(server.fellBack, true)
+  assert.equal(server.requestedPort, held.port)
+  assert.notEqual(server.port, held.port)
+  assert.equal(server.bindError?.code, 'EADDRINUSE')
+  const response = await fetch(`http://127.0.0.1:${server.port}/health`)
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).ok, true)
+})
+
 // ── the disabled gate ────────────────────────────────────────────────────────
 {
   const disabled = await startForwardServer({
@@ -505,6 +602,7 @@ await checkAsync('resolveLoopbackBind accepts loopback literals and localhost', 
 }
 
 for (const server of openServers) await server.close()
+for (const server of occupants) await releaseWhenIdle(server)
 if (failures > 0) console.error(`forward-test: ${failures} failure(s)`)
 else console.log('forward-test: the wire speaks OpenAI the way callers expect')
 process.exitCode = failures > 0 ? 1 : 0

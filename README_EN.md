@@ -179,6 +179,16 @@ POST /v1/chat/completions     streaming and non-streaming
 POST /v1/responses
 ```
 
+If another program holds the port, the listener does not die: it retries the same
+port for a few rounds (a listener that just closed, or a portproxy rule that was
+just removed, frees its port within a few hundred milliseconds), then walks to the
+next free port and says so on the settings page — *requested 18899 is not available,
+listening on 18900* — and the port written back into the settings is the real one.
+On Windows the most common owner is a `netsh interface portproxy` rule (served by IP
+Helper): its listener on `0.0.0.0` makes the loopback bind fail with `EACCES` rather
+than `EADDRINUSE`. `netsh interface portproxy show all` lists the rules and
+`netsh interface portproxy reset` clears them.
+
 The forward endpoint streams in full: besides the `data:` frames, a lane that is
 thinking gets periodic SSE comment frames (a `:` line), so a client's idle
 timeout cannot read "the upstream is still thinking" as "the socket is dead".
@@ -489,6 +499,7 @@ it never touches files.
 - **Desktop installs need a real directory**, for the reason given in [Install](#install).
 - **Upgrade and hot-reload trust boundary**: as of v1.3.2 the in-app upgrader's trust root is the Ed25519 public key pinned inside the plugin, not "HTTPS to the repository" — a manifest must carry the release key's signature before anything is installed, so a poisoned mirror (jsDelivr included) fails the upgrade instead of executing code. Whoever holds the **release private key** can push arbitrary code, the same trust model as whoever can push the repository, but a repository account takeover is now a failed-upgrade outage for every user rather than a direct RCE. File integrity is enforced by signature + SHA-256 manifest; content safety by the client-side allowlist renderer and the host's plugin isolation.
 - **The AIO build's WebView2 permission policy may deny notification permission** (measured `denied` on this machine). The announcement center says so plainly; plain-browser access to dsh web is unaffected.
+- **The forward port is not required to be 18899.** When the port is taken the listener moves to the next free one and writes that port back into the settings (the settings page carries the note). That is deliberate: a port change beats a forward listener that silently stays down. Which process holds the port is the operating system's answer to give; the plugin only reports what it said.
 - **The plugin routes' auth depends on the composition**: with a connection service mounted (dsh web, the AIO desktop) it matches the kernel's `/api` (the app's own cookie/token); in minimal compositions without one, a structural fence applies (loopback + same-origin), and other local processes can still reach the routes — the same behaviour the kernel has in those compositions.
 
 ## Development
