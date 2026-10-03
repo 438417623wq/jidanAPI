@@ -128,6 +128,110 @@ function isLoopbackIp(ip) {
 }
 
 /**
+ * Read a failed `listen` into something a settings page can show.
+ *
+ * `EACCES` is the interesting one. On Windows a port already owned by a
+ * wildcard (`0.0.0.0`) listener does not answer `EADDRINUSE` on a loopback
+ * bind — it answers `EACCES`, which reads like a permission problem and sends
+ * the reader looking at the wrong thing. The usual owner is a
+ * `netsh interface portproxy` rule (served by IP Helper) or a Hyper-V/WinNAT
+ * reservation, both of which outlive the process that needed them.
+ *
+ * @returns {{kind: 'held'|'in-use'|'unavailable'|'unknown', code: string, retryable: boolean, hint: string}}
+ */
+export function classifyBindError(error) {
+  const code = String(error?.code ?? '')
+  if (code === 'EACCES' || code === 'EPERM') {
+    return {
+      kind: 'held',
+      code,
+      retryable: true,
+      hint: 'another process already owns this port; on Windows a listener on 0.0.0.0 — a "netsh interface portproxy" rule served by IP Helper, for one — makes the loopback bind fail with EACCES instead of EADDRINUSE',
+    }
+  }
+  if (code === 'EADDRINUSE') {
+    return { kind: 'in-use', code, retryable: true, hint: 'another process already owns this port' }
+  }
+  if (code === 'EADDRNOTAVAIL') {
+    return { kind: 'unavailable', code, retryable: false, hint: 'the resolved loopback address is not on this machine' }
+  }
+  return { kind: 'unknown', code, retryable: false, hint: '' }
+}
+
+/** Shape one bind failure for the settings payload. */
+function bindFailure(error) {
+  const verdict = classifyBindError(error)
+  return { code: verdict.code, kind: verdict.kind, message: String(error?.message ?? error), hint: verdict.hint }
+}
+
+function listenOnce(server, port, address) {
+  return new Promise((resolve, reject) => {
+    const onError = error => {
+      server.off('listening', onListening)
+      reject(error)
+    }
+    const onListening = () => {
+      server.off('error', onError)
+      resolve(server.address()?.port ?? 0)
+    }
+    server.once('error', onError)
+    server.once('listening', onListening)
+    server.listen(port, address)
+  })
+}
+
+const delay = ms => new Promise(resolve => { setTimeout(resolve, ms) })
+
+const BIND_ATTEMPTS = 4
+const BIND_BACKOFF_MS = 150
+const BIND_SCAN = 10
+
+/**
+ * Bind the listener, tolerating a port that is *temporarily* or *permanently*
+ * someone else's.
+ *
+ * Two failure shapes matter and they need different answers. A listener that is
+ * closing, or a portproxy rule that was just removed, frees the port within a
+ * few hundred milliseconds — so the same port is worth a few retries before the
+ * listener is declared dead. A port that is genuinely taken never frees, and the
+ * old behaviour (one `listen`, one rejected promise) left the forward listener
+ * down until the user guessed a different port or restarted the host. Walking to
+ * the next free port keeps the feature usable; the caller publishes the real
+ * port, so nothing is silent about it.
+ *
+ * @returns {Promise<{port: number, requested: number, fellBack: boolean, bindError: object|null}>}
+ */
+export async function bindForwardPort(server, { address, port, attempts = BIND_ATTEMPTS, backoffMs = BIND_BACKOFF_MS, scan = BIND_SCAN, log = () => {} } = {}) {
+  const requested = Number.isFinite(Number(port)) && Number(port) > 0 ? Math.trunc(Number(port)) : 0
+  if (requested === 0) {
+    // An ephemeral port was asked for; the OS picks and there is nothing to fall back to.
+    return { port: await listenOnce(server, 0, address), requested: 0, fellBack: false, bindError: null }
+  }
+  let last = null
+  for (let attempt = 0; attempt < Math.max(1, attempts); attempt += 1) {
+    try {
+      return { port: await listenOnce(server, requested, address), requested, fellBack: false, bindError: null }
+    } catch (error) {
+      last = error
+      const verdict = classifyBindError(error)
+      if (!verdict.retryable) throw error
+      log(`port ${requested} is not available yet (${verdict.code}); retrying`)
+      if (attempt < attempts - 1) await delay(backoffMs * 2 ** attempt)
+    }
+  }
+  for (let offset = 1; offset <= Math.max(0, scan) && requested + offset <= 65535; offset += 1) {
+    try {
+      return { port: await listenOnce(server, requested + offset, address), requested, fellBack: true, bindError: last }
+    } catch (error) {
+      last = error
+      if (!classifyBindError(error).retryable) throw error
+    }
+  }
+  // Every nearby port is taken too; an ephemeral port still beats no listener.
+  return { port: await listenOnce(server, 0, address), requested, fellBack: true, bindError: last }
+}
+
+/**
  * Start the listener.
  *
  * @param {object} options
@@ -138,7 +242,7 @@ function isLoopbackIp(ip) {
  * @param {(message: string) => void} [options.log]
  * @returns {Promise<{server: http.Server, port: number, close: () => Promise<void>}>}
  */
-export async function startForwardServer({ config, complete, modelRows, log = () => {} }) {
+export async function startForwardServer({ config, complete, modelRows, log = () => {}, heartbeatMs = SSE_HEARTBEAT_MS }) {
   const server = http.createServer((req, res) => {
     void handle(req, res).catch(error => {
       log(`request failed: ${error?.message ?? error}`)
@@ -182,11 +286,11 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       return
     }
     if (req.method === 'POST' && (path === '/v1/chat/completions' || path === '/chat/completions')) {
-      await serveCompletion(req, res, complete, chatCompletions)
+      await serveCompletion(req, res, complete, chatCompletions, heartbeatMs)
       return
     }
     if (req.method === 'POST' && (path === '/v1/responses' || path === '/responses')) {
-      await serveCompletion(req, res, complete, responsesEndpoint)
+      await serveCompletion(req, res, complete, responsesEndpoint, heartbeatMs)
       return
     }
     openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
@@ -196,20 +300,23 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   // past the loopback-only rule. The reported `host` below stays the configured
   // spelling: the settings reconciliation compares it, not the resolved IP.
   const bindAddress = await resolveLoopbackBind(config().host)
-  const port = await new Promise((resolve, reject) => {
-    const onError = error => reject(error)
-    server.once('error', onError)
-    const desired = config()
-    server.listen(Number.isFinite(desired.port) ? desired.port : 0, bindAddress, () => {
-      server.off('error', onError)
-      server.on('error', error => log(`listener error: ${error?.message ?? error}`))
-      resolve(server.address()?.port ?? 0)
-    })
-  })
+  const requestedPort = Number.isFinite(Number(config().port)) ? Math.trunc(Number(config().port)) : 0
+  const bound = await bindForwardPort(server, { address: bindAddress, port: requestedPort, log: message => log(`bind: ${message}`) })
+  server.on('error', error => log(`listener error: ${error?.message ?? error}`))
+  if (bound.fellBack) {
+    const verdict = classifyBindError(bound.bindError)
+    log(`port ${bound.requested} is taken (${verdict.code}); listening on ${bound.port} instead${verdict.hint === '' ? '' : ` — ${verdict.hint}`}`)
+  }
 
   return {
     server,
-    port,
+    port: bound.port,
+    /** The port the settings asked for, which differs from `port` exactly when
+     *  the bind had to move. */
+    requestedPort: bound.requested,
+    fellBack: bound.fellBack,
+    /** `{code, kind, message, hint}` when the bind moved, `null` otherwise. */
+    bindError: bound.fellBack ? bindFailure(bound.bindError) : null,
     /** The address actually bound, so a caller can tell a restart from a no-op. */
     host: config().host || '127.0.0.1',
     close: () => new Promise(resolve => {
@@ -219,8 +326,150 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   }
 }
 
+/** The routes the LAN relay carries — the local listener's surface and nothing else. */
+const RELAY_PATHS = new Set([
+  '/v1/models', '/models',
+  '/v1/chat/completions', '/chat/completions',
+  '/v1/responses', '/responses',
+])
+
+/** Marks a request the relay produced, so a misconfigured loop is refused. */
+const RELAY_HOP_HEADER = 'x-ofm-relay-hop'
+
+/**
+ * Start the optional LAN relay.
+ *
+ * The forward listener above binds loopback only, and on purpose: its key spends
+ * this machine's免密 quota, and issue #19 closed the door on handing that to a
+ * whole subnet through a bind address. A user who wants a second device on the
+ * same network to reach these models needs something the local listener cannot
+ * give — an address that is reachable *and* a credential that can be revoked on
+ * its own, so the two audiences never share a key.
+ *
+ * Hence a second, separate door, off unless asked for:
+ *
+ * - it binds the configured address (`0.0.0.0` by default) and authenticates
+ *   *every* request. `/health` is not exempt here as it is on the local
+ *   listener: an unauthenticated answer would confirm to any host on the
+ *   network that this machine is up and proxying;
+ * - it demands a key of its own (`lanKey`), never the local one, so a leak on a
+ *   shared network costs a rotation instead of every tool on the machine;
+ * - it re-issues the request to `127.0.0.1:<local forward port>` under the local
+ *   key. That keeps one implementation of the OpenAI surface — the relay adds
+ *   reach, not a second dialect — and it means the caller's key is the relay's
+ *   business alone.
+ *
+ * @param {object} options
+ * @param {() => {enabled: boolean, host: string, port: number, lanKey: string, localKey: string, targetPort: number}} options.config
+ * @param {(message: string) => void} [options.log]
+ * @returns {Promise<{server: http.Server, port: number, host: string, close: () => Promise<void>}>}
+ */
+export async function startLanRelay({ config, log = () => {} }) {
+  const server = http.createServer((req, res) => {
+    void relay(req, res).catch(error => {
+      log(`lan relay request failed: ${error?.message ?? error}`)
+      if (!res.headersSent) openAiError(res, 502, 'server_error', String(error?.message ?? error))
+      else res.end()
+    })
+  })
+
+  async function relay(req, res) {
+    const url = new URL(req.url ?? '/', 'http://localhost')
+    const path = url.pathname.replace(/\/+$/, '') || '/'
+    // A browser cannot put a key on a preflight, and answering one spends
+    // nothing, so OPTIONS goes through unauthenticated.
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204, corsHeaders())
+      res.end()
+      return
+    }
+    const settings = config()
+    if (!settings.enabled) {
+      openAiError(res, 503, 'service_unavailable', 'the LAN relay is switched off in Our Free Model settings')
+      return
+    }
+    if (!authorized(req, settings.lanKey)) {
+      openAiError(res, 401, 'invalid_request_error', 'missing or invalid LAN key')
+      return
+    }
+    // The one way this can happen is a relay port equal to the local forward
+    // port: the relay would then be dialing itself. Refuse the second pass
+    // instead of spinning until the sockets run out.
+    if (req.headers[RELAY_HOP_HEADER] !== undefined) {
+      openAiError(res, 508, 'server_error', 'the LAN relay would be dialing itself — give it a port of its own')
+      return
+    }
+    if (!(settings.targetPort > 0)) {
+      openAiError(res, 503, 'service_unavailable', 'the local forward listener is not running')
+      return
+    }
+    if (!RELAY_PATHS.has(path)) {
+      openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
+      return
+    }
+    const headers = { ...req.headers }
+    delete headers.host
+    delete headers.connection
+    delete headers['x-api-key']
+    // The caller's LAN key stops at this door; the local listener only ever sees
+    // the key that belongs to this machine.
+    headers.authorization = `Bearer ${settings.localKey}`
+    headers[RELAY_HOP_HEADER] = '1'
+    const target = http.request({
+      host: '127.0.0.1',
+      port: settings.targetPort,
+      method: req.method,
+      path: `${path}${url.search}`,
+      headers,
+    })
+    target.on('response', upstream => {
+      const relayed = { ...upstream.headers }
+      // Hop-by-hop headers belong to the hop that is ending here, not the next.
+      delete relayed.connection
+      delete relayed['keep-alive']
+      delete relayed['transfer-encoding']
+      res.writeHead(upstream.statusCode ?? 502, relayed)
+      upstream.pipe(res)
+    })
+    target.on('error', error => {
+      log(`lan relay upstream failed: ${error?.message ?? error}`)
+      if (!res.headersSent) openAiError(res, 502, 'server_error', 'the local forward listener did not answer')
+      else res.end()
+    })
+    // A caller that walks away takes its upstream request with it, the same rule
+    // the local listener applies to the upstream behind it.
+    res.once('close', () => {
+      if (!res.writableEnded) target.destroy()
+    })
+    req.pipe(target)
+  }
+
+  const desired = config()
+  const host = String(desired.host ?? '').trim() || '0.0.0.0'
+  const port = await new Promise((resolve, reject) => {
+    const onError = error => reject(error)
+    server.once('error', onError)
+    const wanted = Number(desired.port)
+    server.listen(Number.isFinite(wanted) && wanted > 0 ? Math.trunc(wanted) : 0, host, () => {
+      server.off('error', onError)
+      server.on('error', error => log(`lan relay error: ${error?.message ?? error}`))
+      resolve(server.address()?.port ?? 0)
+    })
+  })
+
+  return {
+    server,
+    port,
+    host,
+    close: () => new Promise(resolve => {
+      server.closeAllConnections?.()
+      server.close(() => resolve())
+    }),
+  }
+}
+
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
-async function serveCompletion(req, res, complete, endpoint) {
+async function serveCompletion(req, res, complete, endpoint, heartbeatMs) {
   const controller = new AbortController()
   const socket = req.socket
   const abort = () => {
@@ -236,7 +485,7 @@ async function serveCompletion(req, res, complete, endpoint) {
   res.once('close', abort)
   if (req.aborted || req.destroyed || socket?.destroyed) abort()
   try {
-    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk))
+    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk), { heartbeatMs })
   } finally {
     req.removeListener('aborted', abort)
     socket?.removeListener('close', abort)
@@ -262,7 +511,41 @@ function sendSse(res, event) {
   res.write(`data: ${JSON.stringify(event)}\n\n`)
 }
 
-function openStreamHeaders(res) {
+/**
+ * How long a streaming answer may stay silent before an SSE comment frame goes
+ * out.
+ *
+ * Reasoning models on this lane think for a minute or more before the first
+ * token, and the newest ones never stream that thinking at all: measured live,
+ * a call sat silent for 70 seconds while the lane billed 3024 reasoning tokens.
+ * Every client-side idle watchdog reads that silence as a dead socket — pi-ai
+ * aborts the turn once `streamIdleTimeoutMs` passes with nothing on the wire —
+ * so the wait has to be kept visible.
+ */
+export const SSE_HEARTBEAT_MS = 15000
+
+/**
+ * Feed a streaming response's idle watchdog until the response ends.
+ *
+ * A comment frame is ignored by every client that speaks SSE, and it is a real
+ * byte on the socket, which is what a watchdog counts. The timer is unref'd so
+ * a closing listener never waits on it, and it is stopped on `close` — the one
+ * event every way of ending this response goes through, including a client that
+ * walked away mid-stream.
+ */
+export function startHeartbeat(res, intervalMs = SSE_HEARTBEAT_MS) {
+  if (!Number.isFinite(intervalMs) || intervalMs <= 0) return () => {}
+  const timer = setInterval(() => {
+    if (res.writableEnded === true || res.destroyed === true) return
+    res.write(': ping\n\n')
+  }, intervalMs)
+  timer.unref?.()
+  const stop = () => clearInterval(timer)
+  res.once('close', stop)
+  return stop
+}
+
+function openStreamHeaders(res, heartbeatMs = SSE_HEARTBEAT_MS) {
   res.writeHead(200, {
     ...corsHeaders(),
     'content-type': 'text/event-stream; charset=utf-8',
@@ -270,6 +553,9 @@ function openStreamHeaders(res) {
     connection: 'keep-alive',
     'x-accel-buffering': 'no',
   })
+  // Both streaming endpoints open their headers here, so both of them — and
+  // anything relaying them — inherit the heartbeat from this one place.
+  startHeartbeat(res, heartbeatMs)
 }
 
 /** Per-request tool-wire state: harness block index → OpenAI tool index. */
@@ -334,7 +620,7 @@ function createToolWire(body) {
 }
 
 /** Drive one chat-completion through `complete`, in either response style. */
-async function chatCompletions(req, res, complete) {
+async function chatCompletions(req, res, complete, options = {}) {
   const body = await readBody(req)
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
@@ -376,7 +662,7 @@ async function chatCompletions(req, res, complete) {
     return
   }
 
-  openStreamHeaders(res)
+  openStreamHeaders(res, options.heartbeatMs)
   sendSse(res, { id, object: 'chat.completion.chunk', created, model, choices: [{ index: 0, delta: { role: 'assistant', content: '' }, finish_reason: null }] })
   const outcome = await complete({ model, openAi: body }, (chunk) => {
     if (res.destroyed) return
@@ -457,7 +743,7 @@ function executableCalls(outcome, tools) {
 }
 
 /** Responses-API spelling, so Codex-shaped local clients work too. */
-async function responsesEndpoint(req, res, complete) {
+async function responsesEndpoint(req, res, complete, options = {}) {
   const body = await readBody(req)
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
@@ -493,7 +779,7 @@ async function responsesEndpoint(req, res, complete) {
   ]
 
   if (body.stream === true) {
-    openStreamHeaders(res)
+    openStreamHeaders(res, options.heartbeatMs)
     const say = (type, payload) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...payload })}\n\n`)
     const response = (over = {}) => ({
       id, object: 'response', created_at: created, model, status: 'in_progress',

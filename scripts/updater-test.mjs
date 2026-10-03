@@ -314,6 +314,32 @@ await checkAsync('restoreBackup recovers a mixed install state', async () => {
   fs.rmSync(pkg, { recursive: true, force: true })
   fs.rmSync(data, { recursive: true, force: true })
 })
+await checkAsync('restoreBackup refuses to wipe a package with no rollback copy', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  // This install never applied an update, so the rollback directory does not
+  // exist — the restore must decline instead of emptying the package.
+  const backupDir = path.join(data, 'rollback')
+  assert.throws(() => restoreBackup(backupDir, pkg), /no rollback copy/)
+  assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), oldFiles['index.js'], 'the installed package is untouched')
+  assert.equal(fs.readFileSync(path.join(pkg, 'client.js'), 'utf8'), oldFiles['client.js'], 'no file was deleted')
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
+await checkAsync('restoreBackup reports copy failures and still restores the rest', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const backupDir = path.join(data, 'rollback')
+  backupPackage(pkg, backupDir)
+  // A directory squatting where a file belongs makes copyFileSync fail
+  // (EISDIR) without depending on platform-specific lock semantics.
+  fs.rmSync(path.join(pkg, 'client.js'), { force: true })
+  fs.mkdirSync(path.join(pkg, 'client.js'), { recursive: true })
+  assert.throws(() => restoreBackup(backupDir, pkg), /rollback incomplete.*client\.js/s)
+  assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), oldFiles['index.js'], 'the other files were still put back')
+  fs.rmSync(pkg, { recursive: true, force: true })
+  fs.rmSync(data, { recursive: true, force: true })
+})
 await checkAsync('installStaged + verifyInstalled accept a good stage', async () => {
   const pkg = makePackage(OLD)
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-stage-'))

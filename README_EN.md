@@ -179,6 +179,37 @@ POST /v1/chat/completions     streaming and non-streaming
 POST /v1/responses
 ```
 
+If another program holds the port, the listener does not die: it retries the same
+port for a few rounds (a listener that just closed, or a portproxy rule that was
+just removed, frees its port within a few hundred milliseconds), then walks to the
+next free port and says so on the settings page — *requested 18899 is not available,
+listening on 18900* — and the port written back into the settings is the real one.
+On Windows the most common owner is a `netsh interface portproxy` rule (served by IP
+Helper): its listener on `0.0.0.0` makes the loopback bind fail with `EACCES` rather
+than `EADDRINUSE`. `netsh interface portproxy show all` lists the rules and
+`netsh interface portproxy reset` clears them.
+
+The forward endpoint streams in full: besides the `data:` frames, a lane that is
+thinking gets periodic SSE comment frames (a `:` line), so a client's idle
+timeout cannot read "the upstream is still thinking" as "the socket is dead".
+Thinking is recognised under `reasoning`, `reasoning_content` and
+`reasoning_text` — a gateway that repeats one thought under two of them is
+counted once — and the `reasoning_details` array as well. A model whose thinking
+never streams upstream still sends no reasoning frames here; see
+[Known limitations](#known-limitations).
+
+**Serve other devices on your network.** The same panel carries a *Network
+access* section. It is off by default; switched on, the relay binds a routable
+address (`0.0.0.0` by default) and demands **a key of its own** — separate from
+the local key, so a leak on either side costs a rotation on that side only and
+the tools already wired to the local port never notice. The relay re-issues to
+the local listener, so the model roster, streaming and error semantics are the
+same ones the local port serves. A port of `0` means "pick one" (18899 is often
+already taken on a machine that runs something else); the panel then shows the
+port and the network address it settled on. While it is on, anyone who can reach
+this machine can spend its free quota with that key — enable it only on a
+network you trust, and narrow the sources with a firewall if you can.
+
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models
 between the two groups on its own.
@@ -297,8 +328,11 @@ output speed, and says so.
 Every model enables one bounded recovery attempt by default, across the Chat
 Completions, Messages and Responses upstream protocols. It requires a first
 stream that delivered nonempty reasoning, no answer text or tool call, and then
-reached EOF without a normal terminal frame. Cancellation, a normal ending, an
-output ceiling and an explicit upstream error do not trigger recovery.
+either reached EOF without a normal terminal frame, or received a normal `stop`
+terminal carrying reasoning only with no answer text — a turn the host would
+classify as an empty response. Cancellation, a normal ending that already
+delivered answer text or a tool call, an output ceiling and an explicit upstream
+error do not trigger recovery.
 
 The plugin sends **one new request** containing the original input and the
 received reasoning as a text checkpoint, asking for the answer directly. This is
@@ -470,12 +504,14 @@ it never touches files.
 - **"No usage cap" means no cap to buy.** There is no balance, no plan and no per-token billing; the lane is metered by session rate, though, and hammering it surfaces as `429`. The plugin marks the model *quota reached* rather than hiding it, and the next probe clears the state.
 - **Some upstream models are slow.** `nemotron-3.5-lightning-free` measured over 30 s to first token in one run. That is upstream latency, and the dashboard reports it rather than hiding it.
 - **Output speed is sometimes `—`.** A model that answers in one or two large frames, or whose thinking never streams, has no window worth dividing. The panel says so instead of publishing the model's thinking time as decoding speed.
-- **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
+- **Thinking is a silent wait, and it shares the output budget.** `mimo-v2.6-flash-free` measured 60–70 s of silence while the lane billed 3024 reasoning tokens and streamed not one reasoning frame; such a turn ends as `stop` with nothing visible, which clients report as an empty response. The forward endpoint and the LAN relay keep the connection alive with heartbeats — but that protects the connection, not the timeout: the SSE parser skips comment frames, and pi-ai's idle watchdog (`streamIdleTimeoutMs`, default 300 s) resets only when real content frames arrive, so a stall past 300 s on the wire still fails (issue #34). Only the caller can give it **budget**: raise the per-call output ceiling past 16k, or use a model the catalogue marks `reasoning: false`.
+- **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and reasoning-only silent stops (a normal `stop` ending with no answer text) and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
 - **Capabilities are what probes can confirm.** Anything the public listing and a live probe do not evidence is left unlabelled.
 - **Source is plain JavaScript.** It has to be, to load as a local plugin. Anyone with the folder can read the gateway logic; treat that as an accepted property of this distribution form, not as something obfuscation would fix.
 - **Desktop installs need a real directory**, for the reason given in [Install](#install).
 - **Upgrade and hot-reload trust boundary**: as of v1.3.2 the in-app upgrader's trust root is the Ed25519 public key pinned inside the plugin, not "HTTPS to the repository" — a manifest must carry the release key's signature before anything is installed, so a poisoned mirror (jsDelivr included) fails the upgrade instead of executing code. Whoever holds the **release private key** can push arbitrary code, the same trust model as whoever can push the repository, but a repository account takeover is now a failed-upgrade outage for every user rather than a direct RCE. File integrity is enforced by signature + SHA-256 manifest; content safety by the client-side allowlist renderer and the host's plugin isolation.
 - **The AIO build's WebView2 permission policy may deny notification permission** (measured `denied` on this machine). The announcement center says so plainly; plain-browser access to dsh web is unaffected.
+- **The forward port is not required to be 18899.** When the port is taken the listener moves to the next free one and writes that port back into the settings (the settings page carries the note). That is deliberate: a port change beats a forward listener that silently stays down. Which process holds the port is the operating system's answer to give; the plugin only reports what it said.
 - **The plugin routes' auth depends on the composition**: with a connection service mounted (dsh web, the AIO desktop) it matches the kernel's `/api` (the app's own cookie/token); in minimal compositions without one, a structural fence applies (loopback + same-origin), and other local processes can still reach the routes — the same behaviour the kernel has in those compositions.
 
 ## Development
@@ -559,6 +595,7 @@ On privacy and trust, plainly:
 
 - All state lives in `DSH_HOME/our-free-model/`; usage and settings stay local, nothing is uploaded.
 - The forward listener binds a **loopback address only**, `127.0.0.1` by default, and rejects keyless requests. Widening it to a routable interface is refused: `POST /settings` answers 400 with the reason, and on a composition with no web server a hand-written `settings.json` simply does not start the listener. That traffic is spent from this machine's free lane; one string in a settings file should not put a whole subnet on it.
+- **Network access is a second door, not a relaxation of the rule above.** The local listener still binds loopback only and still refuses a routable address; reaching another machine takes an explicit switch, and then **every** request must carry the network key — `/` and `/health` included, unlike the local listener, because an unauthenticated liveness answer tells the whole subnet that this machine is here and proxying. The relay carries three whitelisted paths (`/v1/models`, `/v1/chat/completions`, `/v1/responses`) and is not a general proxy for whatever else answers on loopback; it swaps the network key for the local one at the door, so the two are never interchangeable; a request that already carries the relay's hop marker is refused with `508`, so a relay port equal to the local one cannot spin. The network key is minted by `crypto`, compared with `timingSafeEqual`, stored in the same `0600` file, and rotated on its own from the panel.
 - The forward key is minted at runtime by `crypto`, compared with `timingSafeEqual`, and stored in a `0600` file. No hardcoded credential ships in this repository. `/` and `/health` answer ahead of the key check because they are liveness probes — they answer only "is it there"; the model roster requires the key.
 - The plugin's HTTP routes carry a **request trust fence** (fixed in v1.1): the plugin's `/api/our-free-model` prefix outranks the kernel's `/api` in webServer's longest-prefix dispatch and used to bypass kernel auth. Every request now goes through the composition's `connection` admission first (exactly the kernel's `/api` check: cookie/token); compositions without a connection service fall back to a structural fence — loopback Host, cross-site `sec-fetch-site` refused, `Origin`/`Referer` must match the Host authority and port, and a **missing or empty Host is refused too** (fail closed; there is no fallback to the socket's local address). Measured: foreign Host/Origin 403, cookieless loopback 401. `connection` is resolved per request, because the browser half provides it only after plugins load — reading it once at apply time silently degrades the fence to its structural layer for the life of the process.
 - **Announcement HTML renders through a strict client-side allowlist**: `scripts/sanitize-test.mjs` runs an XSS corpus (script injection, event handlers, `javascript:`/`data:` URLs, iframe/svg/form, style injection, mangled tags) and asserts all of it is dropped; nothing ever reaches an `innerHTML` sink. The feed URL is user-overridable, so the renderer treats feed content as untrusted.

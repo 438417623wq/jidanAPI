@@ -15,12 +15,19 @@
  * - a non-JSON body answers 400 (not 500), an unknown model 404 (not 502);
  * - `/v1/responses` honors `instructions`, `max_output_tokens` and `stream`.
  *
+ * Plus the two wire-level gaps behind the "unstable over the LAN" report:
+ * thinking that arrives under a name other than `reasoning` now reaches the
+ * harness as thinking, and an answer that stays silent while the lane thinks
+ * keeps its client's idle watchdog fed with SSE comment frames.
+ *
  * Run: node scripts/forward-test.mjs
  */
 import http from 'node:http'
+import net from 'node:net'
 import assert from 'node:assert/strict'
-import { startForwardServer, resolveLoopbackBind } from '../src/forward.js'
+import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
 import { toToolDefs } from '../src/messages.js'
+import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
 
 let failures = 0
@@ -59,6 +66,35 @@ async function serve(lane) {
   })
   openServers.push(server)
   return `http://127.0.0.1:${server.port}`
+}
+
+/**
+ * Port squatters for the availability tests: plain TCP listeners that hold a
+ * port the way a stray process — or a `netsh interface portproxy` rule — does.
+ */
+const occupants = []
+const releaseWhenIdle = server => new Promise(resolve => {
+  if (!server.listening) {
+    resolve()
+    return
+  }
+  server.close(() => resolve())
+})
+async function occupyAt(port) {
+  const server = net.createServer()
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(port, '127.0.0.1', resolve)
+    })
+  } catch {
+    return null
+  }
+  occupants.push(server)
+  return { port: server.address()?.port ?? port, release: () => releaseWhenIdle(server) }
+}
+async function occupy() {
+  return occupyAt(0)
 }
 
 const authFetch = (base, path, body) => fetch(`${base}${path}`, {
@@ -353,6 +389,126 @@ await checkAsync('the lane receives the caller tools the client sent', async () 
   assert.equal(response.status, 200)
   assert.deepEqual(lane.seen.at(-1).openAi.tools.map(tool => tool.function.name), ['pwsh'])
 })
+// ── thinking under another name, and the silence while it happens ────────────
+// `readStream` consumes the payload of each SSE frame, not the frame itself —
+// the `data: ` prefix is stripped by the reader above it.
+const chatFrame = delta => JSON.stringify({ choices: [{ index: 0, delta }] })
+
+/** Drain `readStream` into the chunks it produced and its final state. */
+async function readChat(lines) {
+  const chunks = []
+  let state
+  const stream = readStream(lines, 'chat', new Map(), () => Date.now())
+  for (;;) {
+    const next = await stream.next()
+    if (next.done === true) { state = next.value; break }
+    chunks.push(next.value)
+  }
+  return { chunks, state }
+}
+const reasoningOf = chunks => chunks.filter(chunk => chunk.type === 'reasoning-delta').map(chunk => chunk.text).join('')
+
+await checkAsync('thinking streamed as reasoning_content reaches the harness', async () => {
+  const { chunks, state } = await readChat([chatFrame({ reasoning_content: 'thinking out loud' }), chatFrame({ content: 'answer' })])
+  assert.equal(reasoningOf(chunks), 'thinking out loud')
+  assert.equal(state.sawReasoning, true)
+  assert.equal(state.reasoningText, 'thinking out loud')
+  assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'answer')
+})
+
+await checkAsync('thinking streamed as reasoning_text reaches the harness', async () => {
+  const { state } = await readChat([chatFrame({ reasoning_text: 'pondering' })])
+  assert.equal(state.reasoningText, 'pondering')
+})
+
+await checkAsync('one thought repeated under two names is counted once', async () => {
+  const { chunks } = await readChat([chatFrame({ reasoning: 'same text', reasoning_content: 'same text' })])
+  assert.equal(reasoningOf(chunks), 'same text')
+})
+
+await checkAsync('reasoning_details still reads as thinking', async () => {
+  const { state } = await readChat([chatFrame({ reasoning_details: [{ text: 'a' }, { text: 'b' }] })])
+  assert.equal(state.reasoningText, 'ab')
+})
+
+await checkAsync('a frame with no thinking leaves the block empty', async () => {
+  const { chunks, state } = await readChat([chatFrame({ content: 'plain' })])
+  assert.equal(reasoningOf(chunks), '')
+  assert.equal(state.reasoningText, '')
+})
+
+const fakeResponse = () => {
+  const res = {
+    writes: [],
+    closes: [],
+    writableEnded: false,
+    destroyed: false,
+    write(chunk) { res.writes.push(chunk) },
+    once(event, handler) { if (event === 'close') res.closes.push(handler) },
+  }
+  return res
+}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+await checkAsync('a silent stream is kept alive with SSE comment frames', async () => {
+  const res = fakeResponse()
+  const stop = startHeartbeat(res, 5)
+  await sleep(60)
+  assert.ok(res.writes.length >= 2, `expected repeated comment frames, got ${res.writes.length}`)
+  assert.ok(res.writes.every(chunk => chunk === ': ping\n\n'), 'only comment frames may go out')
+  stop()
+  const seen = res.writes.length
+  await sleep(30)
+  assert.equal(res.writes.length, seen, 'a stopped heartbeat writes nothing')
+  assert.equal(res.closes.length, 1, 'the heartbeat watches the response for its close')
+})
+
+await checkAsync('the heartbeat stops when the response closes', async () => {
+  const res = fakeResponse()
+  startHeartbeat(res, 5)
+  assert.equal(res.closes.length, 1)
+  res.closes[0]()
+  await sleep(30)
+  assert.equal(res.writes.length, 0)
+})
+
+await checkAsync('an already finished response is left alone', async () => {
+  const res = fakeResponse()
+  res.writableEnded = true
+  startHeartbeat(res, 5)
+  await sleep(30)
+  assert.equal(res.writes.length, 0)
+})
+
+await checkAsync('nothing goes out before the default interval', async () => {
+  const res = fakeResponse()
+  const stop = startHeartbeat(res)
+  await sleep(30)
+  assert.equal(res.writes.length, 0, `the default interval is ${SSE_HEARTBEAT_MS}ms`)
+  stop()
+})
+
+await checkAsync('a streaming answer that goes quiet keeps sending comment frames', async () => {
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
+    complete: async (request, onChunk) => {
+      // The lane thinking before it says anything: the silence a client-side
+      // idle watchdog reads as a dead socket.
+      await sleep(80)
+      onChunk({ type: 'text-delta', index: 0, text: 'late answer' })
+      return { text: 'late answer', toolCalls: [] }
+    },
+    modelRows: () => [],
+    heartbeatMs: 5,
+  })
+  openServers.push(server)
+  const response = await authFetch(`http://127.0.0.1:${server.port}`, '/v1/chat/completions', { model: 'mimo-v2.6-flash-free', stream: true })
+  assert.equal(response.headers.get('content-type'), 'text/event-stream; charset=utf-8')
+  const body = await response.text()
+  assert.ok(body.includes(': ping\n\n'), 'a stream that goes quiet has to carry comment frames')
+  assert.ok(body.includes('late answer'), 'the answer still arrives')
+  assert.equal(sseFrames(body).at(-1).choices[0].finish_reason, 'stop')
+})
 
 // ── the bind address (issue #19) ─────────────────────────────────────────────
 await checkAsync('resolveLoopbackBind refuses a routable resolution', async () => {
@@ -363,6 +519,73 @@ await checkAsync('resolveLoopbackBind accepts loopback literals and localhost', 
   assert.equal(await resolveLoopbackBind('127.0.0.1'), '127.0.0.1')
   const resolved = await resolveLoopbackBind('localhost')
   assert.ok(resolved === '127.0.0.1' || resolved === '::1', `localhost must resolve to a loopback address, got ${resolved}`)
+})
+
+// ── port availability ────────────────────────────────────────────────────────
+check('classifyBindError names what the OS reported', () => {
+  assert.equal(classifyBindError({ code: 'EACCES' }).kind, 'held')
+  assert.equal(classifyBindError({ code: 'EACCES' }).retryable, true)
+  assert.match(classifyBindError({ code: 'EACCES' }).hint, /portproxy/)
+  assert.equal(classifyBindError({ code: 'EPERM' }).kind, 'held')
+  assert.equal(classifyBindError({ code: 'EADDRINUSE' }).kind, 'in-use')
+  assert.equal(classifyBindError({ code: 'EADDRNOTAVAIL' }).kind, 'unavailable')
+  assert.equal(classifyBindError({ code: 'EADDRNOTAVAIL' }).retryable, false)
+  assert.equal(classifyBindError(new Error('boom')).kind, 'unknown')
+  assert.equal(classifyBindError(null).code, '')
+})
+
+await checkAsync('bindForwardPort waits out a port that is still closing', async () => {
+  const squat = await occupy()
+  const server = http.createServer()
+  const timer = setTimeout(() => { void squat.release() }, 150)
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: squat.port, attempts: 8, backoffMs: 60 })
+  clearTimeout(timer)
+  await squat.release()
+  assert.equal(bound.fellBack, false, 'a port that frees inside the retry window must be used, not skipped')
+  assert.equal(bound.port, squat.port)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('bindForwardPort keeps a port that is free', async () => {
+  const probe = await occupy()
+  const free = probe.port
+  await probe.release()
+  const server = http.createServer()
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: free, attempts: 2, backoffMs: 20 })
+  assert.equal(bound.fellBack, false)
+  assert.equal(bound.port, free)
+  assert.equal(bound.bindError, null)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('bindForwardPort walks past a port that stays taken', async () => {
+  const held = await occupy()
+  const heldNext = await occupyAt(held.port + 1)
+  const server = http.createServer()
+  const bound = await bindForwardPort(server, { address: '127.0.0.1', port: held.port, attempts: 2, backoffMs: 20, scan: 5 })
+  assert.equal(bound.fellBack, true, 'a permanently taken port must not leave the listener down')
+  assert.notEqual(bound.port, held.port)
+  assert.ok(bound.port > 0)
+  if (heldNext !== null) assert.notEqual(bound.port, heldNext.port, 'a taken neighbour must be skipped too')
+  assert.equal(bound.bindError?.code, 'EADDRINUSE', `expected the occupant's code, got ${bound.bindError?.code}`)
+  await new Promise(resolve => server.close(() => resolve()))
+})
+
+await checkAsync('startForwardServer reports the port it settled on and still serves', async () => {
+  const held = await occupy()
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: held.port, enabled: true, key: 'k-test' }),
+    complete: async () => { throw new Error('must not be called') },
+    modelRows: () => [],
+  })
+  openServers.push(server)
+  assert.equal(server.fellBack, true)
+  assert.equal(server.requestedPort, held.port)
+  assert.notEqual(server.port, held.port)
+  assert.equal(server.bindError?.code, 'EADDRINUSE')
+  const response = await fetch(`http://127.0.0.1:${server.port}/health`)
+  assert.equal(response.status, 200)
+  assert.equal((await response.json()).ok, true)
 })
 
 // ── the disabled gate ────────────────────────────────────────────────────────
@@ -378,7 +601,100 @@ await checkAsync('resolveLoopbackBind accepts loopback literals and localhost', 
   await disabled.close()
 }
 
+// ── the LAN relay ────────────────────────────────────────────────────────────
+/** A relay whose target is a real local listener, so the hop is exercised. */
+async function serveRelay({ targetPort, enabled = true, lanKey = 'lan-test', localKey = 'k-test', host = '127.0.0.1', port = 0 }) {
+  const server = await startLanRelay({ config: () => ({ enabled, host, port, lanKey, localKey, targetPort }) })
+  openServers.push(server)
+  return { base: `http://127.0.0.1:${server.port}`, port: server.port }
+}
+
+/** A local listener with a roster and one key, as the plugin starts it. */
+async function localListener(lane) {
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
+    complete: lane.complete,
+    modelRows: () => [{ id: 'mimo-v2.6-flash-free', created: 1, owned_by: 'our-free-model' }],
+  })
+  openServers.push(server)
+  return { base: `http://127.0.0.1:${server.port}`, port: server.port }
+}
+
+const lanGet = (base, path, key = 'lan-test') => fetch(`${base}${path}`, key === '' ? {} : { headers: { authorization: `Bearer ${key}` } })
+const lanPost = (base, path, body, key = 'lan-test') => fetch(`${base}${path}`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+await checkAsync('the relay answers nothing without its key — /health included', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  assert.equal((await fetch(`${relay.base}/health`)).status, 401)
+  // The local listener's own key must not open this door either.
+  assert.equal((await lanGet(relay.base, '/v1/models', 'k-test')).status, 401)
+})
+
+await checkAsync('an empty relay key never opens the door', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port, lanKey: '' })
+  assert.equal((await lanGet(relay.base, '/v1/models', '')).status, 401)
+})
+
+await checkAsync('the relay re-issues under the local key', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  const response = await lanGet(relay.base, '/v1/models')
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.data[0].id, 'mimo-v2.6-flash-free')
+})
+
+await checkAsync('the relay carries a streaming completion', async () => {
+  const lane = makeLane()
+  lane.script = () => ({
+    chunks: [
+      { type: 'text-delta', index: 0, text: 'hi from the relay' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ],
+    outcome: { text: 'hi from the relay', toolCalls: [] },
+  })
+  const upstream = await localListener(lane)
+  const relay = await serveRelay({ targetPort: upstream.port })
+  const response = await lanPost(relay.base, '/v1/chat/completions', { model: 'mimo-v2.6-flash-free', stream: true, messages: [{ role: 'user', content: 'hi' }] })
+  assert.equal(response.status, 200)
+  const frames = sseFrames(await response.text())
+  assert.equal(frames.at(-1)?.choices?.[0]?.finish_reason, 'stop')
+})
+
+await checkAsync('the relay is not a general proxy for loopback', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  assert.equal((await lanGet(relay.base, '/v1/embeddings')).status, 404)
+  assert.equal((await lanGet(relay.base, '/health')).status, 404)
+})
+
+await checkAsync('a relay with nothing to relay to answers 503', async () => {
+  const relay = await serveRelay({ targetPort: 0 })
+  assert.equal((await lanGet(relay.base, '/v1/models')).status, 503)
+})
+
+await checkAsync('a switched-off relay answers 503 even with the right key', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port, enabled: false })
+  assert.equal((await lanGet(relay.base, '/v1/models')).status, 503)
+})
+
+await checkAsync('a second relay hop is refused instead of spinning', async () => {
+  // Two relays pointed at each other with matching keys: the second pass must
+  // stop, or a settings mistake becomes an unbounded request loop.
+  const first = await serveRelay({ targetPort: 0, localKey: 'lan-test' })
+  const second = await serveRelay({ targetPort: first.port, localKey: 'lan-test' })
+  assert.equal((await lanGet(second.base, '/v1/models')).status, 508)
+})
+
 for (const server of openServers) await server.close()
+for (const server of occupants) await releaseWhenIdle(server)
 if (failures > 0) console.error(`forward-test: ${failures} failure(s)`)
 else console.log('forward-test: the wire speaks OpenAI the way callers expect')
 process.exitCode = failures > 0 ? 1 : 0

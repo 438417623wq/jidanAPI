@@ -23,6 +23,7 @@
  * @module index.js
  */
 
+import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
@@ -30,7 +31,7 @@ import { FreeModelAdapter, ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/
 import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, resolveDshHome } from './src/store.js'
 import { buildCatalog, buildEacCatalog, isEacEntry, parseListing } from './src/catalog.js'
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
-import { generateKey, startForwardServer, toOpenAiUsage } from './src/forward.js'
+import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
 import { fetchSealedListing } from './src/eac.js'
 import { unlockSealedLane } from './src/vault.js'
@@ -152,6 +153,11 @@ export function apply(ctx, config) {
   let egress = availability.get().egress ?? null
   let forward = null
   let forwardError = ''
+  // Non-fatal: the listener is up, but not where the settings asked for it.
+  let forwardNotice = ''
+  /** The optional LAN relay: a second door, with a key of its own. */
+  let relay = null
+  let relayError = ''
 
   // ── the co-paid lane ────────────────────────────────────────────────────────
   /**
@@ -432,7 +438,20 @@ export function apply(ctx, config) {
   }
 
   // ── forward listener ────────────────────────────────────────────────────────
+  // Both reconciles get a serialisation gate: two callers (the boot refresh and
+  // every settings POST) used to overlap, and whichever bind finished last wrote
+  // its entry-time snapshot of the settings back over the other one - rolling
+  // the user's just-saved `enabled` edits back, or leaving an orphan listener
+  // behind. The waiter re-runs after the first settles; the early-exit below
+  // makes that rerun free when nothing changed.
+  let forwardSyncInFlight = null
   async function syncForward() {
+    while (forwardSyncInFlight !== null) await forwardSyncInFlight.catch(() => {})
+    const run = syncForwardOnce()
+    forwardSyncInFlight = run
+    try { await run } finally { if (forwardSyncInFlight === run) forwardSyncInFlight = null }
+  }
+  async function syncForwardOnce() {
     const desired = settings.get().forward ?? {}
     const wanted = desired.enabled === true
     // A listener already bound where the settings want it is left alone. Two
@@ -450,6 +469,7 @@ export function apply(ctx, config) {
     }
     if (!wanted) {
       forwardError = ''
+      forwardNotice = ''
       return
     }
     // Checked again here, not only where the settings page posts: a headless
@@ -471,7 +491,20 @@ export function apply(ctx, config) {
         log: message => logger.warn?.(`our-free-model forward: ${message}`),
       })
       forwardError = ''
-      settings.update({ forward: { ...desired, port: forward.port, host: desired.host || '127.0.0.1' } })
+      // The requested port is somebody else's for good — a `netsh interface
+      // portproxy` rule outlives this plugin, and on Windows it surfaces as
+      // EACCES on a loopback bind. `startForwardServer` walks to a free port
+      // rather than leaving the feature down; the port it settled on is what
+      // gets persisted below, and this notice is what says so.
+      forwardNotice = forward.fellBack === true && forward.bindError !== null
+        ? `port ${forward.requestedPort} is not available on this machine (${forward.bindError.code}); the listener is on port ${forward.port} instead`
+        : ''
+      if (forwardNotice !== '') logger.warn?.(`our-free-model forward: ${forwardNotice}`)
+      // Persist the port that actually answers, but out of the CURRENT
+      // settings - not the desired snapshot from before the await. An
+      // overlapped save would otherwise be rolled back to entry-time values.
+      const settledForward = settings.get().forward ?? {}
+      settings.update({ forward: { ...settledForward, port: forward.port, host: forward.host || desired.host || '127.0.0.1' } })
       settings.flush()
     } catch (error) {
       forwardError = String(error?.message ?? error)
@@ -486,6 +519,94 @@ export function apply(ctx, config) {
     settings.update({ forwardKey: minted })
     settings.flush()
     return minted
+  }
+
+  /**
+   * The relay's own key. Never the local one: a key that has to travel to other
+   * devices on a network is a key that will eventually leak, and a leak must
+   * cost a rotation here rather than every tool already wired to the local port.
+   */
+  function relayKey() {
+    const current = settings.get()
+    if (typeof current.forwardLanKey === 'string' && current.forwardLanKey !== '') return current.forwardLanKey
+    const minted = generateKey()
+    settings.update({ forwardLanKey: minted })
+    settings.flush()
+    return minted
+  }
+
+  /** IPv4 addresses another machine on this network could dial. */
+  function lanAddresses() {
+    const out = []
+    for (const entries of Object.values(os.networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (entry.family === 'IPv4' && entry.internal !== true) out.push(entry.address)
+      }
+    }
+    return out
+  }
+
+  /**
+   * Reconcile the optional LAN relay.
+   *
+   * Deliberately not folded into `syncForward`: the two doors have separate
+   * lives, and toggling the relay must not close and re-bind the local port
+   * under a request that is already in flight on it.
+   */
+  async function syncRelay() {
+    const desired = settings.get().forward ?? {}
+    const lan = desired.lan ?? {}
+    const wanted = lan.enabled === true
+    const host = String(lan.host ?? '').trim() || '0.0.0.0'
+    const port = Number.isFinite(Number(lan.port)) && Number(lan.port) > 0 ? Math.trunc(Number(lan.port)) : 0
+    if (relay !== null && wanted && forward !== null && relay.host === host && relay.port === port) return
+    if (relay === null && !wanted) return
+    if (relay !== null) {
+      const closing = relay
+      relay = null
+      await closing.close().catch(() => {})
+    }
+    if (!wanted) {
+      relayError = ''
+      return
+    }
+    // Without the local listener there is nothing to relay to, and a relay on
+    // the local port would dial itself. Both are settings mistakes worth naming
+    // here rather than surfacing as a socket error later.
+    if (desired.enabled !== true || forward === null) {
+      relayError = 'the local forward listener is not running'
+      return
+    }
+    if (port !== 0 && port === forward.port) {
+      relayError = 'the LAN relay needs a port of its own'
+      logger.warn?.(`our-free-model: LAN relay not started (${relayError})`)
+      return
+    }
+    try {
+      relay = await startLanRelay({
+        config: () => {
+          const current = settings.get().forward ?? {}
+          const currentLan = current.lan ?? {}
+          return {
+            enabled: currentLan.enabled === true,
+            host: String(currentLan.host ?? '').trim() || '0.0.0.0',
+            port: currentLan.port ?? 0,
+            lanKey: relayKey(),
+            localKey: forwardKey(),
+            targetPort: forward?.port ?? 0,
+          }
+        },
+        log: message => logger.warn?.(`our-free-model lan relay: ${message}`),
+      })
+      relayError = ''
+      // The port that was actually bound goes back into the settings, so the
+      // address the page shows is the address that answers.
+      settings.update({ forward: { ...desired, lan: { ...lan, port: relay.port } } })
+      settings.flush()
+    } catch (error) {
+      relayError = String(error?.message ?? error)
+      logger.warn?.(`our-free-model: LAN relay could not start (${relayError})`)
+    }
   }
 
   /**
@@ -636,11 +757,30 @@ export function apply(ctx, config) {
   }
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
-    refreshCatalog, refreshAvailability, syncForward,
-    forwardInfo: () => ({ running: forward !== null, port: forward?.port ?? 0, error: forwardError, egress }),
+    refreshCatalog, refreshAvailability, syncForward, syncRelay,
+    forwardInfo: () => ({
+      running: forward !== null,
+      port: forward?.port ?? 0,
+      error: forwardError,
+      notice: forwardNotice,
+      egress,
+      lan: {
+        running: relay !== null,
+        port: relay?.port ?? 0,
+        host: relay?.host ?? '',
+        error: relayError,
+        addresses: lanAddresses(),
+      },
+    }),
     rotateKey: () => {
       const minted = generateKey()
       settings.update({ forwardKey: minted })
+      settings.flush()
+      return minted
+    },
+    rotateLanKey: () => {
+      const minted = generateKey()
+      settings.update({ forwardLanKey: minted })
       settings.flush()
       return minted
     },
@@ -775,12 +915,17 @@ export function apply(ctx, config) {
 
   ctx.effect(() => () => {
     void forward?.close().catch(() => {})
+    void relay?.close().catch(() => {})
   }, 'our-free-model: forward listener')
 
   ctx.effect(() => () => { registration() }, 'our-free-model: adapter routes')
 
   ctx.effect(() => () => {
     disposed = true
+    // The geography-reprobe timer belongs to this generation; without this it
+    // outlives teardown and fires a forced probe round after the stores it
+    // reads have been disposed (the rejection gets swallowed, quota burned).
+    clearTimeout(reprobeTimer)
     push.dispose()
     watcher?.()
   }, 'our-free-model: push + watcher')
@@ -790,6 +935,7 @@ export function apply(ctx, config) {
       attributionUserAgent = await resolveAttributionUserAgent(logger)
       await refreshCatalog({ probe: true, force: true })
       await syncForward()
+      await syncRelay()
       syncWatcher()
       emitTopology()
       push.emit('hello', helloPayload())
@@ -1222,11 +1368,26 @@ function createApiRoutes(deps) {
             const port = Number(forward.port)
             forward.port = Number.isFinite(port) && port >= 1 && port <= 65535 ? Math.trunc(port) : (current.forward?.port ?? 0)
           }
+          // The LAN relay is a second door on the same feature, so it travels in
+          // the same `forward` patch — but it does *not* inherit the loopback
+          // rule, because reaching another machine is its entire purpose.
+          if (patch.forward.lan !== undefined) {
+            const lan = { ...(current.forward?.lan ?? {}), ...pick(patch.forward.lan, ['enabled', 'port']) }
+            if (lan.port !== undefined) {
+              const port = Number(lan.port)
+              // Zero asks the OS to choose, which is the sane default here: the
+              // local port is frequently taken on a machine that already runs
+              // something else.
+              lan.port = Number.isFinite(port) && port >= 0 && port <= 65535 ? Math.trunc(port) : (current.forward?.lan?.port ?? 0)
+            }
+            forward.lan = lan
+          }
           next.forward = forward
         }
         deps.settings.update(next)
         deps.settings.flush()
         await deps.syncForward()
+        await deps.syncRelay()
         if (patch.probeIntervalMinutes !== undefined || patch.feedPollMinutes !== undefined) {
           // Poll periods live in fiber effects; the next load picks a change up,
           // so surface that rather than pretending it hot-applied.
@@ -1247,6 +1408,12 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/forward/rotate') {
         return send(200, { key: deps.rotateKey() })
+      }
+      if (method === 'GET' && routePath === '/forward/lan/key') {
+        return send(200, { key: deps.settings.get().forwardLanKey ?? '' })
+      }
+      if (method === 'POST' && routePath === '/forward/lan/rotate') {
+        return send(200, { key: deps.rotateLanKey() })
       }
       if (method === 'POST' && routePath === '/bench') {
         const body = await readJson(req)
@@ -1287,7 +1454,13 @@ async function readJson(req) {
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return {} }
+  const text = Buffer.concat(chunks).toString('utf8')
+  try { return JSON.parse(text) } catch (error) {
+    // A body that was sent but is not JSON is a client bug, not "no body":
+    // answering {} made POST /settings a silent 200 no-op. Empty bodies stay
+    // legal ({} above) because no-body POSTs are real routes here.
+    throw httpError(400, `invalid JSON body (${error?.message ?? error})`)
+  }
 }
 
 function publicSettings(settings, forwardInfo) {
@@ -1304,7 +1477,21 @@ function publicSettings(settings, forwardInfo) {
     autoReloadWatch: settings.autoReloadWatch === true,
     reloadedAt: settings.reloadedAt ?? 0,
     reloadCount: settings.reloadCount ?? 0,
-    forward: { ...(settings.forward ?? {}), running: forwardInfo.running, actualPort: forwardInfo.port, error: forwardInfo.error },
+    forward: {
+      ...(settings.forward ?? {}),
+      running: forwardInfo.running,
+      actualPort: forwardInfo.port,
+      error: forwardInfo.error,
+      notice: forwardInfo.notice ?? '',
+      lan: {
+        ...(settings.forward?.lan ?? {}),
+        running: forwardInfo.lan?.running === true,
+        actualPort: forwardInfo.lan?.port ?? 0,
+        host: forwardInfo.lan?.host ?? '',
+        error: forwardInfo.lan?.error ?? '',
+        addresses: forwardInfo.lan?.addresses ?? [],
+      },
+    },
   }
 }
 
