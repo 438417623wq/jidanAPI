@@ -104,6 +104,16 @@ console.log('\n=== 2. the repair still removes what has no answer ===')
 
   const toolNoId = [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }, { role: 'tool', content: [{ type: 'text', text: 'x' }] }]
   check('a tool answer with no call id cannot reach the wire', toChatMessages(repairToolPairing(toolNoId), resolveImage, []).map(m => m.role), ['user'])
+
+  // 文本 + 悬空 call：文本留下，死 call 必须剥掉，否则整段会话被 400 焊死。
+  const orphanTextAnswer = [
+    { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'assistant', content: [{ type: 'text', text: 'let me look' }, callBlock('call_gone')] },
+    { role: 'user', content: [{ type: 'text', text: 'next question' }] },
+  ]
+  const repairedOrphanText = toChatMessages(repairToolPairing(orphanTextAnswer), resolveImage, [])
+  check('text survives but its unanswered call is stripped (no 400 either)', repairedOrphanText.map(m => m.role), ['user', 'assistant', 'user'])
+  check('…and the kept assistant turn carries no tool_calls', repairedOrphanText.find(m => m.role === 'assistant')?.tool_calls, undefined)
 }
 
 console.log('\n=== 3. parallel calls: every result survives, in order, keyed correctly ===')
