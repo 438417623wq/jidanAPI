@@ -179,7 +179,7 @@ function eacEffortsFor(model) {
 }
 
 /** The declared default level id for a co-paid-lane model, or its first level. */
-function eacDefaultLevel(model) {
+export function eacDefaultLevel(model) {
   const levels = Array.isArray(model?.efforts) ? model.efforts : []
   if (levels.length === 0) return undefined
   return levels.includes(model.effortDefault) ? model.effortDefault : levels[0]
@@ -227,6 +227,19 @@ function isSealedEntry(model) {
  * @param {number|undefined} fallback - the plugin default ceiling
  * @returns {Array<{id:string, name:string, description:string}>|undefined}
  */
+/**
+ * The effort id the harness should treat as this model's default.
+ *
+ * The free lane's ladder always has `balanced`; the co-paid lane's menu is
+ * the model's own declaration, whose default is not `balanced` — reporting the
+ * free lane's id for a sealed model made the harness reject the whole roster
+ * ("adapter returned an unknown default reasoning effort").
+ */
+export function defaultEffortFor(model) {
+  if (isSealedEntry(model)) return eacDefaultLevel(model) ?? DEFAULT_LEVEL
+  return DEFAULT_LEVEL
+}
+
 export function effortsFor(model, requested, fallback) {
   if (isSealedEntry(model)) return eacEffortsFor(model)
   if (!supportsEffort(model)) return undefined

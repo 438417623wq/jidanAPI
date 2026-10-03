@@ -64,8 +64,8 @@
     },
     {
       "path": "src/adapter.js",
-      "size": 25017,
-      "sha256": "1ef5ee5e47be5c12c45b5fbaf273126dc396cb1ad92b8b07120f6c18bec86c28"
+      "size": 25045,
+      "sha256": "301dc2eda26bef4df45b436137416f9063bc4bb8575def7e0420daec8e87eaeb"
     },
     {
       "path": "src/catalog.js",
@@ -84,8 +84,8 @@
     },
     {
       "path": "src/effort.js",
-      "size": 11140,
-      "sha256": "258b9e0d92785ca67dfa82250ce0fc941aeb8a500433affa7f7061f658773b5b"
+      "size": 11665,
+      "sha256": "e816fbb00e5d8411ebaadf7fedf003fdebc8851ccbf9aeab62ef96096025589d"
     },
     {
       "path": "src/feed.js",

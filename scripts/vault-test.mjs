@@ -516,6 +516,12 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('glm maps to thinking+output_config like ZCode declares', effortPatchFor('low', byId('z-ai/glm-5.3-flash')), { thinking: { type: 'enabled' }, output_config: { effort: 'low' } })
   check('kimi-k3 has no off level, so the menu starts at low', effortsFor(byId('moonshotai/kimi-k3'))?.map(m => m.id), ['low', 'high', 'max'])
   check('a level the model does not declare falls back to its default', effortPatchFor('max', byId('openai/gpt-oss-20b')), { reasoning_effort: 'medium' })
+  const { defaultEffortFor } = await import('../src/effort.js')
+  check('every sealed model default sits inside its own menu', roster.map(entry => {
+    const menu = (effortsFor(entry) ?? []).map(row => row.id)
+    return menu.includes(defaultEffortFor(entry))
+  }), roster.map(() => true))
+  check('a sealed default is never the free lane balanced id', roster.filter(entry => (entry.efforts ?? []).includes('balanced')).length, 0)
   check('the sealed lane budget is not level-gated (capacity, not a ladder)', [
     budgetFor('low', byId('deepseek-ai/deepseek-v4.1-flash'), undefined, 32768),
     budgetFor('max', byId('deepseek-ai/deepseek-v4.1-flash'), undefined, 32768),

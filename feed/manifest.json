@@ -1,7 +1,7 @@
 {
   "version": "1.4.1",
   "base": "../",
-  "publishedAt": "2026-10-03T14:49:30.045Z",
+  "publishedAt": "2026-10-03T14:56:57.137Z",
   "notes": "",
   "files": [
     {
@@ -66,8 +66,8 @@
     },
     {
       "path": "src/adapter.js",
-      "size": 25017,
-      "sha256": "1ef5ee5e47be5c12c45b5fbaf273126dc396cb1ad92b8b07120f6c18bec86c28"
+      "size": 25045,
+      "sha256": "301dc2eda26bef4df45b436137416f9063bc4bb8575def7e0420daec8e87eaeb"
     },
     {
       "path": "src/catalog.js",
@@ -86,8 +86,8 @@
     },
     {
       "path": "src/effort.js",
-      "size": 11140,
-      "sha256": "258b9e0d92785ca67dfa82250ce0fc941aeb8a500433affa7f7061f658773b5b"
+      "size": 11665,
+      "sha256": "e816fbb00e5d8411ebaadf7fedf003fdebc8851ccbf9aeab62ef96096025589d"
     },
     {
       "path": "src/feed.js",
@@ -170,5 +170,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "eiFp3NORC/LkH0psPC0cG1q3ZY0XZExaq0bH2Mgsj1FV6WQ8/LkY7p1wCi275e8XaVOtgEJ7AgIYtuuAfwrhBQ=="
+  "signature": "97g5F9V9WFJf+SdTvUU2n1R2eUSShrZzH6JwK4859RIJuPlneBN6cr/fmOLxXANKUIzzrHcuoPyCCPMP2+ypBQ=="
 }
