@@ -169,7 +169,7 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
     req.on('data', row => chunks.push(row))
     req.on('end', () => {
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
-      seen.push({ path: req.url, authorization: req.headers.authorization, model: body.model, maxTokens: body.max_tokens, stream: body.stream })
+      seen.push({ path: req.url, authorization: req.headers.authorization, model: body.model, maxTokens: body.max_tokens, stream: body.stream, messages: body.messages })
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { role: 'assistant', reasoning_content: 'think' } }] })}\n\n`)
       res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { reasoning_content: 'ing' } }] })}\n\n`)
@@ -213,6 +213,14 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('the relay saw the bearer credential', seen[0]?.authorization, 'Bearer sk-relay-credential-0123456789')
   check('and the raw namespaced model id', seen[0]?.model, 'deepseek-ai/deepseek-v4.1-flash')
   check('and a bounded streaming request', [seen[0]?.stream, typeof seen[0]?.maxTokens === 'number' && seen[0]?.maxTokens > 0], [true, true])
+  check('the sealed turn asks for underrun-free reasoning in its system prompt',
+    [seen[0]?.messages?.[0]?.role, seen[0]?.messages?.[0]?.content],
+    ['system', 'Avoid overthinking: keep your reasoning brief and proportionate to the task.'])
+  const withSystem = []
+  for await (const chunk of adapter.stream({ model: sealedEntry.id, messages: [{ role: 'user', content: 'hi' }], system: 'Be helpful.' }, sealedEntry, state())) withSystem.push(chunk)
+  check('a caller system prompt keeps its text and gains only the hint suffix',
+    [seen[1]?.messages?.[0]?.role, String(seen[1]?.messages?.[0]?.content).startsWith('Be helpful.\n\nAvoid overthinking')],
+    ['system', true])
   await new Promise(resolve => relay.close(resolve))
 }
 

@@ -235,6 +235,7 @@ export class FreeModelAdapter {
       if (sealed) {
         const patch = effortPatchFor(options.reasoningEffort, entry)
         if (patch !== null) Object.assign(payload, patch)
+        applySealedPacingHint(payload)
       }
       return payload
     }
@@ -427,6 +428,30 @@ export class FreeModelAdapter {
         if (!continuationScheduled && !turnRecorded) finishTurn(false, false, attempt + 1)
       }
     }
+  }
+}
+
+/** The co-paid reasoning models can burn minutes in the thinking channel on
+ * turns that need seconds (observed: an entire small token budget spent on
+ * reasoning for a one-line answer, first visible byte minutes late). The
+ * effort menu owns the hard depth; this one-line prompt asks for pacing so a
+ * turn does not sit silent while the model over-explores. Applied on every
+ * sealed build, so the continuation and recovery payloads carry it too. */
+const SEALED_PACING_HINT =
+  'Avoid overthinking: keep your reasoning brief and proportionate to the task.'
+
+function applySealedPacingHint(payload) {
+  if (Array.isArray(payload.messages)) {
+    const system = payload.messages.find(message => message?.role === 'system' && typeof message.content === 'string')
+    if (system !== undefined) {
+      system.content = system.content === '' ? SEALED_PACING_HINT : `${system.content}\n\n${SEALED_PACING_HINT}`
+      return
+    }
+    payload.messages.unshift({ role: 'system', content: SEALED_PACING_HINT })
+    return
+  }
+  if (typeof payload.system === 'string') {
+    payload.system = payload.system === '' ? SEALED_PACING_HINT : `${payload.system}\n\n${SEALED_PACING_HINT}`
   }
 }
 
