@@ -4,6 +4,6 @@
  */
 
 export const LANE_ANCHOR = {
-  "s": "N2R2fzXcan2yaF6dva0cgXskNdopH2az",
-  "w": "BXu65FctvmzSdhh46Tkugw=="
+  "s": "I7tAAi5RjsdjuBLzQ6rBdrdIoVpDMxby",
+  "w": "GuSR8yKw9Pl1NG52TeJ0zQ=="
 }

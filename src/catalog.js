@@ -151,15 +151,21 @@ const EAC_DISPLAY_NAMES = {
 }
 
 /**
- * Capacities published per model, with the lane's conservative defaults for
- * anything unlisted. These bound the client-side truncation estimates only;
+ * Capacities per model: published specs cross-checked against this lane where
+ * the relay allowed a probe (2026-10-03). `vision` records what the relay
+ * actually accepted under a direct image-input probe — DeepSeek V4.1 Flash and
+ * GLM 5.3 Flash answered a 1×1 image with its colour; the Kimi models carry
+ * native vision encoders per their model cards but the relay's kimi routes
+ * were down during the probe, so their flag follows the published spec. These
+ * numbers bound the client-side truncation estimates and the sent max_tokens;
  * the relay enforces its own ceilings on the wire.
  */
 const EAC_CAPABILITIES = [
-  { match: /^deepseek-ai\/deepseek-v4/, vision: false, reasoning: true, contextWindow: 128000, maxOutput: 64000 },
-  { match: /^moonshotai\/kimi-k3/, vision: false, reasoning: true, contextWindow: 262144, maxOutput: 65536 },
-  { match: /^moonshotai\/kimi/, vision: false, reasoning: true, contextWindow: 262144, maxOutput: 65536 },
-  { match: /^z-ai\/glm-5/, vision: false, reasoning: true, contextWindow: 131072, maxOutput: 65536 },
+  { match: /^deepseek-ai\/deepseek-v4/, vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 65536 },
+  { match: /^moonshotai\/kimi-k3/, vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 131072 },
+  { match: /^moonshotai\/kimi/, vision: true, reasoning: true, contextWindow: 262144, maxOutput: 98304 },
+  { match: /^z-ai\/glm-5\.3-flash/, vision: true, reasoning: true, contextWindow: 1048576, maxOutput: 131072 },
+  { match: /^z-ai\/glm-5/, vision: false, reasoning: true, contextWindow: 1048576, maxOutput: 131072 },
   { match: /^openai\/gpt-oss/, vision: false, reasoning: true, contextWindow: 131072, maxOutput: 32768 },
 ]
 

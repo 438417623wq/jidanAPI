@@ -1,30 +1,63 @@
 /**
  * Outbound wire for the co-paid lane.
  *
- * A deliberately plain OpenAI-compatible relay: `/chat/completions` over SSE
- * with one bearer credential, no session fingerprint headers, no per-model
- * endpoint split. The credential arrives per call from the sealed store
- * (`src/vault.js`) and lives only inside the call frame that builds the
- * headers; nothing here logs it, caches it, or names it in an error.
+ * Two lane modes, decided by the credential the sealed store hands over:
  *
- * Every failure is classified into the same harness-neutral codes the free
- * lane uses, with the endpoint and the credential absent from every message.
+ * - `direct` — one bearer credential, straight to the relay.
+ * - `worker` — a signing gateway in front of the relay carries the real
+ *   credential in its own environment; requests here carry no secret at all,
+ *   only an HMAC-SHA256 signature over `timestamp \n METHOD \n path \n
+ *   sha256(body)` under the seal's shared signing secret, plus the timestamp
+ *   for the gateway's replay window. A seal extracted from this package is
+ *   therefore an indirect entry the gateway can revoke (rotate its accepted
+ *   secrets), not the credential itself.
+ *
+ * The credential material arrives per call from `src/vault.js` and lives only
+ * inside the call frame that builds the headers; nothing here logs it, caches
+ * it, or names it in an error. Every failure is classified into the same
+ * harness-neutral codes the free lane uses, with the endpoint and every secret
+ * absent from every message.
  *
  * @module src/eac.js
  */
 
+import crypto from 'node:crypto'
 import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody } from './http.js'
 
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
 
-function headersFor(credential, accept) {
-  return {
+/**
+ * The signing headers for one gateway request. Exported for the offline suite,
+ * which pins the exact wire format the gateway validates.
+ *
+ * @param {string} signingSecret - shared HMAC key from the seal
+ * @param {{ method: string, path: string, body?: string }} parts - uppercase method, URL pathname, raw body ('' when none)
+ * @param {number} [now] - wall clock, injectable for tests
+ * @returns {{ 'x-ofm-timestamp': string, 'x-ofm-signature': string }}
+ */
+export function signSealedRequest(signingSecret, { method, path, body = '' }, now = Date.now()) {
+  const timestamp = String(Math.trunc(now))
+  const bodyHash = crypto.createHash('sha256').update(body, 'utf8').digest('hex')
+  const mac = crypto.createHmac('sha256', signingSecret)
+    .update(`${timestamp}\n${method.toUpperCase()}\n${path}\n${bodyHash}`, 'utf8')
+    .digest('hex')
+  return { 'x-ofm-timestamp': timestamp, 'x-ofm-signature': mac }
+}
+
+/** Wire headers for one request, per lane mode. The signed path is the full
+ * URL pathname — exactly what the gateway recomputes from its own request. */
+function headersFor(credential, method, fullUrl, body) {
+  const headers = {
     'content-type': 'application/json',
-    'authorization': `Bearer ${credential.apiKey}`,
-    'accept': accept,
+    'accept': method === 'POST' ? 'text/event-stream' : 'application/json',
     'user-agent': 'dsh-our-free-model',
   }
+  if (credential.mode === 'worker') {
+    const path = new URL(fullUrl).pathname
+    return { ...headers, ...signSealedRequest(credential.signingSecret, { method, path, body }) }
+  }
+  return { ...headers, 'authorization': `Bearer ${credential.apiKey}` }
 }
 
 /** One listing round: `GET {base}/models`. Returns the parsed JSON document. */
@@ -35,8 +68,9 @@ export async function fetchSealedListing(credential, { signal, timeoutMs = LISTI
   let callerAborted = false
   const onCallerAbort = () => { callerAborted = true; controller.abort() }
   signal?.addEventListener('abort', onCallerAbort, { once: true })
+  const listingUrl = `${credential.base}/models`
   try {
-    const response = await fetch(`${credential.base}/models`, { headers: headersFor(credential, 'application/json'), redirect: 'error', signal: controller.signal })
+    const response = await fetch(listingUrl, { headers: headersFor(credential, 'GET', listingUrl, ''), redirect: 'error', signal: controller.signal })
     const text = await response.text()
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 200) } } }
@@ -62,12 +96,14 @@ export async function fetchSealedListing(credential, { signal, timeoutMs = LISTI
  * fingerprints, request ids, the pooled-credential UA.
  */
 export async function postSealedStreamed({ credential, body, signal, onData, timeoutMs = TURN_TIMEOUT_MS }) {
+  const bodyText = JSON.stringify(body)
+  const turnUrl = `${credential.base}/chat/completions`
   let response
   try {
-    response = await fetch(`${credential.base}/chat/completions`, {
+    response = await fetch(turnUrl, {
       method: 'POST',
-      headers: headersFor(credential, 'text/event-stream'),
-      body: JSON.stringify(body),
+      headers: headersFor(credential, 'POST', turnUrl, bodyText),
+      body: bodyText,
       redirect: 'error',
       signal,
     })

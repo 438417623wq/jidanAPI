@@ -166,10 +166,7 @@ export function apply(ctx, config) {
     const context = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined
     return typeof context?.name === 'string' ? context.name : undefined
   }
-  const sealedCredentialOf = () => {
-    const opened = unlockSealedLane({ profileName: profileNameOf() })
-    return opened === null ? null : { base: opened.base, apiKey: opened.apiKey }
-  }
+  const sealedCredentialOf = () => unlockSealedLane({ profileName: profileNameOf() })
   let sealedCatalog = sealedCredentialOf() === null ? [] : buildEacCatalog(catalogStore.get().sealIds ?? [])
   const mergeCatalogs = () => { catalog = [...catalog, ...sealedCatalog.filter(row => !catalog.some(entry => entry.id === row.id))] }
   mergeCatalogs()

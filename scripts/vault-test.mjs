@@ -49,6 +49,8 @@ process.env.OUR_FREE_MODEL_BASE ??= 'http://127.0.0.1:9'
 const { detectSealedHost, unlockSealedLane, openSeal, openSealWith, deriveSealKey, SEAL_AAD, IV_BYTES, TAG_BYTES } = await import('../src/vault.js')
 const { buildEacCatalog, eacDisplayName, isEacEntry, EAC_CHANNEL } = await import('../src/catalog.js')
 const { FreeModelAdapter } = await import('../src/adapter.js')
+const { signSealedRequest, fetchSealedListing, postSealedStreamed } = await import('../src/eac.js')
+const gateway = await import('../worker/worker.js')
 
 // ── 1. the seal and the gate ─────────────────────────────────────────────────
 {
@@ -91,7 +93,7 @@ const { FreeModelAdapter } = await import('../src/adapter.js')
   const packed = Buffer.concat([iv, cipher.update(plaintext), cipher.final(), cipher.getAuthTag()])
 
   const opened = openSealWith(shards, packed)
-  check('a fresh mint opens with the exact credential', opened, { base: 'https://lane.example/v1', apiKey: 'sk-roundtrip-credential-0001' })
+  check('a fresh mint opens with the exact credential', opened, { mode: 'direct', base: 'https://lane.example/v1', apiKey: 'sk-roundtrip-credential-0001' })
 
   const wrongShards = [...shards]
   wrongShards[2] = crypto.randomBytes(24)
@@ -126,12 +128,16 @@ const { FreeModelAdapter } = await import('../src/adapter.js')
     files.push(relative)
   }
   for (const entry of pkg.files) collect(entry)
+  // The gateway directory ships in the repository too (deployment config and
+  // its guide), so it is held to the same no-readable-material rule.
+  collect('worker')
 
   // Assembled at runtime so this source file never contains (and can never be
   // found by) the shapes it scans for.
   const needles = {
     'a key prefix with payload': 'sk-' + 'x'.repeat(4),
     'the lane host fragment': ['dtyg', '123'].join(''),
+    'the lane host suffix': ['dpd', 'ns'].join(''),
     'a bearer prefix with payload': 'Bearer ' + 'sk',
   }
   for (const relative of files) {
@@ -205,6 +211,136 @@ const { FreeModelAdapter } = await import('../src/adapter.js')
   check('the relay saw the bearer credential', seen[0]?.authorization, 'Bearer sk-relay-credential-0123456789')
   check('and the raw namespaced model id', seen[0]?.model, 'deepseek-ai/deepseek-v4.1-flash')
   check('and a bounded streaming request', [seen[0]?.stream, typeof seen[0]?.maxTokens === 'number' && seen[0]?.maxTokens > 0], [true, true])
+  await new Promise(resolve => relay.close(resolve))
+}
+
+// ── 3b. the signing gateway (the real worker/worker.js, driven in-process) ───
+{
+  // The relay stand-in records what the gateway forwarded, so the suite can
+  // assert the real credential rode the Worker→relay hop and never the client→
+  // gateway one.
+  const relaySeen = []
+  const relay = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', row => chunks.push(row))
+    req.on('end', () => {
+      relaySeen.push({ path: req.url, authorization: req.headers.authorization })
+      if (req.url === '/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'text/event-stream' })
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'via-gateway' } }] })}\n\n`)
+      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2 } })}\n\n`)
+      res.write('data: [DONE]\n\n')
+      res.end()
+    })
+  })
+  await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve))
+  relay.unref()
+
+  // A local HTTP shell around the REAL worker module: every request the suite
+  // makes crosses the exact fetch() handler Cloudflare will run.
+  const GATEWAY_SECRET = 'test-signing-secret-0123456789abcdef'
+  const env = {
+    UPSTREAM_URL: `http://127.0.0.1:${relay.address().port}`,
+    UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
+    SIGNING_SECRETS: GATEWAY_SECRET,
+    MODELS: 'deepseek-ai/deepseek-v4.1-flash',
+  }
+  const fakeCtx = { waitUntil() {}, passThroughOnException() {} }
+  const shell = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', row => chunks.push(row))
+    req.on('end', async () => {
+      const request = new Request(`https://gateway.test${req.url}`, {
+        method: req.method,
+        headers: req.headers,
+        body: req.method === 'POST' ? Buffer.concat(chunks).toString('utf8') : undefined,
+      })
+      const response = await gateway.default.fetch(request, env, fakeCtx)
+      res.writeHead(response.status, { 'content-type': response.headers.get('content-type') ?? 'application/json' })
+      res.end(await response.text())
+    })
+  })
+  await new Promise(resolve => shell.listen(0, '127.0.0.1', resolve))
+  shell.unref()
+  const gatewayBase = `http://127.0.0.1:${shell.address().port}/v1`
+  const workerCredential = { mode: 'worker', base: gatewayBase, signingSecret: GATEWAY_SECRET }
+
+  // Seal round trip for the worker shape, and its failure paths. The seal
+  // itself must name an https gateway (production shape); the live-through
+  // credential below is built by hand so the loopback shell can be plain http.
+  const workerShards = [crypto.randomBytes(24), crypto.randomBytes(24), crypto.randomBytes(24)]
+  const sealBody = { v: 1, m: 'eac', t: 'worker', u: 'https://gateway.test/v1', s: GATEWAY_SECRET }
+  const workerIv = crypto.randomBytes(IV_BYTES)
+  const workerCipher = crypto.createCipheriv('aes-256-gcm', deriveSealKey(workerShards), workerIv, { authTagLength: TAG_BYTES })
+  workerCipher.setAAD(Buffer.from(SEAL_AAD, 'utf8'))
+  const workerPacked = Buffer.concat([workerIv, workerCipher.update(Buffer.from(JSON.stringify(sealBody))), workerCipher.final(), workerCipher.getAuthTag()])
+  const workerOpened = openSealWith(workerShards, workerPacked)
+  check('a worker-mode seal opens to gateway url + signing secret', workerOpened, { mode: 'worker', base: 'https://gateway.test/v1', signingSecret: GATEWAY_SECRET })
+  const shortSecretShards = workerShards
+  const shortIv = crypto.randomBytes(IV_BYTES)
+  const shortCipher = crypto.createCipheriv('aes-256-gcm', deriveSealKey(shortSecretShards), shortIv, { authTagLength: TAG_BYTES })
+  shortCipher.setAAD(Buffer.from(SEAL_AAD, 'utf8'))
+  const shortPacked = Buffer.concat([shortIv, shortCipher.update(Buffer.from(JSON.stringify({ ...sealBody, s: 'too-short' }))), shortCipher.final(), shortCipher.getAuthTag()])
+  check('a worker seal with an undersized signing secret fails closed', openSealWith(shortSecretShards, shortPacked), null)
+
+  // The signature the client computes is the signature the gateway verifies:
+  // re-derive it with an independent implementation of the documented contract.
+  const signed = signSealedRequest(GATEWAY_SECRET, { method: 'POST', path: '/v1/chat/completions', body: '{"model":"x"}' }, 1_700_000_000_000)
+  const independent = (() => {
+    const bodyHash = crypto.createHash('sha256').update('{"model":"x"}', 'utf8').digest('hex')
+    return crypto.createHmac('sha256', GATEWAY_SECRET).update(`1700000000000\nPOST\n/v1/chat/completions\n${bodyHash}`, 'utf8').digest('hex')
+  })()
+  check('signSealedRequest matches the documented wire contract', signed, {
+    'x-ofm-timestamp': '1700000000000',
+    'x-ofm-signature': independent,
+  })
+
+  // Listing + a streamed turn through gateway → relay, via the lane's own
+  // outbound module, exactly as the adapter calls it in production.
+  const listing = await fetchSealedListing(workerCredential)
+  check('the gateway serves the signed listing round', listing?.data?.[0]?.id, 'deepseek-ai/deepseek-v4.1-flash')
+  let streamedText = ''
+  const turn = await postSealedStreamed({
+    credential: workerCredential,
+    body: { model: 'deepseek-ai/deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }], stream: true },
+    onData: payload => {
+      try { const frame = JSON.parse(payload); const delta = frame.choices?.[0]?.delta; if (typeof delta?.content === 'string') streamedText += delta.content } catch { /* scripted frames only */ }
+    },
+  })
+  check('the gateway relays a signed streaming turn', streamedText, 'via-gateway')
+  check('and it completed', turn?.status, 200)
+  check('the relay saw only the gateway-held credential', relaySeen[1]?.authorization, 'Bearer sk-relay-key-held-only-by-the-gateway')
+
+  // Gateway refusals, each against the real handler.
+  const callGateway = async (method, path, { secret = GATEWAY_SECRET, ts = Date.now(), body = '' } = {}) => {
+    const headers = { 'x-ofm-timestamp': String(Math.trunc(ts)) }
+    if (secret !== null) {
+      const bodyHash = crypto.createHash('sha256').update(body, 'utf8').digest('hex')
+      headers['x-ofm-signature'] = crypto.createHmac('sha256', secret).update(`${headers['x-ofm-timestamp']}\n${method}\n${path}\n${bodyHash}`, 'utf8').digest('hex')
+    }
+    const response = await gateway.default.fetch(new Request(`https://gateway.test${path}`, { method, headers, body: method === 'POST' ? body : undefined }), env, fakeCtx)
+    return response.status
+  }
+  const chatBody = JSON.stringify({ model: 'deepseek-ai/deepseek-v4.1-flash', messages: [] })
+  check('a stale timestamp is refused', await callGateway('POST', '/v1/chat/completions', { body: chatBody, ts: Date.now() - 11 * 60_000 }), 401)
+  check('a bad signature is refused', await callGateway('POST', '/v1/chat/completions', { secret: 'another-signing-secret-wrong-012345', body: chatBody }), 401)
+  check('a missing signature is refused', await callGateway('POST', '/v1/chat/completions', { secret: null, body: chatBody }), 401)
+  check('an unknown route is refused at the gateway, not relayed', await callGateway('GET', '/v1/embeddings'), 404)
+  check('a model outside the allowlist is refused', await callGateway('POST', '/v1/chat/completions', { body: JSON.stringify({ model: 'other-org/other-model' }) }), 403)
+
+  const tinyEnv = { ...env, MAX_BODY_BYTES: '16' }
+  const tinyResponse = await gateway.default.fetch(new Request('https://gateway.test/v1/chat/completions', {
+    method: 'POST',
+    headers: { 'x-ofm-timestamp': String(Date.now()), 'x-ofm-signature': 'x'.repeat(64) },
+    body: chatBody,
+  }), tinyEnv, fakeCtx)
+  check('an oversized body is refused before any relay work', tinyResponse.status, 413)
+
+  await new Promise(resolve => shell.close(resolve))
   await new Promise(resolve => relay.close(resolve))
 }
 

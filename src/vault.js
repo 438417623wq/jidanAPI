@@ -108,9 +108,16 @@ export function deriveSealKey(shards) {
  * payload, a wrong AAD — lands on GCM's authentication check and returns null.
  * The function never throws and never returns a partial credential.
  *
+ * Two lane modes ship:
+ * - `direct` — the seal carries the relay's credential itself (`{u,k}`);
+ * - `worker` — the seal carries a signing gateway's URL and its shared signing
+ *   secret (`{u,s}`); the upstream credential lives only behind that gateway
+ *   (see worker/README.md), so a seal extracted from this package is an
+ *   indirect entry the gateway can revoke, not the credential.
+ *
  * @param {Buffer[]} unmasked - shard bytes in derivation order
  * @param {Buffer} packed - iv | ciphertext | tag
- * @returns {{ base: string, apiKey: string } | null}
+ * @returns {{ mode: 'direct', base: string, apiKey: string } | { mode: 'worker', base: string, signingSecret: string } | null}
  */
 export function openSealWith(unmasked, packed) {
   try {
@@ -128,11 +135,39 @@ export function openSealWith(unmasked, packed) {
     const seal = JSON.parse(plaintext.toString('utf8'))
     if (seal?.v !== 1 || seal?.m !== 'eac') return null
     const base = typeof seal.u === 'string' ? seal.u : ''
-    const apiKey = typeof seal.k === 'string' ? seal.k : ''
     const url = new URL(base)
     if (url.protocol !== 'https:' || url.pathname.replace(/\/+$/, '') === '') return null
+    const cleanBase = base.replace(/\/+$/, '')
+    if (seal.t === 'worker') {
+      // The gateway's allowlist serves /v1/models and /v1/chat/completions, so
+      // a mounted path that does not end in /v1 could only mismatch it.
+      if (!/\/v1$/.test(cleanBase)) return null
+      if (typeof seal.s !== 'string' || seal.s.length < 32) return null
+      return { mode: 'worker', base: cleanBase, signingSecret: seal.s }
+    }
+    const apiKey = typeof seal.k === 'string' ? seal.k : ''
     if (!/^[\w-]{20,}$/.test(apiKey)) return null
-    return { base: base.replace(/\/+$/, ''), apiKey }
+    return { mode: 'direct', base: cleanBase, apiKey }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Open a seal from raw shard rows (`{s, w}`) and its packed payload — the
+ * shape the data files carry. This is the door the minting tool verifies
+ * through: it re-imports the just-written files and hands them here, so the
+ * verdict is about the bytes on disk, not about whatever a module cache kept.
+ *
+ * @param {Array<{s: string, w: string}>} rows - masked shard rows in derivation order
+ * @param {string} sealB64 - the packed seal (iv | ciphertext | tag), base64
+ * @returns {{ mode: 'direct', base: string, apiKey: string } | { mode: 'worker', base: string, signingSecret: string } | null}
+ */
+export function openSealFrom(rows, sealB64) {
+  try {
+    if (!Array.isArray(rows) || rows.length < 2) return null
+    const unmasked = rows.map(row => unmaskShard(row.s, row.w))
+    return openSealWith(unmasked, Buffer.from(sealB64, 'base64'))
   } catch {
     return null
   }
@@ -141,15 +176,10 @@ export function openSealWith(unmasked, packed) {
 /**
  * Open the seal assembled from the two data files.
  *
- * @returns {{ base: string, apiKey: string } | null}
+ * @returns {{ mode: 'direct', base: string, apiKey: string } | { mode: 'worker', base: string, signingSecret: string } | null}
  */
 export function openSeal() {
-  try {
-    const shards = sealedShards().map(row => unmaskShard(row.s, row.w))
-    return openSealWith(shards, Buffer.from(LANE_SEAL, 'base64'))
-  } catch {
-    return null
-  }
+  return openSealFrom([...LANE_SHARDS, LANE_ANCHOR], LANE_SEAL)
 }
 
 /**

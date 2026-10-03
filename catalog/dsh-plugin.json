@@ -3,7 +3,7 @@
   "manifestVersion": "0.15",
   "id": "dev.zouyuxuan122.dsh-our-free-model",
   "name": "dsh-our-free-model",
-  "version": "1.4.0",
+  "version": "1.4.1",
   "facets": {
     "host": {
       "entry": "index.js",
