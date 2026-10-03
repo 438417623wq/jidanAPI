@@ -179,6 +179,15 @@ POST /v1/chat/completions     streaming and non-streaming
 POST /v1/responses
 ```
 
+The forward endpoint streams in full: besides the `data:` frames, a lane that is
+thinking gets periodic SSE comment frames (a `:` line), so a client's idle
+timeout cannot read "the upstream is still thinking" as "the socket is dead".
+Thinking is recognised under `reasoning`, `reasoning_content` and
+`reasoning_text` — a gateway that repeats one thought under two of them is
+counted once — and the `reasoning_details` array as well. A model whose thinking
+never streams upstream still sends no reasoning frames here; see
+[Known limitations](#known-limitations).
+
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models
 between the two groups on its own.
@@ -470,6 +479,7 @@ it never touches files.
 - **"No usage cap" means no cap to buy.** There is no balance, no plan and no per-token billing; the lane is metered by session rate, though, and hammering it surfaces as `429`. The plugin marks the model *quota reached* rather than hiding it, and the next probe clears the state.
 - **Some upstream models are slow.** `nemotron-3.5-lightning-free` measured over 30 s to first token in one run. That is upstream latency, and the dashboard reports it rather than hiding it.
 - **Output speed is sometimes `—`.** A model that answers in one or two large frames, or whose thinking never streams, has no window worth dividing. The panel says so instead of publishing the model's thinking time as decoding speed.
+- **Thinking is a silent wait, and it shares the output budget.** `mimo-v2.6-flash-free` measured 60–70 s of silence while the lane billed 3024 reasoning tokens and streamed not one reasoning frame; such a turn ends as `stop` with nothing visible, which clients report as an empty response. The forward endpoint and the LAN relay keep the connection alive with heartbeats — but that protects the connection, not the timeout: the SSE parser skips comment frames, and pi-ai's idle watchdog (`streamIdleTimeoutMs`, default 300 s) resets only when real content frames arrive, so a stall past 300 s on the wire still fails (issue #34). Only the caller can give it **budget**: raise the per-call output ceiling past 16k, or use a model the catalogue marks `reasoning: false`.
 - **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
 - **Capabilities are what probes can confirm.** Anything the public listing and a live probe do not evidence is left unlabelled.
 - **Source is plain JavaScript.** It has to be, to load as a local plugin. Anyone with the folder can read the gateway logic; treat that as an accepted property of this distribution form, not as something obfuscation would fix.
