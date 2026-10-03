@@ -25,7 +25,7 @@
 import http from 'node:http'
 import net from 'node:net'
 import assert from 'node:assert/strict'
-import { startForwardServer, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
+import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
 import { toToolDefs } from '../src/messages.js'
 import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
@@ -600,6 +600,98 @@ await checkAsync('startForwardServer reports the port it settled on and still se
   console.log('  ok  the disabled listener answers 503 without a key')
   await disabled.close()
 }
+
+// ── the LAN relay ────────────────────────────────────────────────────────────
+/** A relay whose target is a real local listener, so the hop is exercised. */
+async function serveRelay({ targetPort, enabled = true, lanKey = 'lan-test', localKey = 'k-test', host = '127.0.0.1', port = 0 }) {
+  const server = await startLanRelay({ config: () => ({ enabled, host, port, lanKey, localKey, targetPort }) })
+  openServers.push(server)
+  return { base: `http://127.0.0.1:${server.port}`, port: server.port }
+}
+
+/** A local listener with a roster and one key, as the plugin starts it. */
+async function localListener(lane) {
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
+    complete: lane.complete,
+    modelRows: () => [{ id: 'mimo-v2.6-flash-free', created: 1, owned_by: 'our-free-model' }],
+  })
+  openServers.push(server)
+  return { base: `http://127.0.0.1:${server.port}`, port: server.port }
+}
+
+const lanGet = (base, path, key = 'lan-test') => fetch(`${base}${path}`, key === '' ? {} : { headers: { authorization: `Bearer ${key}` } })
+const lanPost = (base, path, body, key = 'lan-test') => fetch(`${base}${path}`, {
+  method: 'POST',
+  headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+await checkAsync('the relay answers nothing without its key — /health included', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  assert.equal((await fetch(`${relay.base}/health`)).status, 401)
+  // The local listener's own key must not open this door either.
+  assert.equal((await lanGet(relay.base, '/v1/models', 'k-test')).status, 401)
+})
+
+await checkAsync('an empty relay key never opens the door', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port, lanKey: '' })
+  assert.equal((await lanGet(relay.base, '/v1/models', '')).status, 401)
+})
+
+await checkAsync('the relay re-issues under the local key', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  const response = await lanGet(relay.base, '/v1/models')
+  assert.equal(response.status, 200)
+  const payload = await response.json()
+  assert.equal(payload.data[0].id, 'mimo-v2.6-flash-free')
+})
+
+await checkAsync('the relay carries a streaming completion', async () => {
+  const lane = makeLane()
+  lane.script = () => ({
+    chunks: [
+      { type: 'text-delta', index: 0, text: 'hi from the relay' },
+      { type: 'finish', reason: { kind: 'stop' } },
+    ],
+    outcome: { text: 'hi from the relay', toolCalls: [] },
+  })
+  const upstream = await localListener(lane)
+  const relay = await serveRelay({ targetPort: upstream.port })
+  const response = await lanPost(relay.base, '/v1/chat/completions', { model: 'mimo-v2.6-flash-free', stream: true, messages: [{ role: 'user', content: 'hi' }] })
+  assert.equal(response.status, 200)
+  const frames = sseFrames(await response.text())
+  assert.equal(frames.at(-1)?.choices?.[0]?.finish_reason, 'stop')
+})
+
+await checkAsync('the relay is not a general proxy for loopback', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port })
+  assert.equal((await lanGet(relay.base, '/v1/embeddings')).status, 404)
+  assert.equal((await lanGet(relay.base, '/health')).status, 404)
+})
+
+await checkAsync('a relay with nothing to relay to answers 503', async () => {
+  const relay = await serveRelay({ targetPort: 0 })
+  assert.equal((await lanGet(relay.base, '/v1/models')).status, 503)
+})
+
+await checkAsync('a switched-off relay answers 503 even with the right key', async () => {
+  const upstream = await localListener(makeLane())
+  const relay = await serveRelay({ targetPort: upstream.port, enabled: false })
+  assert.equal((await lanGet(relay.base, '/v1/models')).status, 503)
+})
+
+await checkAsync('a second relay hop is refused instead of spinning', async () => {
+  // Two relays pointed at each other with matching keys: the second pass must
+  // stop, or a settings mistake becomes an unbounded request loop.
+  const first = await serveRelay({ targetPort: 0, localKey: 'lan-test' })
+  const second = await serveRelay({ targetPort: first.port, localKey: 'lan-test' })
+  assert.equal((await lanGet(second.base, '/v1/models')).status, 508)
+})
 
 for (const server of openServers) await server.close()
 for (const server of occupants) await releaseWhenIdle(server)

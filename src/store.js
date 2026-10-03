@@ -158,7 +158,14 @@ export const SETTINGS_INITIAL = {
   /** Minutes between background availability re-probes. */
   probeIntervalMinutes: 15,
   /** Serve the OpenAI-compatible forward listener for other local harnesses. */
-  forward: { enabled: false, host: '127.0.0.1', port: 18899 },
+  forward: {
+    enabled: false,
+    host: '127.0.0.1',
+    port: 18899,
+    /** Reach that listener from other machines on the network; off by default,
+     *  binds a routable address, and demands a key of its own (`forwardLanKey`). */
+    lan: { enabled: false, port: 0 },
+  },
   /** Cap a turn's output so a slow lane cannot run away. */
   defaultMaxTokens: 32768,
   /** 所有模型默认允许一次纯推理检查点续写，false 可关闭。 */
