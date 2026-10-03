@@ -1,7 +1,7 @@
 {
   "version": "1.4.1",
   "base": "../",
-  "publishedAt": "2026-10-03T14:56:57.137Z",
+  "publishedAt": "2026-10-03T16:41:24.267Z",
   "notes": "",
   "files": [
     {
@@ -81,8 +81,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 7288,
-      "sha256": "719d531307f238461ee5bbafab0a2474918a951bdc299495fd08c68a4032a783"
+      "size": 7861,
+      "sha256": "0841b082dae9af8f2898ad777b3580908d421aee5b9201aeb3ec20d362fbafa2"
     },
     {
       "path": "src/effort.js",
@@ -170,5 +170,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "97g5F9V9WFJf+SdTvUU2n1R2eUSShrZzH6JwK4859RIJuPlneBN6cr/fmOLxXANKUIzzrHcuoPyCCPMP2+ypBQ=="
+  "signature": "seTpsLBuvF1FFcwK5s20hgVSssH04Tojdhuoqcwpb+qQvryyYFwx6s12oczsBeaPBUwn+S2WsjWa51vFsnVOCg=="
 }

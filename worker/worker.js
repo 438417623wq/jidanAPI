@@ -155,6 +155,14 @@ export default {
       const base = relayUrl(String(env.UPSTREAM_URL ?? ''))
       if (base === null) return JSON_ERROR(500, 'gateway is not configured')
       const upstream = new URL(base.origin + base.pathname.replace(/\/+$/, '') + route.upstream)
+      // A reasoning model can hold the relay's first byte for minutes, and a
+      // proxy in front of this gateway (Cloudflare's ~100s origin timeout,
+      // nginx's 60s default) would kill the lane before the answer starts.
+      // The self-hosted host implements this hook by flushing an SSE head plus
+      // keepalive comments the moment admission passes, so the response has
+      // already begun while the upstream thinks; the Worker host cannot flush
+      // early and leaves the hook unset. Chat turns only — listings are fast.
+      if (route.body === true) ctx?.onUpstreamPending?.()
       const relayed = await fetch(upstream, {
         method: request.method,
         headers: {

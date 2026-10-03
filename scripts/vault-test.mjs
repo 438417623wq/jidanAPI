@@ -322,6 +322,33 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('and it completed', turn?.status, 200)
   check('the relay saw only the gateway-held credential', relaySeen[1]?.authorization, 'Bearer sk-relay-key-held-only-by-the-gateway')
 
+  // A proxy in front of the relay answers hard failures with a whole HTML page
+  // (Cloudflare's 524 origin-timeout page being the common one). It must reach
+  // the user as one readable line, not as pasted markup.
+  const htmlProxy = http.createServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(req.url.endsWith('/models') ? 524 : 502, { 'content-type': 'text/html; charset=UTF-8' })
+      res.end('<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]-->\n<html><head><title>error</title></head><body>error code</body></html>')
+    })
+  })
+  await new Promise(resolve => htmlProxy.listen(0, '127.0.0.1', resolve))
+  htmlProxy.unref()
+  const htmlCredential = { mode: 'worker', base: `http://127.0.0.1:${htmlProxy.address().port}/v1`, signingSecret: GATEWAY_SECRET }
+  const listingFailure = await fetchSealedListing(htmlCredential).then(() => null, error => error)
+  check('a proxy HTML error page surfaces as one readable line',
+    [listingFailure?.code, listingFailure?.message],
+    ['SERVER', "the gateway's front proxy answered HTTP 524 with an HTML error page"])
+  const turnFailure = await postSealedStreamed({
+    credential: htmlCredential,
+    body: { model: 'deepseek-ai/deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }], stream: true },
+    onData: () => {},
+  }).then(() => null, error => error)
+  check('the same reduction applies to a refused turn',
+    [turnFailure?.code, turnFailure?.message],
+    ['SERVER', "the gateway's front proxy answered HTTP 502 with an HTML error page"])
+  await new Promise(resolve => htmlProxy.close(resolve))
+
   // Gateway refusals, each against the real handler.
   const callGateway = async (method, path, { secret = GATEWAY_SECRET, ts = Date.now(), body = '' } = {}, gatewayEnv = env) => {
     const headers = { 'x-ofm-timestamp': String(Math.trunc(ts)) }
@@ -338,6 +365,25 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('a missing signature is refused', await callGateway('POST', '/v1/chat/completions', { secret: null, body: chatBody }), 401)
   check('an unknown route is refused at the gateway, not relayed', await callGateway('GET', '/v1/embeddings'), 404)
   check('a model outside the allowlist is refused', await callGateway('POST', '/v1/chat/completions', { body: JSON.stringify({ model: 'other-org/other-model' }) }), 403)
+
+  // The prelude hook: the self-hosted host flushes its SSE head through this
+  // callback the moment a chat turn is admitted — never for the listing round,
+  // never for a refused turn (those must keep their real status).
+  let preludeCalls = 0
+  const preludeCtx = { waitUntil() {}, passThroughOnException() {}, onUpstreamPending() { preludeCalls += 1 } }
+  const post = (path, { ts = Date.now(), body = '' } = {}) => gateway.default.fetch(new Request(`https://gateway.test${path}`, {
+    method: 'POST',
+    headers: { 'x-ofm-timestamp': String(Math.trunc(ts)), ...signSealedRequest(GATEWAY_SECRET, { method: 'POST', path, body }, ts) },
+    body,
+  }), env, preludeCtx)
+  await post('/v1/chat/completions', { body: chatBody })
+  check('the prelude hook fires for an admitted chat turn', preludeCalls, 1)
+  await gateway.default.fetch(new Request('https://gateway.test/v1/models', {
+    headers: { ...signSealedRequest(GATEWAY_SECRET, { method: 'GET', path: '/v1/models', body: '' }) },
+  }), env, preludeCtx)
+  check('the prelude hook stays silent for the listing round', preludeCalls, 1)
+  await post('/v1/chat/completions', { body: chatBody, ts: Date.now() - 11 * 60_000 })
+  check('a refused turn never flushes early', preludeCalls, 1)
 
   // Sharing a domain the relay already uses: the lane mounts under a sub-path,
   // the signature covers the FULL pathname (prefix included — it is what the
@@ -405,6 +451,69 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('the node host refuses unsigned requests like the Worker', unsignedNode.status, 401)
   await new Promise(resolve => nodeServer.close(resolve))
   await new Promise(resolve => nodeRelay.close(resolve))
+
+  // The prelude, end to end through the Node host: a relay that sits on its
+  // first byte must not let a front proxy kill the lane (Cloudflare ~100s,
+  // nginx 60s default), and a refusal arriving after the head is committed
+  // reaches the client in-stream, where the lane's reader classifies it.
+  const preludeRelay = http.createServer((req, res) => {
+    const chunks = []
+    req.on('data', row => chunks.push(row))
+    req.on('end', () => {
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json' })
+        res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
+        return
+      }
+      const refusing = Buffer.concat(chunks).toString('utf8').includes('refusing-model')
+      setTimeout(() => {
+        if (refusing) {
+          res.writeHead(503, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { message: 'relay is overloaded' } }))
+          return
+        }
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'late' } }] })}\n\n`)
+        res.write('data: [DONE]\n\n')
+        res.end()
+      }, refusing ? 300 : 2300)
+    })
+  })
+  await new Promise(resolve => preludeRelay.listen(0, '127.0.0.1', resolve))
+  preludeRelay.unref()
+  const preludeServer = createGatewayServer({
+    UPSTREAM_URL: `http://127.0.0.1:${preludeRelay.address().port}/v1`,
+    UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
+    SIGNING_SECRETS: GATEWAY_SECRET,
+    RATE_LIMIT_PER_MINUTE: '9999',
+    SSE_PRELUDE_SECONDS: '1',
+  })
+  await new Promise(resolve => preludeServer.listen(0, '127.0.0.1', resolve))
+  preludeServer.unref()
+  const preludeBase = `http://127.0.0.1:${preludeServer.address().port}/v1`
+  const preludeCall = async model => {
+    const body = JSON.stringify({ model, messages: [{ role: 'user', content: 'hi' }], stream: true })
+    return fetch(`${preludeBase}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...signSealedRequest(GATEWAY_SECRET, { method: 'POST', path: '/v1/chat/completions', body }) },
+      body,
+    })
+  }
+  const preludeStart = Date.now()
+  const slowTurn = await preludeCall('deepseek-ai/deepseek-v4.1-flash')
+  const headAt = Date.now() - preludeStart
+  const slowBody = await slowTurn.text()
+  check('the prelude commits the head while the relay still thinks', slowTurn.status, 200)
+  check('the committed head arrives long before the slow relay', headAt < 2000, true)
+  check('keepalive comments flow and the late frames still land in order',
+    [slowBody.includes(': channel open'), slowBody.includes(': keepalive'), slowBody.includes('late'), slowBody.includes('[DONE]')],
+    [true, true, true, true])
+  const refusedTurn = await preludeCall('refusing-model')
+  const refusedBody = await refusedTurn.text()
+  check('a relay refusal after the head reaches the client in-stream',
+    [refusedTurn.status, refusedBody.includes('"relay is overloaded"')], [200, true])
+  await new Promise(resolve => preludeServer.close(resolve))
+  await new Promise(resolve => preludeRelay.close(resolve))
 
   // ── 3c. concurrency gate, analytics, and the admin feed ────────────────────
   {

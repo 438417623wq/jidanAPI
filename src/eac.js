@@ -60,6 +60,16 @@ function headersFor(credential, method, fullUrl, body) {
   return { ...headers, 'authorization': `Bearer ${credential.apiKey}` }
 }
 
+/** A proxy in front of the relay answers hard failures with a whole HTML error
+ * page — Cloudflare's 524 origin-timeout page being the common one. Pasting it
+ * into the harness buries the one useful fact (the status) under markup, so an
+ * unparseable body that is HTML reduces to one readable line. */
+function errorPageMessage(text, status) {
+  const head = String(text ?? '')
+  if (/^\s*<(!doctype|html)/i.test(head)) return `the gateway's front proxy answered HTTP ${status} with an HTML error page`
+  return head.slice(0, 300) || `HTTP ${status}`
+}
+
 /** One listing round: `GET {base}/models`. Returns the parsed JSON document. */
 export async function fetchSealedListing(credential, { signal, timeoutMs = LISTING_TIMEOUT_MS } = {}) {
   const controller = new AbortController()
@@ -73,7 +83,7 @@ export async function fetchSealedListing(credential, { signal, timeoutMs = LISTI
     const response = await fetch(listingUrl, { headers: headersFor(credential, 'GET', listingUrl, ''), redirect: 'error', signal: controller.signal })
     const text = await response.text()
     let payload
-    try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 200) } } }
+    try { payload = JSON.parse(text) } catch { payload = { error: { message: errorPageMessage(text, response.status) } } }
     if (!response.ok) throw classifyFailure(response.status, payload)
     return payload
   } catch (error) {
@@ -119,7 +129,7 @@ export async function postSealedStreamed({ credential, body, signal, onData, tim
   if (!response.ok) {
     const text = await response.text().catch(() => '')
     let payload
-    try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 300) || `HTTP ${response.status}` } } }
+    try { payload = JSON.parse(text) } catch { payload = { error: { message: errorPageMessage(text, response.status) } } }
     throw classifyFailure(response.status, payload, setRetry)
   }
   if (response.body === null) throw new UpstreamError('model stream returned no body', CODE.empty)

@@ -27,6 +27,8 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 - `RATE_LIMIT_PER_MINUTE=60` / `RATE_LIMIT_PER_DAY=1000` —— 单 IP 频率与日额度；
 - `ADMIN_TOKEN=<随机串>` —— 管理看板令牌。设置后浏览器打开 `https://<网关域名>/eac/stats?t=<ADMIN_TOKEN>`：请求热力图（星期×小时）、72 小时请求曲线、按 IP 与按模型的 Token 消耗扇形图、每 IP 明细表（请求数、频率、Token、拒绝数、并发峰值）。看板 30 秒自动刷新，统计数据落盘 `stats.json`（重启不丢），IP 以盐值哈希存储、非可逆。
 
+**SSE 预冲刷**（`SSE_PRELUDE_SECONDS=15`，0 关闭）默认开启：对话回合验签一通过就回 200 + `text/event-stream` 头 + `: keepalive` 注释帧，上游出 token 后再灌真实帧。这是给 Cloudflare（~100 秒源站超时，免费版不可调）和 nginx（默认 60 秒读超时）准备的——推理型模型首 token 经常要 30~140 秒，不预冲刷就会被中间层掐成 504/524 的 HTML 错误页。预冲刷之后才到的上游拒绝（如中继 5xx）以流内 `data: {"error":…}` 帧送达，插件按错误信封同款分类；网关日志与看板仍记录真实上游状态码。
+
 New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 部署（方式一）无进程内状态，此三层仅自建形态可用。
 
 ## 部署
@@ -36,12 +38,19 @@ New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 
 **复用中继已有的域名？可以。** 两条路：
 
 - **子域名（零代码改动）**：DNS 加一条 `eac.你的域名` → 同一台服务器，网关按下面步骤部署，客户端密封地址用 `https://eac.你的域名/v1`。
-- **同域子路径（少一条 DNS）**：网关的 `.env`（或 Worker vars）里设 `MOUNT_PREFIX=/eac`，在**中继现有站点**的 Nginx 配置里加一段原样透传的反代（**不要**剥前缀）：
+- **同域子路径（少一条 DNS）**：网关的 `.env`（或 Worker vars）里设 `MOUNT_PREFIX=/eac`，在**中继现有站点**的 Nginx 配置里加一段原样透传的反代（**不要**剥前缀）。**读超时必须显式加长**——nginx 默认 `proxy_read_timeout 60s`，而推理型模型首字节经常超过 60 秒，漏了就是一道 504 墙：
   ```nginx
   location /eac/ {
       proxy_pass http://127.0.0.1:17788;
       proxy_set_header Host $host;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
       proxy_buffering off;
+      proxy_cache off;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_connect_timeout 60s;
+      proxy_send_timeout 600s;
+      proxy_read_timeout 600s;
   }
   ```
   客户端密封地址用 `https://你的域名/eac/v1`（签名覆盖含前缀的完整路径，网关原样收到后自行剥前缀路由）。若网关与中继同机，`UPSTREAM_URL` 可直接写中继的回环地址（`http://127.0.0.1:<中继端口>`，网关允许回环 http）。

@@ -24,6 +24,13 @@
  *   MODELS               optional comma-separated model allowlist
  *   CLOCK_SKEW_SECONDS   optional replay window (default 600)
  *   MAX_BODY_BYTES       optional request body cap (default 8 MiB)
+ *   SSE_PRELUDE_SECONDS  optional. Flush an SSE head plus keepalive comment
+ *                        frames the moment a chat turn is admitted, so front
+ *                        proxies (Cloudflare's ~100s origin timeout, nginx's
+ *                        60s default read timeout) measure an already-started
+ *                        response instead of the model's thinking time. A relay
+ *                        refusal arriving after the head is carried in-stream
+ *                        as an error frame. Default 15, 0 = off.
  *   HOST                 bind address, default 127.0.0.1 — keep it behind a
  *                        reverse proxy (Nginx); binding a public interface
  *                        would also make the X-Forwarded-For IP below spoofable
@@ -259,6 +266,7 @@ export function createGatewayServer(hostEnv = {}) {
   const perDay = Number.parseInt(env.RATE_LIMIT_PER_DAY ?? '1000', 10)
   const concLimit = Number.parseInt(env.CONCURRENCY_PER_IP ?? '20', 10)
   const adminToken = String(env.ADMIN_TOKEN ?? '')
+  const preludeSeconds = (() => { const n = Number.parseInt(env.SSE_PRELUDE_SECONDS ?? '15', 10); return Number.isFinite(n) ? n : 15 })()
   const prefix = String(env.MOUNT_PREFIX ?? '').replace(/\/+$/, '')
   const statsPath = env.STATS_PATH || path.join(here, 'stats.json')
   const logSalt = String(env.LOG_SALT ?? '') || String(env.SIGNING_SECRETS ?? '').split(',')[0]?.trim() + '/request-log'
@@ -295,6 +303,19 @@ export function createGatewayServer(hostEnv = {}) {
       const url = new URL('http://127.0.0.1' + (req.url ?? '/'))
       const clientIp = clientIpOf(req)
       const ipHash = analytics.ipHash(clientIp, logSalt)
+
+      // Early SSE prelude state, declared before the try so the catch can still
+      // finish the response correctly once the head has been committed.
+      let earlySent = false
+      let keepalive = null
+      const stopKeepalive = () => { if (keepalive !== null) { clearInterval(keepalive); keepalive = null } }
+      const emitInStreamError = payload => {
+        stopKeepalive()
+        if (!res.writableEnded && !res.destroyed) {
+          res.write(`data: ${JSON.stringify(payload)}\n\n`)
+          res.end()
+        }
+      }
 
       // ── admin dashboard + feed (data token-gated; the page self-gates) ────
       if (url.pathname === prefix + '/entry.js') {
@@ -359,15 +380,52 @@ export function createGatewayServer(hostEnv = {}) {
           headers,
           body: req.method === 'POST' || req.method === 'PUT' ? bodyText : undefined,
         })
-        const response = await gateway.fetch(request, { ...env, RATE_LIMITER: env.RATE_LIMITER ?? limiters.RATE_LIMITER, DAILY_LIMITER: env.DAILY_LIMITER ?? limiters.DAILY_LIMITER }, { waitUntil() {}, passThroughOnException() {} })
+        const response = await gateway.fetch(request, { ...env, RATE_LIMITER: env.RATE_LIMITER ?? limiters.RATE_LIMITER, DAILY_LIMITER: env.DAILY_LIMITER ?? limiters.DAILY_LIMITER }, {
+          waitUntil() {},
+          passThroughOnException() {},
+          // The core calls this once admission has fully passed and it is about
+          // to wait on the relay: flush the SSE head now, so a front proxy's
+          // origin timeout measures an already-started response instead of the
+          // model's thinking time. Keepalive comments keep every layer's idle
+          // timers fed until the real frames take over.
+          onUpstreamPending: preludeSeconds > 0 ? () => {
+            if (earlySent || res.writableEnded || res.destroyed) return
+            earlySent = true
+            res.writeHead(200, {
+              'content-type': 'text/event-stream; charset=utf-8',
+              'cache-control': 'no-store',
+              'x-accel-buffering': 'no',
+            })
+            res.write(': channel open\n\n')
+            keepalive = setInterval(() => {
+              if (!res.writableEnded && !res.destroyed) res.write(': keepalive\n\n')
+            }, preludeSeconds * 1000)
+            keepalive.unref?.()
+          } : undefined,
+        })
 
         const scanner = createUsageScanner()
         let concReleased = false
-        res.writeHead(response.status, (() => { const out = {}; response.headers.forEach((v, n) => { out[n] = v }); return out })())
+        if (!earlySent) {
+          res.writeHead(response.status, (() => { const out = {}; response.headers.forEach((v, n) => { out[n] = v }); return out })())
+        }
         if (response.body === null) {
-          res.end()
+          if (earlySent && response.status >= 400) emitInStreamError({ error: { message: `HTTP ${response.status}` } })
+          else { stopKeepalive(); res.end() }
           releaseConc()
           analytics.record({ hash: ipHash, chat: isChat, status: response.status, tokensIn: 0, tokensOut: 0, model, rejected: response.status >= 400 })
+          return
+        }
+        if (earlySent && response.status >= 400) {
+          // The head is already committed as 200, so the refusal travels the
+          // only way left — as an in-stream error frame, which the lane's
+          // reader classifies exactly like an error envelope.
+          const text = await response.text().catch(() => '')
+          let payload
+          try { payload = JSON.parse(text) } catch { payload = { error: { message: String(text ?? '').slice(0, 300) || `HTTP ${response.status}` } } }
+          analytics.record({ hash: ipHash, chat: isChat, status: response.status, tokensIn: 0, tokensOut: 0, model, rejected: true })
+          releaseConc()
+          emitInStreamError(payload)
           return
         }
         const upstream = Readable.fromWeb(response.body)
@@ -378,20 +436,25 @@ export function createGatewayServer(hostEnv = {}) {
         })
         upstream.on('end', () => {
           scanner.end()
+          stopKeepalive()
           res.end()
           releaseConc()
           const usage = scanner.result()
           analytics.record({ hash: ipHash, chat: isChat, status: response.status, tokensIn: usage.prompt, tokensOut: usage.completion, model, rejected: response.status >= 400 })
         })
         upstream.on('error', () => {
+          stopKeepalive()
           releaseConc()
           try { res.destroy() } catch { /* client already gone */ }
         })
-        res.on('close', () => { if (!res.writableEnded) releaseConc() })
+        res.on('close', () => { stopKeepalive(); if (!res.writableEnded) releaseConc() })
       } catch (error) {
         analytics.record({ hash: ipHash, chat: req.method === 'POST' && url.pathname.endsWith('/chat/completions'), status: 500, tokensIn: 0, tokensOut: 0, model: null, rejected: true })
-        if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
-        res.end(JSON.stringify({ error: { message: 'gateway request failed' } }))
+        if (earlySent) emitInStreamError({ error: { message: 'gateway request failed' } })
+        else {
+          if (!res.headersSent) res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' })
+          res.end(JSON.stringify({ error: { message: 'gateway request failed' } }))
+        }
         console.log(JSON.stringify({ lane: 'eac-node', fault: String(error?.message ?? error).slice(0, 160) }))
       }
     })
