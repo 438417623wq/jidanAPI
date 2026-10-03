@@ -15,13 +15,19 @@
  * - a non-JSON body answers 400 (not 500), an unknown model 404 (not 502);
  * - `/v1/responses` honors `instructions`, `max_output_tokens` and `stream`.
  *
+ * Plus the two wire-level gaps behind the "unstable over the LAN" report:
+ * thinking that arrives under a name other than `reasoning` now reaches the
+ * harness as thinking, and an answer that stays silent while the lane thinks
+ * keeps its client's idle watchdog fed with SSE comment frames.
+ *
  * Run: node scripts/forward-test.mjs
  */
 import http from 'node:http'
 import net from 'node:net'
 import assert from 'node:assert/strict'
-import { startForwardServer, resolveLoopbackBind, bindForwardPort, classifyBindError } from '../src/forward.js'
+import { startForwardServer, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
 import { toToolDefs } from '../src/messages.js'
+import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
 
 let failures = 0
@@ -382,6 +388,126 @@ await checkAsync('the lane receives the caller tools the client sent', async () 
   })
   assert.equal(response.status, 200)
   assert.deepEqual(lane.seen.at(-1).openAi.tools.map(tool => tool.function.name), ['pwsh'])
+})
+// ── thinking under another name, and the silence while it happens ────────────
+// `readStream` consumes the payload of each SSE frame, not the frame itself —
+// the `data: ` prefix is stripped by the reader above it.
+const chatFrame = delta => JSON.stringify({ choices: [{ index: 0, delta }] })
+
+/** Drain `readStream` into the chunks it produced and its final state. */
+async function readChat(lines) {
+  const chunks = []
+  let state
+  const stream = readStream(lines, 'chat', new Map(), () => Date.now())
+  for (;;) {
+    const next = await stream.next()
+    if (next.done === true) { state = next.value; break }
+    chunks.push(next.value)
+  }
+  return { chunks, state }
+}
+const reasoningOf = chunks => chunks.filter(chunk => chunk.type === 'reasoning-delta').map(chunk => chunk.text).join('')
+
+await checkAsync('thinking streamed as reasoning_content reaches the harness', async () => {
+  const { chunks, state } = await readChat([chatFrame({ reasoning_content: 'thinking out loud' }), chatFrame({ content: 'answer' })])
+  assert.equal(reasoningOf(chunks), 'thinking out loud')
+  assert.equal(state.sawReasoning, true)
+  assert.equal(state.reasoningText, 'thinking out loud')
+  assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'answer')
+})
+
+await checkAsync('thinking streamed as reasoning_text reaches the harness', async () => {
+  const { state } = await readChat([chatFrame({ reasoning_text: 'pondering' })])
+  assert.equal(state.reasoningText, 'pondering')
+})
+
+await checkAsync('one thought repeated under two names is counted once', async () => {
+  const { chunks } = await readChat([chatFrame({ reasoning: 'same text', reasoning_content: 'same text' })])
+  assert.equal(reasoningOf(chunks), 'same text')
+})
+
+await checkAsync('reasoning_details still reads as thinking', async () => {
+  const { state } = await readChat([chatFrame({ reasoning_details: [{ text: 'a' }, { text: 'b' }] })])
+  assert.equal(state.reasoningText, 'ab')
+})
+
+await checkAsync('a frame with no thinking leaves the block empty', async () => {
+  const { chunks, state } = await readChat([chatFrame({ content: 'plain' })])
+  assert.equal(reasoningOf(chunks), '')
+  assert.equal(state.reasoningText, '')
+})
+
+const fakeResponse = () => {
+  const res = {
+    writes: [],
+    closes: [],
+    writableEnded: false,
+    destroyed: false,
+    write(chunk) { res.writes.push(chunk) },
+    once(event, handler) { if (event === 'close') res.closes.push(handler) },
+  }
+  return res
+}
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+await checkAsync('a silent stream is kept alive with SSE comment frames', async () => {
+  const res = fakeResponse()
+  const stop = startHeartbeat(res, 5)
+  await sleep(60)
+  assert.ok(res.writes.length >= 2, `expected repeated comment frames, got ${res.writes.length}`)
+  assert.ok(res.writes.every(chunk => chunk === ': ping\n\n'), 'only comment frames may go out')
+  stop()
+  const seen = res.writes.length
+  await sleep(30)
+  assert.equal(res.writes.length, seen, 'a stopped heartbeat writes nothing')
+  assert.equal(res.closes.length, 1, 'the heartbeat watches the response for its close')
+})
+
+await checkAsync('the heartbeat stops when the response closes', async () => {
+  const res = fakeResponse()
+  startHeartbeat(res, 5)
+  assert.equal(res.closes.length, 1)
+  res.closes[0]()
+  await sleep(30)
+  assert.equal(res.writes.length, 0)
+})
+
+await checkAsync('an already finished response is left alone', async () => {
+  const res = fakeResponse()
+  res.writableEnded = true
+  startHeartbeat(res, 5)
+  await sleep(30)
+  assert.equal(res.writes.length, 0)
+})
+
+await checkAsync('nothing goes out before the default interval', async () => {
+  const res = fakeResponse()
+  const stop = startHeartbeat(res)
+  await sleep(30)
+  assert.equal(res.writes.length, 0, `the default interval is ${SSE_HEARTBEAT_MS}ms`)
+  stop()
+})
+
+await checkAsync('a streaming answer that goes quiet keeps sending comment frames', async () => {
+  const server = await startForwardServer({
+    config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
+    complete: async (request, onChunk) => {
+      // The lane thinking before it says anything: the silence a client-side
+      // idle watchdog reads as a dead socket.
+      await sleep(80)
+      onChunk({ type: 'text-delta', index: 0, text: 'late answer' })
+      return { text: 'late answer', toolCalls: [] }
+    },
+    modelRows: () => [],
+    heartbeatMs: 5,
+  })
+  openServers.push(server)
+  const response = await authFetch(`http://127.0.0.1:${server.port}`, '/v1/chat/completions', { model: 'mimo-v2.6-flash-free', stream: true })
+  assert.equal(response.headers.get('content-type'), 'text/event-stream; charset=utf-8')
+  const body = await response.text()
+  assert.ok(body.includes(': ping\n\n'), 'a stream that goes quiet has to carry comment frames')
+  assert.ok(body.includes('late answer'), 'the answer still arrives')
+  assert.equal(sseFrames(body).at(-1).choices[0].finish_reason, 'stop')
 })
 
 // ── the bind address (issue #19) ─────────────────────────────────────────────

@@ -374,7 +374,20 @@ export function apply(ctx, config) {
   }
 
   // ── forward listener ────────────────────────────────────────────────────────
+  // Both reconciles get a serialisation gate: two callers (the boot refresh and
+  // every settings POST) used to overlap, and whichever bind finished last wrote
+  // its entry-time snapshot of the settings back over the other one - rolling
+  // the user's just-saved `enabled` edits back, or leaving an orphan listener
+  // behind. The waiter re-runs after the first settles; the early-exit below
+  // makes that rerun free when nothing changed.
+  let forwardSyncInFlight = null
   async function syncForward() {
+    while (forwardSyncInFlight !== null) await forwardSyncInFlight.catch(() => {})
+    const run = syncForwardOnce()
+    forwardSyncInFlight = run
+    try { await run } finally { if (forwardSyncInFlight === run) forwardSyncInFlight = null }
+  }
+  async function syncForwardOnce() {
     const desired = settings.get().forward ?? {}
     const wanted = desired.enabled === true
     // A listener already bound where the settings want it is left alone. Two
@@ -423,7 +436,11 @@ export function apply(ctx, config) {
         ? `port ${forward.requestedPort} is not available on this machine (${forward.bindError.code}); the listener is on port ${forward.port} instead`
         : ''
       if (forwardNotice !== '') logger.warn?.(`our-free-model forward: ${forwardNotice}`)
-      settings.update({ forward: { ...desired, port: forward.port, host: desired.host || '127.0.0.1' } })
+      // Persist the port that actually answers, but out of the CURRENT
+      // settings - not the desired snapshot from before the await. An
+      // overlapped save would otherwise be rolled back to entry-time values.
+      const settledForward = settings.get().forward ?? {}
+      settings.update({ forward: { ...settledForward, port: forward.port, host: forward.host || desired.host || '127.0.0.1' } })
       settings.flush()
     } catch (error) {
       forwardError = String(error?.message ?? error)
@@ -733,6 +750,10 @@ export function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true
+    // The geography-reprobe timer belongs to this generation; without this it
+    // outlives teardown and fires a forced probe round after the stores it
+    // reads have been disposed (the rejection gets swallowed, quota burned).
+    clearTimeout(reprobeTimer)
     push.dispose()
     watcher?.()
   }, 'our-free-model: push + watcher')
@@ -1239,7 +1260,13 @@ async function readJson(req) {
     chunks.push(chunk)
   }
   if (chunks.length === 0) return {}
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')) } catch { return {} }
+  const text = Buffer.concat(chunks).toString('utf8')
+  try { return JSON.parse(text) } catch (error) {
+    // A body that was sent but is not JSON is a client bug, not "no body":
+    // answering {} made POST /settings a silent 200 no-op. Empty bodies stay
+    // legal ({} above) because no-body POSTs are real routes here.
+    throw httpError(400, `invalid JSON body (${error?.message ?? error})`)
+  }
 }
 
 function publicSettings(settings, forwardInfo) {

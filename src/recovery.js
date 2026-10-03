@@ -1,4 +1,4 @@
-/** 仅恢复缺终帧的纯推理请求；所有模型共用同一策略。 */
+/** 恢复缺终帧的纯推理断流，或正常收尾却只有思考的空停；所有模型共用同一策略。 */
 export const RECOVERY_DEFAULTS = Object.freeze({
   maxContinuationMs: 180000,
   totalTimeoutMs: 480000,
@@ -17,12 +17,26 @@ export function recoveryPolicy(value) {
   return policy
 }
 
-export function canRecover(outcome, policy, elapsedMs) {
+/** 可恢复的共性：策略开启、总时窗未过、纯思考检查点齐备；不问终帧。 */
+function recoverable(outcome, policy, elapsedMs) {
   return policy.enabled && elapsedMs < policy.totalTimeoutMs
-    && outcome.sawFinish !== true && outcome.sawReasoning === true
+    && outcome.sawReasoning === true
     && outcome.sawText !== true && outcome.sawToolCall !== true
     && outcome.checkpointTruncated !== true
     && typeof outcome.reasoningText === 'string' && outcome.reasoningText.trim() !== ''
+}
+
+export function canRecover(outcome, policy, elapsedMs) {
+  return outcome.sawFinish !== true && recoverable(outcome, policy, elapsedMs)
+}
+
+/**
+ * 上游正常发了 stop 终帧却只有思考、没有正文：宿主（pi-ai）会把这种回合判成
+ * 空响应，所以同样从检查点续写一次要正文。终帧本身是不是「正常收尾」由调用
+ * 方用 finish 归类把关，这里只认「确实收到过终帧」。
+ */
+export function canRecoverSilentStop(outcome, policy, elapsedMs) {
+  return outcome.sawFinish === true && recoverable(outcome, policy, elapsedMs)
 }
 
 export function recoveryMessages(messages, checkpoint) {
