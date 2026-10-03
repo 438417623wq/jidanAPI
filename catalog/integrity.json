@@ -155,12 +155,12 @@
     {
       "path": "src/vault-anchor.js",
       "size": 262,
-      "sha256": "f901a13f9e0eab0f39299bf3b5a1eac3eac20cd867f32e60ec9965ccc391fefc"
+      "sha256": "28a156e0da6853e9b72b840637f79ea1a8e005bf7e432878a98ee8cb3eefe897"
     },
     {
       "path": "src/vault-data.js",
-      "size": 685,
-      "sha256": "4defd45c7d980c77e13d58405d1359af19380327ddcd188f3a5ff5e7c7799bc3"
+      "size": 677,
+      "sha256": "4db83a43440a0bddb27e5dd0ef9ecd911ed24d96b7e29f9f940ee20a55cd1147"
     },
     {
       "path": "src/vault.js",

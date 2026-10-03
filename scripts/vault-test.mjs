@@ -57,7 +57,10 @@ const gateway = await import('../worker/worker.js')
   const opened = openSeal()
   check('the shipped seal opens', opened !== null, true)
   check('its endpoint is an https URL with a path', opened !== null && opened.base.startsWith('https://') && new URL(opened.base).pathname.length > 1, true)
-  check('its credential matches the lane key shape', opened !== null && /^[\w-]{20,}$/.test(opened.apiKey), true)
+  check('its mode is one the runtime understands', opened !== null && ['direct', 'worker'].includes(opened?.mode ?? ''), true)
+  check('its credential matches its mode shape', opened !== null
+    && (opened.mode === 'direct' ? /^[\w-]{20,}$/.test(opened.apiKey)
+      : opened.mode === 'worker' && opened.signingSecret.length >= 32), true)
 
   const plainWeb = detectSealedHost({ env: {}, execPath: '/usr/bin/node', argv: ['node', 'bin.js', 'web', '--port', '3099'] })
   check('the gate refuses a plain web host', plainWeb, null)

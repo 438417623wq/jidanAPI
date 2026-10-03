@@ -6,12 +6,12 @@
 
 export const LANE_SHARDS = [
   {
-    "s": "hHguGHUHB/TZNTKh8iCjIniTHQY/6DKj",
-    "w": "dSAWjHJ2NkV0/Fvuvx0apQ=="
+    "s": "ZNOAoI0gQDLQJ7iI9T8BCiD7HI1WDeep",
+    "w": "7SwffsKLymPWeg9LskEIfw=="
   },
   {
-    "s": "LABmpMgw0k3TC2yk2T+i7uNpooQgBbai",
-    "w": "R3A6tnqDFqt9bnPnawfH3Q=="
+    "s": "GdDFDPMbIpZAB0PxlqjLiqyal/znPi5C",
+    "w": "1uMy322DuCNectE+zVAAcw=="
   }
 ]
-export const LANE_SEAL = "gidl4kpzRbo3fImfYo7wxnlvsv+m/QdMwCxOUtAEWhXMWFhTSKdKxlSzgMgG5i8+pdQhBd8Uo18rNOOBLa/6ZgGVvnJKhnm4X2eUmc5YbWDJqwOBF/z1eAYsf4tkHpDVbR7YZEDJGnMUlhNAluojnnDRp9JFNk1PnMDzDmcV1Dk3ARvMzTIvkOXd7ZvgY9yvlOCql4yw3NLWcw=="
+export const LANE_SEAL = "K6ir4hSvjDLKLQBlGC8GBGiPKOlbqabhYDHNG+GZQQG6iUoRuLXH7F7fRAzvULNIPT8Kzpn3aQwTcNt4SsoPqxqb5bFujLRo0YM5CYZx/VymLHTh9s9t5d8DnN8Tp4kBkNEA0HCv5MgiS9xfiQm77FrQKKarCpxNRAKnRthyz4McS5UhxcEJ+SqlJB4UcE5ljXaXbqix"
