@@ -502,6 +502,27 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   check('display names never leak the org prefix', roster.every(entry => !entry.name.includes('deepseek-ai/') && !entry.name.includes('moonshotai/')), true)
 }
 
+// ── effort menus and their wire patches (ZCode declaration shape) ───────────
+{
+  const { effortsFor, effortPatchFor, budgetFor } = await import('../src/effort.js')
+  const roster = buildEacCatalog([
+    'deepseek-ai/deepseek-v4.1-flash', 'moonshotai/kimi-k3', 'moonshotai/kimi-k2.6',
+    'openai/gpt-oss-20b', 'z-ai/glm-5.3', 'z-ai/glm-5.3-flash',
+  ])
+  const byId = id => roster.find(entry => entry.id === id)
+  check('the deepseek menu carries the off switch ZCode declares', effortsFor(byId('deepseek-ai/deepseek-v4.1-flash'))?.map(m => m.id), ['disabled', 'low', 'high', 'max'])
+  check('the off level maps to reasoning.enabled=false', effortPatchFor('disabled', byId('deepseek-ai/deepseek-v4.1-flash')), { reasoning: { enabled: false } })
+  check("a thinking level maps to the model own effort field", effortPatchFor('max', byId('deepseek-ai/deepseek-v4.1-flash')), { reasoning_effort: 'max' })
+  check('glm maps to thinking+output_config like ZCode declares', effortPatchFor('low', byId('z-ai/glm-5.3-flash')), { thinking: { type: 'enabled' }, output_config: { effort: 'low' } })
+  check('kimi-k3 has no off level, so the menu starts at low', effortsFor(byId('moonshotai/kimi-k3'))?.map(m => m.id), ['low', 'high', 'max'])
+  check('a level the model does not declare falls back to its default', effortPatchFor('max', byId('openai/gpt-oss-20b')), { reasoning_effort: 'medium' })
+  check('the sealed lane budget is not level-gated (capacity, not a ladder)', [
+    budgetFor('low', byId('deepseek-ai/deepseek-v4.1-flash'), undefined, 32768),
+    budgetFor('max', byId('deepseek-ai/deepseek-v4.1-flash'), undefined, 32768),
+  ], [32768, 32768])
+  check('a free-lane model still carries the token ladder', effortsFor({ id: 'mimo-v2.6-flash-free', reasoning: true, canDisableThinking: false, maxOutput: 131072 }, undefined, 32768)?.map(m => m.id), ['light', 'balanced', 'deep'])
+}
+
 // ── 4. the Host half boots the lane only where the gate opens ────────────────
 {
   const { apply, inject } = await import('../index.js')

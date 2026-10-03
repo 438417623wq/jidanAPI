@@ -22,7 +22,7 @@ import { toChatMessages, toClaudeMessages, toResponseInput, toToolDefs, repairTo
 import { CODE, UpstreamError, postStreamed } from './http.js'
 import { postSealedStreamed } from './eac.js'
 import { finishReason, readStream, windowTokens } from './stream.js'
-import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, effortsFor, resolveLevel } from './effort.js'
+import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, effortPatchFor, effortsFor, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
 import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 import { isEacEntry } from './catalog.js'
@@ -229,6 +229,13 @@ export class FreeModelAdapter {
       if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
       if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
       if (recovering) payload.tool_choice = wire === 'messages' ? { type: 'none' } : 'none'
+      // The co-paid lane's thinking is the model's own effort field, applied as
+      // a JSON merge patch on the request body (ZCode's declaration shape); the
+      // free lane keeps its token-budget behaviour untouched.
+      if (sealed) {
+        const patch = effortPatchFor(options.reasoningEffort, entry)
+        if (patch !== null) Object.assign(payload, patch)
+      }
       return payload
     }
 
@@ -436,7 +443,8 @@ async function postSealedTurn(deps, payload, signal, onData) {
   return postSealedStreamed({ credential, body: payload, signal, onData })
 }
 
-function buildPayload(wire, modelId, messages, options, budget, resolveImage, warnings) {  if (wire === 'responses') {
+function buildPayload(wire, modelId, messages, options, budget, resolveImage, warnings) {
+  if (wire === 'responses') {
     const input = toResponseInput(messages, resolveImage, warnings)
     return {
       model: modelId,
