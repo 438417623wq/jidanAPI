@@ -23,7 +23,7 @@ import { CODE, UpstreamError, postStreamed } from './http.js'
 import { finishReason, readStream, windowTokens } from './stream.js'
 import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, effortsFor, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
-import { recoveryPolicy, canRecover, recoveryMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
+import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -330,21 +330,29 @@ export class FreeModelAdapter {
           yield { type: 'finish', reason: { kind: 'aborted', failure: { message: 'request aborted', code: CODE.aborted } } }
           return
         }
-        if (!recovering && canRecover(outcome, policy, Date.now() - started)) {
+        const reason = outcome.brokenToolCall === true ? { kind: 'max-tokens' } : finishReason(outcome.finish)
+        // finishReason 是兜底映射，failed/cancelled 也会落成 stop：正常收尾的判定必须显式查原 token。
+        const elapsed = Date.now() - started
+        const interrupted = canRecover(outcome, policy, elapsed)
+        const silentStop = !interrupted && reason.kind === 'stop'
+          && ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish)
+          && canRecoverSilentStop(outcome, policy, elapsed)
+        if (!recovering && (interrupted || silentStop)) {
           const remainingTokens = budget - (outcome.sawUsage ? outcome.usage.outputTokens ?? 0 : 0)
           const continuationBudget = Math.min(remainingTokens, policy.maxOutputTokens)
           const continuationMessages = recoveryMessages(messages, outcome.reasoningText)
           if (continuationBudget >= MIN_BUDGET
             && checkpointFits(payloadFor(continuationMessages, continuationBudget, true, []), entry, outcome.reasoningText, continuationBudget)) {
             record(false, outcome, { truncated: true, recoveryScheduled: true })
-            this.deps.warn?.('our-free-model: interrupted reasoning; continuing once from its checkpoint')
+            this.deps.warn?.(silentStop
+              ? 'our-free-model: a stopped turn held only its reasoning; continuing once from its checkpoint'
+              : 'our-free-model: interrupted reasoning; continuing once from its checkpoint')
             attemptMessages = continuationMessages
             attemptBudget = continuationBudget
             continuationScheduled = true
             continue
           }
         }
-        const reason = outcome.brokenToolCall === true ? { kind: 'max-tokens' } : finishReason(outcome.finish)
         const failedEnding = outcome.finish === 'failed' || outcome.finish === 'cancelled'
         const normalEnding = outcome.finish === undefined || ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish)
         if (outcome.sawFinish !== true || failedEnding || (recovering && (!sawAnswer

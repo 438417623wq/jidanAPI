@@ -311,9 +311,41 @@ try {
         assert.ok(noToolChunks(run.chunks), '不允许任何可执行工具块或参数 delta')
       })
     }
-    await check(`${wire}: 正常的纯推理终帧不触发续写`, async () => {
-      const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire) }])
+    await check(`${wire}: 纯思考正常 stop 收尾会续写一次要正文`, async () => {
+      const warns = []
+      const run = await drive(model, [
+        { body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire) },
+        { body: deltas(wire, { text: ANSWER }) + terminal(wire) },
+      ], { onWarn: message => warns.push(message) })
+      checkFinal(run, 'stop', 2)
+      assert.equal(run.chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), ANSWER, '正文必须来自续写段')
+      assert.equal(run.records[0].recoveryScheduled, true, '首段须记 recoveryScheduled')
+      assert.equal(run.records[0].ok, false, '首段空停不能记成功')
+      assert.equal(run.records[1].ok, true)
+      assert.equal(run.records[1].recovered, true)
+      const continuation = run.scenario.requests[1].body
+      assert.ok(JSON.stringify(continuation).includes(CHECKPOINT), '续写必须携带思考检查点')
+      assert.equal(continuation.tool_choice?.type ?? continuation.tool_choice, 'none', '续写禁止工具选择')
+      assert.ok(warns.some(message => message.includes('stopped turn held only its reasoning')), '空停续写须上报告警')
+    })
+    await check(`${wire}: 续写段仍只有思考时按断流失败`, async () => {
+      const run = await drive(model, [
+        { body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire) },
+        { body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire) },
+      ])
+      checkCut(run)
+      assert.equal(run.records.every(row => row.recovered !== true), true)
+    })
+    await check(`${wire}: 关闭恢复时纯思考正常收尾保持原分类`, async () => {
+      const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire) }],
+        { settings: { streamRecovery: false } })
       checkFinal(run, 'stop', 1)
+      assert.equal(run.records[0].recoveryScheduled, undefined)
+    })
+    await check(`${wire}: 首段输出预算烧尽的纯思考空停不再追加请求`, async () => {
+      const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) + terminal(wire, { output: 4096 }) }])
+      checkFinal(run, 'stop', 1)
+      assert.equal(run.records[0].recoveryScheduled, undefined, '预算不足不应记 recoveryScheduled')
     })
     await check(`${wire}: 关闭恢复保持原始断流`, async () => {
       const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) }], { settings: { streamRecovery: false } })
