@@ -347,6 +347,22 @@ try {
       checkFinal(run, 'stop', 1)
       assert.equal(run.records[0].recoveryScheduled, undefined, '预算不足不应记 recoveryScheduled')
     })
+    // chat 线不存在「带终帧却无 token」的正常收尾：finish_reason 一到就有 token，没有终帧则属于断流。
+    if (wire !== 'chat') {
+      await check(`${wire}: 无 token 的正常收尾纯思考也续写一次`, async () => {
+        const tokenless = wire === 'messages'
+          ? usageFrames('messages') + sse({ type: 'message_stop' })
+          : sse({ type: 'response.done', response: {} })
+        const run = await drive(model, [
+          { body: deltas(wire, { reasoning: CHECKPOINT }) + tokenless },
+          { body: deltas(wire, { text: ANSWER }) + terminal(wire) },
+        ])
+        checkFinal(run, 'stop', 2)
+        assert.equal(run.records[0].recoveryScheduled, true, 'tokenless 正常收尾须记 recoveryScheduled')
+        assert.equal(run.records[0].ok, false, '首段空停不能记成功')
+        assert.equal(run.chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), ANSWER, '正文必须来自续写段')
+      })
+    }
     await check(`${wire}: 关闭恢复保持原始断流`, async () => {
       const run = await drive(model, [{ body: deltas(wire, { reasoning: CHECKPOINT }) }], { settings: { streamRecovery: false } })
       checkCut(run, 1)

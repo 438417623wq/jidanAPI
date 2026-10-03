@@ -335,7 +335,8 @@ export class FreeModelAdapter {
         const elapsed = Date.now() - started
         const interrupted = canRecover(outcome, policy, elapsed)
         const silentStop = !interrupted && reason.kind === 'stop'
-          && ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish)
+          // 无 token 的正常收尾（message_stop / response.done 不带 status）也算停收；failed、length 这类有 token 的收尾仍被挡在外面。
+          && (outcome.finish === undefined || ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish))
           && canRecoverSilentStop(outcome, policy, elapsed)
         if (!recovering && (interrupted || silentStop)) {
           const remainingTokens = budget - (outcome.sawUsage ? outcome.usage.outputTokens ?? 0 : 0)
