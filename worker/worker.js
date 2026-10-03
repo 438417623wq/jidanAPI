@@ -46,9 +46,14 @@ const JSON_ERROR = (status, message) =>
 const PASS_HEADERS = ['content-type', 'retry-after']
 
 /** The relay must be https — except a loopback relay, which is how the suite
- * (and a self-hosted dev rig) drives this same handler without TLS. */
+ * (and a self-hosted dev rig) drives this same handler without TLS — and its
+ * base must carry the /v1 the route suffixes hang off. A base without /v1
+ * would forward /models to the relay's front page and answer HTML for the
+ * lane, so it is refused at configure time instead. */
 function relayUrl(raw) {
-  const url = new URL(String(raw ?? '').replace(/\/+$/, ''))
+  const cleaned = String(raw ?? '').replace(/\/+$/, '')
+  if (!/\/v1$/.test(cleaned)) return null
+  const url = new URL(cleaned)
   if (url.protocol === 'https:') return url
   if (url.protocol === 'http:' && ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(url.hostname)) return url
   return null
@@ -142,8 +147,14 @@ export default {
         if (verdict.success === false) return JSON_ERROR(429, 'too many requests; retry later')
       }
 
-      const upstream = relayUrl(String(env.UPSTREAM_URL ?? '') + route.upstream)
-      if (upstream === null) return JSON_ERROR(500, 'gateway is not configured')
+      // Validate the relay BASE (it must end in /v1 — a base without it would
+      // forward /models into the relay's front page and answer HTML for the
+      // lane), then append the route suffix onto the validated base. Appending
+      // first and validating the result would be wrong: /v1/models never ends
+      // in /v1.
+      const base = relayUrl(String(env.UPSTREAM_URL ?? ''))
+      if (base === null) return JSON_ERROR(500, 'gateway is not configured')
+      const upstream = new URL(base.origin + base.pathname.replace(/\/+$/, '') + route.upstream)
       const relayed = await fetch(upstream, {
         method: request.method,
         headers: {

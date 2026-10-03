@@ -225,16 +225,21 @@ const gateway = await import('../worker/worker.js')
     req.on('data', row => chunks.push(row))
     req.on('end', () => {
       relaySeen.push({ path: req.url, authorization: req.headers.authorization })
-      if (req.url === '/models') {
+      if (req.url === '/v1/models') {
         res.writeHead(200, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
         return
       }
-      res.writeHead(200, { 'content-type': 'text/event-stream' })
-      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'via-gateway' } }] })}\n\n`)
-      res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2 } })}\n\n`)
-      res.write('data: [DONE]\n\n')
-      res.end()
+      if (req.url === '/v1/chat/completions') {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'via-gateway' } }] })}\n\n`)
+        res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 3, completion_tokens: 2 } })}\n\n`)
+        res.write('data: [DONE]\n\n')
+        res.end()
+        return
+      }
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end('{"error":{"message":"unexpected relay route"}}')
     })
   })
   await new Promise(resolve => relay.listen(0, '127.0.0.1', resolve))
@@ -244,7 +249,7 @@ const gateway = await import('../worker/worker.js')
   // makes crosses the exact fetch() handler Cloudflare will run.
   const GATEWAY_SECRET = 'test-signing-secret-0123456789abcdef'
   const env = {
-    UPSTREAM_URL: `http://127.0.0.1:${relay.address().port}`,
+    UPSTREAM_URL: `http://127.0.0.1:${relay.address().port}/v1`,
     UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
     SIGNING_SECRETS: GATEWAY_SECRET,
     MODELS: 'deepseek-ai/deepseek-v4.1-flash',
@@ -349,6 +354,14 @@ const gateway = await import('../worker/worker.js')
   }), tinyEnv, fakeCtx)
   check('an oversized body is refused before any relay work', tinyResponse.status, 413)
 
+  // The drill's own lesson: a relay base without its /v1 would forward turns
+  // into the relay's front page and answer HTML for the lane. Refuse it at
+  // configure time, even on an otherwise valid signed request.
+  const badBase = await gateway.default.fetch(new Request('https://gateway.test/v1/models', {
+    headers: { ...signSealedRequest(GATEWAY_SECRET, { method: 'GET', path: '/v1/models', body: '' }), accept: 'application/json' },
+  }), { ...env, UPSTREAM_URL: `http://127.0.0.1:${relay.address().port}` }, fakeCtx)
+  check('a relay base without /v1 is refused at configure time', badBase.status, 500)
+
   await new Promise(resolve => shell.close(resolve))
   await new Promise(resolve => relay.close(resolve))
 
@@ -358,6 +371,7 @@ const gateway = await import('../worker/worker.js')
   const nodeRelay = http.createServer((req, res) => {
     req.on('data', () => {})
     req.on('end', () => {
+      if (req.url !== '/v1/models') { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":{"message":"unexpected relay route"}}'); return }
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
     })
@@ -365,7 +379,7 @@ const gateway = await import('../worker/worker.js')
   await new Promise(resolve => nodeRelay.listen(0, '127.0.0.1', resolve))
   nodeRelay.unref()
   const nodeEnv = {
-    UPSTREAM_URL: `http://127.0.0.1:${nodeRelay.address().port}`,
+    UPSTREAM_URL: `http://127.0.0.1:${nodeRelay.address().port}/v1`,
     UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
     SIGNING_SECRETS: GATEWAY_SECRET,
     RATE_LIMIT_PER_MINUTE: '2',

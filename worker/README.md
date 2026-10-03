@@ -44,7 +44,7 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 2. **上传文件**：宝塔 → 文件 → 新建目录 `/www/eac-gateway/`，把本目录的 **两个文件** 上传进去：`worker.js` 和 `gateway-node.mjs`（必须同目录）。
 3. **写配置**：在 `/www/eac-gateway/` 新建文件 `.env`，内容（三个真实值取自 `D:\our free model\eac-channel.private.json`：`base`→UPSTREAM_URL、`apiKey`→UPSTREAM_API_KEY、`signingSecret`→SIGNING_SECRETS）：
    ```ini
-   UPSTREAM_URL=https://<中继地址>/v1
+   UPSTREAM_URL=https://<中继地址>/v1（必须以 /v1 结尾——网关按它拼 /models 与 /chat/completions）
    UPSTREAM_API_KEY=粘贴私有 JSON 的 apiKey（不要把任何真实 key 写进本仓库的任何文件）
    SIGNING_SECRETS=这里粘贴 signingSecret（43 位左右的一串）
    MODELS=deepseek-ai/deepseek-v4.1-flash,moonshotai/kimi-k2.6,moonshotai/kimi-k3,openai/gpt-oss-20b,z-ai/glm-5.3,z-ai/glm-5.3-flash

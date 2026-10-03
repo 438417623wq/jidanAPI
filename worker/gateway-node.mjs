@@ -136,7 +136,14 @@ export function createGatewayServer(hostEnv = {}) {
   })
 }
 
-if (process.argv[1] !== undefined && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Start only when this file is the executed entry — directly (`node gateway-node.mjs`)
+// or under PM2, whose ProcessContainerFork wrapper makes process.argv[1] point at
+// the fork instead of this script (pm_exec_path is how PM2 names the real one).
+const scriptPath = fileURLToPath(import.meta.url)
+const directRun = process.argv[1] !== undefined && path.resolve(process.argv[1]) === scriptPath
+const pm2Run = typeof process.env.pm_exec_path === 'string' && process.env.pm_exec_path !== ''
+  && path.resolve(process.env.pm_exec_path) === scriptPath
+if (directRun || pm2Run) {
   const env = { ...process.env }
   loadDotEnv(env)
   const host = env.HOST || '127.0.0.1'
