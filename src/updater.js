@@ -379,14 +379,27 @@ export function backupPackage(pkgDir, backupDir) {
 
 /** Put a backed-up copy back in place (used when a swap or reload fails). */
 export function restoreBackup(backupDir, pkgDir) {
+  // Never let a missing rollback copy turn into a wipe: listPackageFiles
+  // answers [] for a directory that does not exist, and an install that has
+  // never applied an update has no rollback copy at all — walking into the
+  // delete loop with nothing to put back would empty the package (index.js,
+  // client.js, src/*) while the running process keeps going from memory.
+  const backup = listPackageFiles(backupDir)
+  if (backup.length === 0) throw new Error(`no rollback copy in ${backupDir} — leaving the installed package untouched`)
+  const failures = []
   for (const rel of listPackageFiles(pkgDir)) {
     try { fs.rmSync(path.join(pkgDir, ...rel.split('/')), { force: true }) } catch { /* best effort */ }
   }
-  for (const rel of listPackageFiles(backupDir)) {
-    const target = path.join(pkgDir, ...rel.split('/'))
-    fs.mkdirSync(path.dirname(target), { recursive: true })
-    fs.copyFileSync(path.join(backupDir, ...rel.split('/')), target)
+  for (const rel of backup) {
+    // Copy loop must survive a locked file: attempting every entry keeps the
+    // restore as complete as this machine allows instead of crashing halfway.
+    try {
+      const target = path.join(pkgDir, ...rel.split('/'))
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(path.join(backupDir, ...rel.split('/')), target)
+    } catch (error) { failures.push(`${rel} (${error?.message ?? error})`) }
   }
+  if (failures.length > 0) throw new Error(`rollback incomplete: ${failures.slice(0, 3).join('; ')}${failures.length > 3 ? ` +${failures.length - 3} more` : ''}`)
 }
 
 /** Windows can transiently refuse a rename while a file is scanned; retry briefly. */
@@ -577,8 +590,14 @@ export class PluginUpdater {
         verifyInstalled(this.deps.pkgDir, manifest)
       } catch (error) {
         // The installed copy is now in an unknown state: put the old one back
-        // before surfacing the failure, so the next boot still works.
-        restoreBackup(this.backupDir, this.deps.pkgDir)
+        // before surfacing the failure, so the next boot still works. A failed
+        // restore must not mask the install failure that caused it, and the
+        // "previous version restored" claim is only true when it succeeded.
+        let restoreError = null
+        try { restoreBackup(this.backupDir, this.deps.pkgDir) } catch (rollbackError) { restoreError = rollbackError }
+        if (restoreError !== null) {
+          throw new Error(`install failed (${error?.message ?? error}); rollback also failed (${restoreError?.message ?? restoreError})`)
+        }
         throw new Error(`install failed, previous version restored (${error?.message ?? error})`)
       }
       fs.rmSync(this.stageDir, { recursive: true, force: true })
