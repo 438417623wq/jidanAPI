@@ -130,8 +130,11 @@ export function repairToolPairing(messages) {
     }
     if (calls.length === 0) {
       // An assistant turn whose only content was calls that never landed says
-      // nothing the model may keep believing.
-      if (blocks.some(block => block?.type === 'text' && block.text)) out.push(message)
+      // nothing the model may keep believing. Text does survive — but the dead
+      // calls still go, or the wire answers 400 for every later turn too.
+      if (blocks.some(block => block?.type === 'text' && block.text)) {
+        out.push({ ...message, content: blocks.filter(block => block?.type !== 'tool-call') })
+      }
       continue
     }
     out.push({ ...message, content: blocks.filter(block => block?.type !== 'tool-call' || calls.includes(block)) })
