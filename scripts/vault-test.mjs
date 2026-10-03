@@ -316,13 +316,13 @@ const gateway = await import('../worker/worker.js')
   check('the relay saw only the gateway-held credential', relaySeen[1]?.authorization, 'Bearer sk-relay-key-held-only-by-the-gateway')
 
   // Gateway refusals, each against the real handler.
-  const callGateway = async (method, path, { secret = GATEWAY_SECRET, ts = Date.now(), body = '' } = {}) => {
+  const callGateway = async (method, path, { secret = GATEWAY_SECRET, ts = Date.now(), body = '' } = {}, gatewayEnv = env) => {
     const headers = { 'x-ofm-timestamp': String(Math.trunc(ts)) }
     if (secret !== null) {
       const bodyHash = crypto.createHash('sha256').update(body, 'utf8').digest('hex')
       headers['x-ofm-signature'] = crypto.createHmac('sha256', secret).update(`${headers['x-ofm-timestamp']}\n${method}\n${path}\n${bodyHash}`, 'utf8').digest('hex')
     }
-    const response = await gateway.default.fetch(new Request(`https://gateway.test${path}`, { method, headers, body: method === 'POST' ? body : undefined }), env, fakeCtx)
+    const response = await gateway.default.fetch(new Request(`https://gateway.test${path}`, { method, headers, body: method === 'POST' ? body : undefined }), gatewayEnv, fakeCtx)
     return response.status
   }
   const chatBody = JSON.stringify({ model: 'deepseek-ai/deepseek-v4.1-flash', messages: [] })
@@ -331,6 +331,15 @@ const gateway = await import('../worker/worker.js')
   check('a missing signature is refused', await callGateway('POST', '/v1/chat/completions', { secret: null, body: chatBody }), 401)
   check('an unknown route is refused at the gateway, not relayed', await callGateway('GET', '/v1/embeddings'), 404)
   check('a model outside the allowlist is refused', await callGateway('POST', '/v1/chat/completions', { body: JSON.stringify({ model: 'other-org/other-model' }) }), 403)
+
+  // Sharing a domain the relay already uses: the lane mounts under a sub-path,
+  // the signature covers the FULL pathname (prefix included — it is what the
+  // client's new URL(base + '/models').pathname produced), and the prefix is
+  // stripped only for routing.
+  const mounted = { ...env, MOUNT_PREFIX: '/eac' }
+  check('a mounted prefix serves the lane under an existing site', await callGateway('GET', '/eac/v1/models', {}, mounted), 200)
+  check('the mount prefix is part of the signature (root path goes dark)', await callGateway('GET', '/v1/models', {}, mounted), 404)
+  check('a foreign prefix is refused', await callGateway('GET', '/other/v1/models', {}, mounted), 404)
 
   const tinyEnv = { ...env, MAX_BODY_BYTES: '16' }
   const tinyResponse = await gateway.default.fetch(new Request('https://gateway.test/v1/chat/completions', {

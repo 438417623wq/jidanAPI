@@ -22,6 +22,12 @@
  *                       sealed with it → drop the old one → deploy.
  *   MODELS              var (optional). Comma-separated allowlist of model ids
  *                       for /chat/completions; empty accepts everything.
+ *   MOUNT_PREFIX        var (optional). Serve under a sub-path of an existing
+ *                       site (e.g. "/eac" so the lane sits at /eac/v1/... on a
+ *                       domain the relay already uses). The signature always
+ *                       covers the FULL pathname the client sent, prefix
+ *                       included; the prefix is stripped only for routing and
+ *                       forwarding. Empty (default) serves at the root.
  *   CLOCK_SKEW_SECONDS  var (optional). Replay window, default 600.
  *   MAX_BODY_BYTES      var (optional). Request body cap, default 8 MiB.
  *   RATE_LIMITER        optional ratelimit binding; when present, per-IP.
@@ -87,7 +93,18 @@ export default {
   async fetch(request, env, ctx) {
     const started = Date.now()
     const url = new URL(request.url)
-    const route = ROUTES[`${request.method} ${url.pathname}`]
+    // Mount prefix (e.g. "/eac"): the signature covers the full pathname the
+    // client signed — prefix included, since that is what new URL(base +
+    // '/models').pathname produced on its side — and only routing/forwarding
+    // look past the prefix. An empty prefix serves at the root as before.
+    const prefix = String(env.MOUNT_PREFIX ?? '').replace(/\/+$/, '')
+    let routePath = url.pathname
+    if (prefix !== '') {
+      if (routePath === prefix) return JSON_ERROR(404, 'not found')
+      if (!routePath.startsWith(prefix + '/')) return JSON_ERROR(404, 'not found')
+      routePath = routePath.slice(prefix.length)
+    }
+    const route = ROUTES[`${request.method} ${routePath}`]
     try {
       if (route === undefined) return JSON_ERROR(404, 'not found')
 

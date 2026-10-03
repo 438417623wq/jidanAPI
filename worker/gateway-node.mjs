@@ -16,6 +16,9 @@
  *   MODELS               optional comma-separated model allowlist
  *   CLOCK_SKEW_SECONDS   optional replay window (default 600)
  *   MAX_BODY_BYTES       optional request body cap (default 8 MiB)
+ *   MOUNT_PREFIX         optional sub-path mount (e.g. "/eac" serving the lane
+ *                        at /eac/v1/... under a site that already exists; the
+ *                        signature covers the full pathname)
  *   HOST                 bind address, default 127.0.0.1 — keep it behind a
  *                        reverse proxy (Nginx); binding a public interface
  *                        would also make the X-Forwarded-For IP below spoofable

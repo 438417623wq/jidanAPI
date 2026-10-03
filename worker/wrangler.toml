@@ -9,6 +9,10 @@ MODELS = "deepseek-ai/deepseek-v4.1-flash,moonshotai/kimi-k2.6,moonshotai/kimi-k
 CLOCK_SKEW_SECONDS = "600"
 # Request body cap.
 MAX_BODY_BYTES = "8388608"
+# Optional sub-path mount so the lane can share a domain the relay already
+# uses, e.g. MOUNT_PREFIX = "/eac" puts the lane at /eac/v1/... (the client's
+# sealed base would then be https://<domain>/eac/v1). Empty = serve at root.
+MOUNT_PREFIX = ""
 
 # Secrets are set per-environment, never in this file:
 #   npx wrangler secret put UPSTREAM_URL        # https://<relay>/v1

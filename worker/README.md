@@ -23,7 +23,20 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 
 三种方式任选其一（Cloudflare 与自建二选一即可，核心验签逻辑是同一份 `worker.js`）。
 
-### 方式零：宝塔面板自建 Node 网关（无需 Cloudflare）
+**复用中继已有的域名？可以。** 两条路：
+
+- **子域名（零代码改动）**：DNS 加一条 `eac.你的域名` → 同一台服务器，网关按下面步骤部署，客户端密封地址用 `https://eac.你的域名/v1`。
+- **同域子路径（少一条 DNS）**：网关的 `.env`（或 Worker vars）里设 `MOUNT_PREFIX=/eac`，在**中继现有站点**的 Nginx 配置里加一段原样透传的反代（**不要**剥前缀）：
+  ```nginx
+  location /eac/ {
+      proxy_pass http://127.0.0.1:17788;
+      proxy_set_header Host $host;
+      proxy_buffering off;
+  }
+  ```
+  客户端密封地址用 `https://你的域名/eac/v1`（签名覆盖含前缀的完整路径，网关原样收到后自行剥前缀路由）。若网关与中继同机，`UPSTREAM_URL` 可直接写中继的回环地址（`http://127.0.0.1:<中继端口>`，网关允许回环 http）。
+
+### 方式零：宝塔面板自建 Node 网关
 
 前提：服务器装了宝塔面板（Linux 版），有一个能解析到这台服务器的域名（比如在 DNS 服务商给 `eac.你的域名` 加一条 A 记录指向服务器 IP）。
 
