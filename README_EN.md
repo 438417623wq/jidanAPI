@@ -306,8 +306,11 @@ output speed, and says so.
 Every model enables one bounded recovery attempt by default, across the Chat
 Completions, Messages and Responses upstream protocols. It requires a first
 stream that delivered nonempty reasoning, no answer text or tool call, and then
-reached EOF without a normal terminal frame. Cancellation, a normal ending, an
-output ceiling and an explicit upstream error do not trigger recovery.
+either reached EOF without a normal terminal frame, or received a normal `stop`
+terminal carrying reasoning only with no answer text — a turn the host would
+classify as an empty response. Cancellation, a normal ending that already
+delivered answer text or a tool call, an output ceiling and an explicit upstream
+error do not trigger recovery.
 
 The plugin sends **one new request** containing the original input and the
 received reasoning as a text checkpoint, asking for the answer directly. This is
@@ -480,7 +483,7 @@ it never touches files.
 - **Some upstream models are slow.** `nemotron-3.5-lightning-free` measured over 30 s to first token in one run. That is upstream latency, and the dashboard reports it rather than hiding it.
 - **Output speed is sometimes `—`.** A model that answers in one or two large frames, or whose thinking never streams, has no window worth dividing. The panel says so instead of publishing the model's thinking time as decoding speed.
 - **Thinking is a silent wait, and it shares the output budget.** `mimo-v2.6-flash-free` measured 60–70 s of silence while the lane billed 3024 reasoning tokens and streamed not one reasoning frame; such a turn ends as `stop` with nothing visible, which clients report as an empty response. The forward endpoint and the LAN relay keep the connection alive with heartbeats — but that protects the connection, not the timeout: the SSE parser skips comment frames, and pi-ai's idle watchdog (`streamIdleTimeoutMs`, default 300 s) resets only when real content frames arrive, so a stall past 300 s on the wire still fails (issue #34). Only the caller can give it **budget**: raise the per-call output ceiling past 16k, or use a model the catalogue marks `reasoning: false`.
-- **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
+- **Automatic recovery has request, time and context limits.** It handles only reasoning-only EOF and reasoning-only silent stops (a normal `stop` ending with no answer text) and adds at most one request. Answer text, tool calls, cancellation and explicit errors exclude recovery. A checkpoint request cannot preserve internal upstream state that was never sent, and success is not guaranteed. Usage with a missing report is only the known part.
 - **Capabilities are what probes can confirm.** Anything the public listing and a live probe do not evidence is left unlabelled.
 - **Source is plain JavaScript.** It has to be, to load as a local plugin. Anyone with the folder can read the gateway logic; treat that as an accepted property of this distribution form, not as something obfuscation would fix.
 - **Desktop installs need a real directory**, for the reason given in [Install](#install).
