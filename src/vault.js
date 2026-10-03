@@ -50,8 +50,12 @@ export const FLAVOR_HARNESS = 'harness'
  *
  * Electron (DeepSeek Harness): the kernel runs with the app-managed `desktop`
  * profile — a profile name the CLI refuses to launch by design (apps/cli
- * rejects it as "managed exclusively by the Electron application") — and the
- * desktop host stamps `ELECTRON_RUN_AS_NODE=1` on the kernel process.
+ * rejects it as "managed exclusively by the Electron application"), provided
+ * by the kernel's own profile context. The desktop host also stamps
+ * `ELECTRON_RUN_AS_NODE=1` on the kernel process at spawn, but Electron
+ * scrubs that variable from process.env during startup — verified on a live
+ * install — so it exists on the spawn line only and cannot be a gate
+ * criterion; the kernel-provided profile name alone is authoritative.
  *
  * `profileName` comes from the kernel's own profile context service, read
  * opportunistically by the caller; older kernel lines may not provide it,
@@ -62,7 +66,7 @@ export function detectSealedHost({ env = process.env, execPath = process.execPat
   if (home.includes('com.deepseek.dsh.desktop.aio')
     && /resources[\\/]+node[\\/]+node\.exe$/i.test(String(execPath ?? ''))
     && (Array.isArray(argv) ? argv : []).includes('web-desktop')) return FLAVOR_AIO
-  if (profileName === 'desktop' && env?.ELECTRON_RUN_AS_NODE === '1') return FLAVOR_HARNESS
+  if (profileName === 'desktop') return FLAVOR_HARNESS
   return null
 }
 

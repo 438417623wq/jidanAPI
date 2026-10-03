@@ -71,16 +71,14 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
     argv: ['node', 'bin.js', 'web'],
   })
   check('the gate refuses one Tauri signal alone (home path only)', partialAio, null)
-  const forgedHarness = detectSealedHost({ env: {}, profileName: 'desktop' })
-  check('the gate refuses a desktop profile name without the run-as-node marker', forgedHarness, null)
+  const bareHarness = detectSealedHost({ env: {}, profileName: 'desktop' })
+  check('the gate admits the desktop profile name alone (kernel-authoritative, Electron scrubs the env marker)', bareHarness, 'harness')
   const aio = detectSealedHost({
     env: { DSH_HOME: 'C:/Users/u/AppData/Roaming/com.deepseek.dsh.desktop.aio/releases/6.9.3/dsh-home' },
     execPath: 'D:/DSHEAC AIO/resources/node/node.exe',
     argv: ['node', 'bin.js', 'web', '--host', '127.0.0.1', '--port', '57543', '--profile', 'web-desktop'],
   })
   check('the gate admits the Tauri shell on the full signal trio', aio, 'aio')
-  const harness = detectSealedHost({ env: { ELECTRON_RUN_AS_NODE: '1' }, profileName: 'desktop' })
-  check('the gate admits the Electron shell on profile + marker', harness, 'harness')
   const unlockedHere = unlockSealedLane({ profileName: undefined })
   check('unlock returns nothing on this (unapproved) test host', unlockedHere, null)
 }
