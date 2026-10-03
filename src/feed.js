@@ -275,7 +275,13 @@ export class AnnouncementFeed {  /**
     const acked = ackedIds instanceof Set ? ackedIds : new Set(ackedIds)
     // Annotate each item with its ack state so the client renders unread
     // markers from data instead of guessing.
-    const items = this.cache.announcements.map(item => ({ ...item, acked: acked.has(item.id) }))
+    // Expired announcements stop rendering the moment they lapse, not whenever
+    // the next poll happens to succeed (parseItem only filters on ingest, and
+    // an unreachable feed source means no next poll for a long time).
+    const now = Date.now()
+    const items = this.cache.announcements
+      .filter(item => item.expiresAt === undefined || item.expiresAt > now)
+      .map(item => ({ ...item, acked: acked.has(item.id) }))
     return {
       items,
       unread: items.filter(item => !item.acked).length,

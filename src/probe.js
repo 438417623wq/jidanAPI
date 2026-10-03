@@ -174,13 +174,13 @@ function stateOf(error) {
  */
 export async function detectEgress({ signal, timeoutMs = 8000 } = {}) {
   for (const source of ECHO_SOURCES) {
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), timeoutMs)
+    timer.unref?.()
+    const relayAbort = () => controller.abort()
+    signal?.addEventListener('abort', relayAbort, { once: true })
     try {
-      const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), timeoutMs)
-      timer.unref?.()
-      signal?.addEventListener('abort', () => controller.abort(), { once: true })
       const response = await fetch(source.url, { signal: controller.signal, redirect: 'error', headers: { accept: 'application/json' } })
-      clearTimeout(timer)
       if (!response.ok) continue
       const payload = await response.json()
       const ip = source.pick(payload)
@@ -189,6 +189,12 @@ export async function detectEgress({ signal, timeoutMs = 8000 } = {}) {
       return { ip, ...country === undefined ? {} : { country: String(country) } }
     } catch {
       // try the next echo
+    } finally {
+      // The deadline has to outlive the response head: response.json() is where
+      // a slow echo used to stall past the 8s budget and freeze the probe loop.
+      // And the caller's signal only borrowed this listener for this attempt.
+      clearTimeout(timer)
+      signal?.removeEventListener('abort', relayAbort)
     }
   }
   return undefined
