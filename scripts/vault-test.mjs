@@ -51,6 +51,7 @@ const { buildEacCatalog, eacDisplayName, isEacEntry, EAC_CHANNEL } = await impor
 const { FreeModelAdapter } = await import('../src/adapter.js')
 const { signSealedRequest, fetchSealedListing, postSealedStreamed } = await import('../src/eac.js')
 const gateway = await import('../worker/worker.js')
+const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-node.mjs')
 
 // ── 1. the seal and the gate ─────────────────────────────────────────────────
 {
@@ -406,6 +407,83 @@ const gateway = await import('../worker/worker.js')
   check('the node host refuses unsigned requests like the Worker', unsignedNode.status, 401)
   await new Promise(resolve => nodeServer.close(resolve))
   await new Promise(resolve => nodeRelay.close(resolve))
+
+  // ── 3c. concurrency gate, analytics, and the admin feed ────────────────────
+  {
+    const slowRelay = http.createServer((req, res) => {
+      const chunks = []
+      req.on('data', c => chunks.push(c))
+      req.on('end', () => {
+        if (req.url === '/v1/models') {
+          res.writeHead(200, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ data: [{ id: 'deepseek-ai/deepseek-v4.1-flash' }] }))
+          return
+        }
+        setTimeout(() => {
+          res.writeHead(200, { 'content-type': 'text/event-stream' })
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'ok' } }] })}\n\n`)
+          res.write(`data: ${JSON.stringify({ choices: [{ index: 0, delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 9, completion_tokens: 4 } })}\n\n`)
+          res.write('data: [DONE]\n\n')
+          res.end()
+        }, 350)
+      })
+    })
+    await new Promise(resolve => slowRelay.listen(0, '127.0.0.1', resolve))
+    slowRelay.unref()
+    const statsFile = path.join(os.tmpdir(), 'ofm-vault-stats-' + Date.now() + '.json')
+    const concEnv = {
+      UPSTREAM_URL: `http://127.0.0.1:${slowRelay.address().port}/v1`,
+      UPSTREAM_API_KEY: 'sk-relay-key-held-only-by-the-gateway',
+      SIGNING_SECRETS: GATEWAY_SECRET,
+      ADMIN_TOKEN: 'test-admin-token-0123456789',
+      STATS_PATH: statsFile,
+      RATE_LIMIT_PER_MINUTE: '9999',
+      RATE_LIMIT_PER_DAY: '9999',
+      CONCURRENCY_PER_IP: '2',
+    }
+    const concServer = createGatewayServer(concEnv)
+    await new Promise(resolve => concServer.listen(0, '127.0.0.1', resolve))
+    concServer.unref()
+    const concBase = `http://127.0.0.1:${concServer.address().port}/v1`
+
+    const badFeed = await fetch(`http://127.0.0.1:${concServer.address().port}/stats-data?t=wrong`)
+    check('the stats feed refuses a bad admin token', badFeed.status, 401)
+    const noTokenPage = await fetch(`http://127.0.0.1:${concServer.address().port}/stats`)
+    check('the dashboard refuses a bad admin token', noTokenPage.status, 401)
+
+    const chatBodyText = JSON.stringify({ model: 'deepseek-ai/deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }] })
+    const signedChat = () => new Request(`${concBase}/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...signSealedRequest(GATEWAY_SECRET, { method: 'POST', path: '/v1/chat/completions', body: chatBodyText }) },
+      body: chatBodyText,
+    })
+    resetAnalytics()
+    const settled = await Promise.allSettled([
+      fetch(signedChat()).then(r => r.status),
+      fetch(signedChat()).then(r => r.status),
+      fetch(signedChat()).then(r => r.status),
+    ])
+    const statuses = settled.map(r => r.value ?? String(r.reason)).sort()
+    check('the concurrency gate passes two in-flight turns and refuses the third', statuses, [200, 200, 429])
+    await new Promise(r => setTimeout(r, 600))
+
+    const feed = await fetch(`http://127.0.0.1:${concServer.address().port}/stats-data?t=${encodeURIComponent('test-admin-token-0123456789')}`)
+    const feedJson = await feed.json()
+    check('the stats feed answers the right admin token with JSON', feed.status, 200)
+    const feedRow = (feedJson.ips ?? [])[0]
+    check('analytics counted every request including the refused one', [feedRow?.req, feedRow?.rej], [3, 1])
+    check('usage parsed from relayed SSE frames feeds the token totals', [feedRow?.in, feedRow?.out], [18, 8])
+    check('the concurrency peak stuck at the gate ceiling', feedRow?.concMax, 2)
+    check('the hourly curve recorded the burst', ((feedJson.hourly ?? [])[0]?.[1] ?? 0) >= 3, true)
+
+    const dashboardPage = await fetch(`http://127.0.0.1:${concServer.address().port}/stats?t=${encodeURIComponent('test-admin-token-0123456789')}`)
+    const pageText = await dashboardPage.text()
+    check('the dashboard page serves the chart container markup', [dashboardPage.status, pageText.includes('请求热力图'), pageText.includes('stats-data')], [200, true, true])
+
+    concServer.close()
+    slowRelay.close()
+    try { fs.rmSync(statsFile, { force: true }) } catch { /* temp cleanup best effort */ }
+  }
 }
 
 // ── roster shape ─────────────────────────────────────────────────────────────

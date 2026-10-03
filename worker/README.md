@@ -19,6 +19,16 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 - `MODELS` 白名单之外的模型 403；请求体超过 `MAX_BODY_BYTES` 413；
 - 可选 `RATE_LIMITER` 绑定按 IP 限速。
 
+## 管理看板与限流（自建网关专属）
+
+自建部署（方式零）的网关自带三层自防滥用，全部在 `.env` 配置：
+
+- `CONCURRENCY_PER_IP=20` —— 单 IP 并发上限（只对对话转发计数，超限 429）；
+- `RATE_LIMIT_PER_MINUTE=60` / `RATE_LIMIT_PER_DAY=1000` —— 单 IP 频率与日额度；
+- `ADMIN_TOKEN=<随机串>` —— 管理看板令牌。设置后浏览器打开 `https://<网关域名>/eac/stats?t=<ADMIN_TOKEN>`：请求热力图（星期×小时）、72 小时请求曲线、按 IP 与按模型的 Token 消耗扇形图、每 IP 明细表（请求数、频率、Token、拒绝数、并发峰值）。看板 30 秒自动刷新，统计数据落盘 `stats.json`（重启不丢），IP 以盐值哈希存储、非可逆。
+
+New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 部署（方式一）无进程内状态，此三层仅自建形态可用。
+
 ## 部署
 
 三种方式任选其一（Cloudflare 与自建二选一即可，核心验签逻辑是同一份 `worker.js`）。
