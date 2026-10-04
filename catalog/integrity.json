@@ -54,8 +54,8 @@
     },
     {
       "path": "src/adapter.js",
-      "size": 28202,
-      "sha256": "1478555090c552265614f431bb2bafdf6577d32a6802d086608fb7130860492c"
+      "size": 28220,
+      "sha256": "41125aea4337a0175c044678d0fe998d64a1d34398803ac178b2172042b4b697"
     },
     {
       "path": "src/catalog.js",
