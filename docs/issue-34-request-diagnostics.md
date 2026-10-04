@@ -60,9 +60,11 @@ LAN 请求可按本地事件的 `parentId` 查找中继 `requestId`。
   心跳、流式失败、取消、LAN 关联、logger 异常、畸形 URL 和无关轮询。
 - `node scripts/tui-test.mjs` 通过，新增 4 项宿主 logger 集成检查，
   覆盖本地生命周期、LAN 两跳关联及两个转发密钥不进入日志。
-- `npm test` 返回 18/21；三个失败项为 `manifest`、`release`、
-  `catalog`，原因是源码与旧签名清单、目录摘要不匹配。其他套件通过。
-  最后新增的宿主及 URL 检查已分别重跑上述两个受影响套件。
+- 合并 `origin/main`（`77a5998`）后，`npm test` 返回 19/22；
+  三个失败项为 `manifest`、`release`、`catalog`，原因是发布源码
+  与旧签名清单、目录摘要不匹配。当前 main 也包含尚未重签的已合并
+  发布文件变化，本次另修改了 `index.js` 和 `src/forward.js`。
+  其他套件通过，包含上述两个受影响套件及已合并的热力图回归。
 - 使用原工作区已安装的 TypeScript 执行
   `tsc --noEmit -p tsconfig.json`，退出码为 0；此检查范围仅为 adapter。
 - `node --check src/forward.js`、`node --check index.js` 与
