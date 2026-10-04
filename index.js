@@ -178,6 +178,35 @@ export function apply(ctx, config) {
   const mergeCatalogs = () => { catalog = [...catalog, ...sealedCatalog.filter(row => !catalog.some(entry => entry.id === row.id))] }
   mergeCatalogs()
 
+  // ── the pool snapshot (settings-page gauge) ─────────────────────────────────
+  // The co-paid gateway publishes aggregate, non-sensitive numbers (provisioned
+  // capacity, live traffic) at `{mount}/pool`; this proxy exists so the browser
+  // never needs the gateway URL — the seal stays server-side. Two minutes of
+  // server-side cache keeps a settings page that re-mounts often from turning
+  // into a request flood. A host without the lane — or a gateway that does not
+  // answer — throws, and the route answers 404, which the client reads as
+  // "hide the widget".
+  let poolCache = { at: 0, data: null }
+  async function fetchPoolSnapshot() {
+    if (poolCache.data !== null && Date.now() - poolCache.at < 120_000) return poolCache.data
+    const credential = sealedCredentialOf()
+    if (credential === null || credential.mode !== 'worker') throw new Error('pool: no sealed lane on this host')
+    const gatewayRoot = credential.base.replace(/\/v1\/?$/, '')
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), 8000)
+    timer.unref?.()
+    try {
+      const response = await fetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
+      if (!response.ok) throw new Error(`pool: gateway answered ${response.status}`)
+      const data = await response.json()
+      if (data?.ok !== true || !Number.isFinite(data.pool)) throw new Error('pool: malformed snapshot')
+      poolCache = { at: Date.now(), data }
+      return data
+    } finally {
+      clearTimeout(timer)
+    }
+  }
+
   // ── push channel ────────────────────────────────────────────────────────────
   const push = createPushHub({ logger })
 
@@ -818,6 +847,7 @@ export function apply(ctx, config) {
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay,
+    pool: fetchPoolSnapshot,
     forwardInfo: () => ({
       running: forward !== null,
       port: forward?.port ?? 0,
@@ -1374,6 +1404,9 @@ function createApiRoutes(deps) {
       }
       if (method === 'GET' && routePath === '/meta') {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
+      }
+      if (method === 'GET' && routePath === '/pool') {
+        try { return send(200, await deps.pool()) } catch { return send(404, { error: 'pool unavailable' }) }
       }
       if (method === 'GET' && routePath === '/announcement') {
         // A managed install also stands down the owner's onboarding copy: the

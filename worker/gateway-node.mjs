@@ -38,6 +38,10 @@
  *   RATE_LIMIT_PER_MINUTE  per-IP fixed-window limit, default 60, 0 = off
  *   RATE_LIMIT_PER_DAY   per-IP per-day cap, default 1000, 0 = off
  *   CONCURRENCY_PER_IP   per-IP in-flight chat turns, default 5, 0 = off
+ *   POOL_SIZE            optional. The real provisioned account count for the
+ *                        public /pool snapshot; when unset the snapshot derives
+ *                        capacity from the repo's stars (× 1.5)
+ *   GITHUB_STARS_OVERRIDE optional test hook pinning the star count
  *   ADMIN_TOKEN          token for the /stats dashboard; unset = dashboard off
  *   STATS_PATH           stats file, default ./stats.json next to this script
  *   MOUNT_PREFIX         optional sub-path mount (e.g. "/eac" serving the lane
@@ -242,6 +246,10 @@ function buildRateLimiter(perWindow, windowMs) {
 /** Test seam: clear the process-wide analytics singleton between suites. */
 export function resetAnalytics() { analytics.reset() }
 
+/** Test seam: the /pool endpoint's GitHub fetch, so the offline suite never
+ * touches the network. Production leaves it null and uses the global fetch. */
+export const poolProbe = { fetchImpl: null }
+
 const DASHBOARD_HTML = () => {
   try { return fs.readFileSync(path.join(here, 'dashboard.html'), 'utf8') } catch { return '<!doctype html><meta charset="utf-8"><title>EAC 网关</title><p>dashboard.html 缺失。</p>' }
 }
@@ -276,6 +284,54 @@ export function createGatewayServer(hostEnv = {}) {
     DAILY_LIMITER: buildRateLimiter(perDay, DAY_MS),
   }
   const inflight = new Map()
+
+  // ── the co-paid pool snapshot ───────────────────────────────────────────────
+  // Capacity follows the operator's provisioning rule — one star funds 1.5
+  // accounts — unless POOL_SIZE pins the real provisioned count. The star
+  // count comes from the GitHub API, cached 30 minutes (well inside the
+  // unauthenticated quota); a failed fetch keeps the last good value. Stars
+  // are never even fetched when a configured POOL_SIZE makes them moot, and
+  // GITHUB_STARS_OVERRIDE exists so the offline suite never touches the net.
+  const poolSizeOverride = Number.parseInt(env.POOL_SIZE ?? '', 10)
+  const starsOverride = Number.parseInt(env.GITHUB_STARS_OVERRIDE ?? '', 10)
+  const starCache = { stars: Number.isFinite(starsOverride) && starsOverride >= 0 ? starsOverride : null, at: Number.isFinite(starsOverride) && starsOverride >= 0 ? Date.now() : 0 }
+  const loadStars = async () => {
+    if (Number.isFinite(starsOverride) && starsOverride >= 0) return starsOverride
+    if (poolSizeOverride > 0) return starCache.stars
+    if (starCache.stars !== null && Date.now() - starCache.at < 30 * 60_000) return starCache.stars
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 5000)
+      timer.unref?.()
+      const impl = poolProbe.fetchImpl ?? fetch
+      const response = await impl('https://api.github.com/repos/zouyuxuan122/dsh-our-free-model', {
+        headers: { 'user-agent': 'eac-gateway', accept: 'application/vnd.github+json' },
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      if (response.ok) {
+        const body = await response.json()
+        if (Number.isFinite(body?.stargazers_count)) starCache.stars = body.stargazers_count
+        starCache.at = Date.now()
+      }
+    } catch { /* keep the last good count; null only until one fetch lands */ }
+    return starCache.stars
+  }
+  const poolSnapshot = async () => {
+    let pool = null
+    let poolSource = 'unavailable'
+    if (poolSizeOverride > 0) { pool = poolSizeOverride; poolSource = 'configured' }
+    else {
+      const stars = await loadStars()
+      if (Number.isFinite(stars)) { pool = Math.round(stars * 1.5); poolSource = 'formula' }
+    }
+    const cutoff = Date.now() - DAY_MS
+    let active24h = 0
+    for (const row of Object.values(analytics.state.ips)) if ((row.last ?? 0) > cutoff) active24h += 1
+    let inFlight = 0
+    for (const value of inflight.values()) inFlight += value
+    return { ok: true, stars: starCache.stars, pool, poolSource, active24h, inflight: inFlight, concurrencyPerIp: concLimit, ts: Date.now() }
+  }
 
   analytics.load(statsPath)
 
@@ -337,6 +393,15 @@ export function createGatewayServer(hostEnv = {}) {
         // for data, which is where the real check lives.
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
         return res.end(DASHBOARD_HTML())
+      }
+
+      // ── public pool snapshot (aggregate numbers only) ─────────────────────
+      // Feeds the plugin settings page's capacity gauge: the pool the operator
+      // provisions grows with the repo's stars (POOL_SIZE pins it to an exact
+      // count instead), and the load side is this process's own real traffic.
+      // No secrets, no per-IP rows — the dashboard keeps those behind the token.
+      if (url.pathname === prefix + '/pool') {
+        return json(res, 200, await poolSnapshot())
       }
 
       if (overflow) {

@@ -51,7 +51,7 @@ const { buildEacCatalog, eacDisplayName, isEacEntry, EAC_CHANNEL } = await impor
 const { FreeModelAdapter } = await import('../src/adapter.js')
 const { signSealedRequest, fetchSealedListing, postSealedStreamed, lane } = await import('../src/eac.js')
 const gateway = await import('../worker/worker.js')
-const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-node.mjs')
+const { createGatewayServer, resetAnalytics, poolProbe } = await import('../worker/gateway-node.mjs')
 
 // ── 1. the seal and the gate ─────────────────────────────────────────────────
 {
@@ -460,6 +460,34 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
   await new Promise(resolve => nodeServer.close(resolve))
   await new Promise(resolve => nodeRelay.close(resolve))
 
+  // The pool snapshot: aggregate numbers only, no signature, no admin token.
+  // The star fetch is a seam, so the formula case is deterministic offline.
+  {
+    resetAnalytics()
+    poolProbe.fetchImpl = async () => new Response(JSON.stringify({ stargazers_count: 4 }), { status: 200, headers: { 'content-type': 'application/json' } })
+    const poolRelay = http.createServer((req, res) => { req.resume(); req.on('end', () => { res.writeHead(404); res.end() }) })
+    await new Promise(resolve => poolRelay.listen(0, '127.0.0.1', resolve))
+    poolRelay.unref()
+    const formulaEnv = { UPSTREAM_URL: `http://127.0.0.1:${poolRelay.address().port}/v1`, UPSTREAM_API_KEY: 'sk-x', SIGNING_SECRETS: GATEWAY_SECRET }
+    const formulaServer = createGatewayServer(formulaEnv)
+    await new Promise(resolve => formulaServer.listen(0, '127.0.0.1', resolve))
+    formulaServer.unref()
+    const formula = await (await fetch(`http://127.0.0.1:${formulaServer.address().port}/pool`)).json()
+    check('the pool snapshot derives capacity from the provisioning formula', [formula.ok, formula.poolSource, formula.stars, formula.pool], [true, 'formula', 4, 6])
+    check('the pool snapshot reports live counters', [Number.isFinite(formula.active24h), Number.isFinite(formula.inflight)], [true, true])
+    await new Promise(resolve => formulaServer.close(resolve))
+
+    const pinnedEnv = { ...formulaEnv, POOL_SIZE: '17', GITHUB_STARS_OVERRIDE: '999' }
+    const pinnedServer = createGatewayServer(pinnedEnv)
+    await new Promise(resolve => pinnedServer.listen(0, '127.0.0.1', resolve))
+    pinnedServer.unref()
+    const pinned = await (await fetch(`http://127.0.0.1:${pinnedServer.address().port}/pool`)).json()
+    check('a configured POOL_SIZE pins capacity without consulting stars', [pinned.poolSource, pinned.pool], ['configured', 17])
+    await new Promise(resolve => pinnedServer.close(resolve))
+    poolProbe.fetchImpl = null
+    await new Promise(resolve => poolRelay.close(resolve))
+  }
+
   // The prelude, end to end through the Node host: a relay that sits on its
   // first byte must not let a front proxy kill the lane (Cloudflare ~100s,
   // nginx 60s default), and a refusal arriving after the head is committed
@@ -664,6 +692,9 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
       }
       return new Response('{"error":{"message":"relay stood down for the suite"}}', { status: 503 })
     }
+    if (credential !== null && text === `${credential.base.replace(/\/v1$/, '')}/pool`) {
+      return new Response(JSON.stringify({ ok: true, stars: 4, pool: 6, poolSource: 'formula', active24h: 2, inflight: 1, concurrencyPerIp: 5, ts: 0 }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
     void options
     throw new TypeError('fetch failed (offline suite)')
   }
@@ -742,6 +773,8 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
       check('the settings API exposes no credential material anywhere', JSON.stringify(summary.json).includes('sk-'), false)
       const rosterIdsShown = (summary.json.catalog ?? []).filter(entry => entry.channel === 'eac').map(entry => entry.id)
       check('all listed sealed models made the roster', rosterIdsShown.slice().sort(), rosterIds.slice().sort())
+      const poolRow = await callRoute(api(), 'GET', '/api/our-free-model/pool')
+      check('the pool route proxies the gateway snapshot for approved hosts', poolRow.json, { ok: true, stars: 4, pool: 6, poolSource: 'formula', active24h: 2, inflight: 1, concurrencyPerIp: 5, ts: 0 })
     } finally {
       restore()
     }
@@ -756,6 +789,8 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
       check('an unapproved host lists no sealed models', models.some(model => model.id.includes('/') || model.name.startsWith('EAC ')), false)
       const summary = await callRoute(api(), 'GET', '/api/our-free-model/summary')
       check('and its settings page has no sealed rows at all', (summary.json.catalog ?? []).some(entry => entry.channel === 'eac'), false)
+      const refusedPool = await callRoute(api(), 'GET', '/api/our-free-model/pool')
+      check('an unapproved host gets no pool snapshot either', refusedPool.status, 404)
     } finally {
       restore()
     }
