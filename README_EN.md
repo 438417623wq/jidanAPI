@@ -217,10 +217,21 @@ proxy`. Optional and off by default — with it off, requests go direct. Two mod
   mihomo locally (auto-detected — e.g. Clash Verge's `verge-mihomo.exe` — or set
   the path yourself) with a built-in url-test group that re-measures every five
   minutes and sends traffic to the fastest node, health-checking dead nodes out.
-  The subscription URL stays in the local settings file, never rides a request,
-  and the settings page shows only its masked host.
+  **The subscription URL is treated as a credential** — the path of a
+  subscription link *is* its token — so it lives at the same standard as the two
+  forward keys: kept in the local settings file, never sent with a request, and
+  never echoed in a settings payload. The panel shows the masked host only
+  (`https://host/…`); "Show" and "Copy" fetch the value from the settings page
+  itself (`GET /egress/url`), an empty input means "keep the stored address", and
+  "Clear" removes it and takes the outlet down with it.
 - **Single-proxy mode**: type an `http://` / `https://` / `socks5://` /
   `socks5h://` proxy address and every handled request dials through it.
+
+**At rest.** mihomo has to read that address out of a config file (the plugin
+writes a throwaway `mihomo.yaml` into its data directory and spawns mihomo from
+there), so the on-disk copy stays plain text. What this treatment removes is the
+payload echo, the log line and the shoulder — not another process on the same
+machine.
 
 Only three kinds of traffic are taken over: model inference, the model listing
 fetch, and the egress IP probe; announcements, upgrades, and the EAC lane stay

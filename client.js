@@ -75,6 +75,11 @@ window.__ModuleLoader__.load({
         'egress.enabled': '启用出口',
         'egress.modeSubscription': '订阅模式（本地 mihomo 自动测速分流）',
         'egress.url': '订阅 / 代理 URL',
+        'egress.urlNew': '替换订阅地址',
+        'egress.urlPlaceholder': '粘贴新的订阅 / 代理地址（留空则保持当前不变）',
+        'egress.urlNone': '未设置',
+        'egress.urlClear': '清除',
+        'egress.urlClearWarn': '清除本机保存的订阅 / 代理地址，并关闭出口',
         'egress.mihomoPath': 'mihomo 路径',
         'egress.mihomoHint': '订阅模式留空则自动查找本机 mihomo（如 Clash Verge）。',
         'egress.apply': '应用',
@@ -84,7 +89,7 @@ window.__ModuleLoader__.load({
         'egress.node': '当前最佳节点',
         'egress.latency': '访问 opencode',
         'egress.measuring': '测量中…',
-        'egress.direct': '关闭时请求直连发出；URL 仅保存在本机设置中。',
+        'egress.direct': '关闭时请求直连发出；订阅地址按密钥对待——只存在本机设置里，接口不回显，面板默认打码。',
         'egress.error': '出口启动失败：{message}',
         'section.prefs': '插件设置',
         'section.prefsHint': '改动在下一次加载完全生效。',
@@ -280,6 +285,11 @@ window.__ModuleLoader__.load({
         'egress.enabled': 'Enable outlet',
         'egress.modeSubscription': 'Subscription mode (local mihomo picks the fastest node)',
         'egress.url': 'Subscription / proxy URL',
+        'egress.urlNew': 'Replace the address',
+        'egress.urlPlaceholder': 'Paste a new subscription / proxy URL (leave empty to keep the current one)',
+        'egress.urlNone': 'not set',
+        'egress.urlClear': 'Clear',
+        'egress.urlClearWarn': 'Clear the stored subscription / proxy address and turn the outlet off',
         'egress.mihomoPath': 'mihomo path',
         'egress.mihomoHint': 'Leave empty in subscription mode to auto-locate a local mihomo (e.g. Clash Verge).',
         'egress.apply': 'Apply',
@@ -289,7 +299,7 @@ window.__ModuleLoader__.load({
         'egress.node': 'Best node',
         'egress.latency': 'opencode access',
         'egress.measuring': 'measuring…',
-        'egress.direct': 'While off, requests go direct; the URL stays in this machine\'s settings only.',
+        'egress.direct': 'While off, requests go direct; the address is treated as a credential — kept in this machine\'s settings only, never echoed back, masked here by default.',
         'egress.error': 'The outlet failed to start: {message}',
         'section.prefs': 'Plugin settings',
         'section.prefsHint': 'Changes take full effect on the next load.',
@@ -1347,11 +1357,17 @@ window.__ModuleLoader__.load({
     // Two ways out: a Clash subscription load-balanced by a spawned mihomo, or
     // one hand-written http/https/socks5 URL. Until this is on AND started,
     // egressFetch sends every request direct — nothing here is load-bearing for
-    // plain use, and the URL is this owner's own credential (like feedUrl).
+    // plain use. The address is a credential, so it never rides along in the
+    // settings payload: this panel shows the masked host and pulls the value
+    // itself (`/egress/url`) only when the owner asks to see or copy it.
     function Egress(props) {
       const { settings, t, onApply, busy } = props
       const [draft, setDraft] = useState(settings.egress ?? {})
-      useEffect(() => setDraft(settings.egress ?? {}), [settings.egress?.enabled, settings.egress?.mode, settings.egress?.url, settings.egress?.active, settings.egress?.error])
+      useEffect(() => setDraft(settings.egress ?? {}), [settings.egress?.enabled, settings.egress?.mode, settings.egress?.urlLabel, settings.egress?.hasUrl, settings.egress?.active, settings.egress?.error])
+      const [urlShown, setUrlShown] = useState(false)
+      const [urlValue, setUrlValue] = useState('')
+      const [copied, setCopied] = useState('')
+      const readUrl = () => api('/egress/url').then(payload => String(payload?.url ?? '')).catch(() => '')
       // Which node url-test is carrying traffic on, and what the last gateway
       // round trip cost. mihomo re-ranks on its own schedule, so while the outlet
       // is on this polls instead of trusting the snapshot that shipped with the
@@ -1371,7 +1387,32 @@ window.__ModuleLoader__.load({
       const latencyMs = Number(status?.latencyMs ?? 0)
       const subscription = draft?.mode !== 'client'
       const statusLine = text => h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, text)
-      const apply = () => onApply({ egress: { enabled: draft?.enabled === true, mode: subscription ? 'subscription' : 'client', url: String(draft?.url ?? ''), mihomoPath: String(draft?.mihomoPath ?? '') } })
+      // The stored address is never in the payload this panel was rendered
+      // from, so "see it" and "copy it" both cost one on-demand fetch, and the
+      // masked form is all this page holds the rest of the time.
+      const revealUrl = async () => {
+        if (urlShown) { setUrlShown(false); return }
+        setUrlValue(await readUrl())
+        setUrlShown(true)
+      }
+      const copyUrl = async () => {
+        const value = await readUrl()
+        if (value === '') return
+        copy(value, ok => {
+          if (!ok) return
+          setCopied('egressUrl')
+          setTimeout(() => setCopied(''), 1600)
+        })
+      }
+      const urlMask = draft?.hasUrl === true ? `${draft?.urlLabel ?? ''}/…` : t('egress.urlNone')
+      const apply = () => {
+        const patch = { enabled: draft?.enabled === true, mode: subscription ? 'subscription' : 'client', mihomoPath: String(draft?.mihomoPath ?? '') }
+        // Empty means "keep the stored address": this panel never received it,
+        // so it has nothing to send back, and an empty string would read as
+        // "clear it" on the receiving end.
+        if (String(draft?.url ?? '') !== '') patch.url = String(draft.url)
+        onApply({ egress: patch })
+      }
       return h(Panel, null,
         h('div', { className: 'ofm_row' },
           h(Switch, { checked: draft?.enabled === true, label: t('egress.enabled'), onChange: () => setDraft(c => ({ ...c, enabled: !(c?.enabled === true) })) }),
@@ -1379,7 +1420,21 @@ window.__ModuleLoader__.load({
         h('div', { className: 'ofm_row' },
           h(Switch, { checked: subscription, label: t('egress.modeSubscription'), onChange: () => setDraft(c => ({ ...c, mode: subscription ? 'client' : 'subscription' })) })),
         h('div', { className: 'ofm_row' },
-          field(t('egress.url'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.url ?? '', placeholder: subscription ? 'https://…/s/…' : 'socks5://127.0.0.1:1080', onChange: e => setDraft(c => ({ ...c, url: e.target.value })) })),
+          h('span', { className: 'ofm_note' }, t('egress.url')),
+          h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, letterSpacing: urlShown ? 0 : 1 } },
+            urlShown ? (urlValue === '' ? t('egress.urlNone') : urlValue) : urlMask),
+          h(Button, { kind: 'ghost', onClick: revealUrl }, urlShown ? t('forward.hide') : t('forward.show')),
+          h(Button, { kind: 'ghost', onClick: copyUrl }, copied === 'egressUrl' ? t('forward.copied') : t('forward.copy')),
+          // Deleting the address is still a thing the owner may want, and the
+          // panel cannot express it by sending back a field it never held — so
+          // it says so outright, and the outlet goes down with the credential.
+          h(Button, { kind: 'ghost', title: t('egress.urlClearWarn'), disabled: draft?.hasUrl !== true || busy, onClick: () => {
+            setUrlShown(false)
+            setUrlValue('')
+            onApply({ egress: { enabled: false, mode: subscription ? 'subscription' : 'client', mihomoPath: String(draft?.mihomoPath ?? ''), url: '' } })
+          } }, t('egress.urlClear'))),
+        h('div', { className: 'ofm_row' },
+          field(t('egress.urlNew'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.url ?? '', placeholder: t('egress.urlPlaceholder'), onChange: e => setDraft(c => ({ ...c, url: e.target.value })) })),
           h(Button, { kind: 'primary', disabled: busy, onClick: apply }, t('egress.apply'))),
         subscription ? h('div', { className: 'ofm_row' },
           field(t('egress.mihomoPath'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.mihomoPath ?? '', placeholder: 'auto', onChange: e => setDraft(c => ({ ...c, mihomoPath: e.target.value })) })),

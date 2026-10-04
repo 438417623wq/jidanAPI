@@ -1696,6 +1696,12 @@ function createApiRoutes(deps) {
       if (method === 'POST' && routePath === '/forward/lan/rotate') {
         return send(200, { key: deps.rotateLanKey() })
       }
+      // The subscription/proxy URL is a credential, so it lives outside every
+      // routine payload and leaves the process only when the settings page asks
+      // for it — the same shape as the forward keys above.
+      if (method === 'GET' && routePath === '/egress/url') {
+        return send(200, { url: deps.settings.get().egress?.url ?? '' })
+      }
       if (method === 'POST' && routePath === '/bench') {
         const body = await readJson(req)
         const result = await deps.testModel(String(body.model ?? ''), body.effort === undefined ? undefined : String(body.effort))
@@ -1773,11 +1779,16 @@ function publicSettings(settings, forwardInfo, egressInfo) {
         addresses: forwardInfo.lan?.addresses ?? [],
       },
     },
-    // Like `feedUrl` above, the subscription/proxy URL is this machine owner's
-    // own credential, shown back to them so they can edit it; `outlet` is the
-    // masked label for the status line.
+    // A subscription link is not an endpoint, it is a bearer credential: the
+    // path of the URL *is* the token, which is why it is handled like the
+    // forward keys and not like `feedUrl`. Stored as given, but never echoed —
+    // `urlLabel` is the masked host for the panel, `hasUrl` says whether one is
+    // set at all, and the value itself is served only by `GET /egress/url`, on
+    // the settings page's own ask (see src/egress.js `outletLabel`).
     egress: {
-      ...(settings.egress ?? {}),
+      ...pick(settings.egress ?? {}, ['enabled', 'mode', 'mihomoPath']),
+      hasUrl: String(settings.egress?.url ?? '') !== '',
+      urlLabel: outletLabel(settings.egress?.url ?? ''),
       outlet: egressInfo?.outlet ?? '',
       running: egressInfo?.running === true,
       active: egressInfo?.active === true,
