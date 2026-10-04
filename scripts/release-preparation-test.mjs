@@ -126,13 +126,23 @@ try {
   check('package paths cannot escape the candidate or become pathspec options', () =>
     assert.throws(() => prepare(base, outside, 'outside'), /unsafe package files entry/))
   write('package.json', pkg)
-  fs.symlinkSync(sentinel, path.join(repo, 'src/link.js'))
-  const linked = commit('linked file')
-  check('symlinks are rejected instead of dereferenced', () => {
-    assert.throws(() => prepare(base, linked, 'linked'), /tracked regular file/)
-    assert.equal(fs.existsSync(sentinel), false)
-  })
-  fs.unlinkSync(path.join(repo, 'src/link.js'))
+  // Creating a symlink takes privilege on Windows; where the OS refuses, say so
+  // and move on — the rejection path stays covered by CI (ubuntu).
+  let linked = null
+  try {
+    fs.symlinkSync(sentinel, path.join(repo, 'src/link.js'))
+    linked = commit('linked file')
+  } catch (error) {
+    if (error?.code !== 'EPERM' && error?.code !== 'EACCES') throw error
+    console.log('skip  symlink rejection (this environment cannot create symlinks)')
+  }
+  if (linked !== null) {
+    check('symlinks are rejected instead of dereferenced', () => {
+      assert.throws(() => prepare(base, linked, 'linked'), /tracked regular file/)
+      assert.equal(fs.existsSync(sentinel), false)
+    })
+    fs.unlinkSync(path.join(repo, 'src/link.js'))
+  }
   write('src/large.js', Buffer.alloc(4 * 1024 * 1024 + 1, 65))
   const large = commit('oversized file')
   check('oversized files fail before publishing an artifact', () =>

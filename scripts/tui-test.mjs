@@ -38,6 +38,13 @@ const forwardPort = await freePort()
 fs.writeFileSync(path.join(scratch, 'our-free-model', 'settings.json'), JSON.stringify({
   version: 1, enabled: true, forward: { enabled: true, host: '127.0.0.1', port: forwardPort, lan: { enabled: true, port: 0 } },
 }), { mode: 0o600 })
+// The sealed roster persists under catalog.json. This composition has no
+// profileContext, so the host gate refuses the lane; the refusal has to say so
+// in the log, and it must not wipe what a desktop session on this install
+// persisted — that wipe in silence is what made "EAC 渠道不显示" undiscoverable.
+fs.writeFileSync(path.join(scratch, 'our-free-model', 'catalog.json'), JSON.stringify({
+  version: 1, at: 0, entries: [], sealIds: ['deepseek-ai/deepseek-v4.1-flash'],
+}), { mode: 0o600 })
 
 const { apply, inject } = await import('../index.js')
 const { ROUTE_MAIN } = await import('../src/adapter.js')
@@ -89,6 +96,11 @@ check('the settings API mounts when the service does', ctx.__captured.serverRout
   ['/api/our-free-model', '/api/our-free-model/events'])
 
 await until(() => fs.existsSync(path.join(scratch, 'our-free-model', 'availability.json')), { what: 'the boot probe to land' })
+
+await until(() => ctx.__logs.some(line => line.includes('sealed lane is not available on this host')), { what: 'the sealed-lane gate refusal to be logged' })
+check('the host-gate refusal is logged, not silent', ctx.__logs.some(line => line.startsWith('warn our-free-model: the sealed lane is not available')), true)
+const persisted = JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'catalog.json'), 'utf8'))
+check('and the refusal keeps the roster a desktop session persisted', persisted.sealIds, ['deepseek-ai/deepseek-v4.1-flash'])
 
 const models = await adapter.listModels(ROUTE_MAIN)
 check('the picker still gets its models', models.map(model => model.id).sort(), ['mimo-v2.6-flash-free', 'space-bunny-free'])

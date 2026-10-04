@@ -29,8 +29,8 @@
     },
     {
       "path": "index.js",
-      "size": 80047,
-      "sha256": "b361f8d4b0980e1ded769e7831499d452728eb63f955338f14fcf15f1229bdfe"
+      "size": 80787,
+      "sha256": "8346f144e6275e9070ab5f88e20aaee9415779ed7e73ace041fccf1f11d217cf"
     },
     {
       "path": "LICENSE",
@@ -49,8 +49,8 @@
     },
     {
       "path": "package.json",
-      "size": 1525,
-      "sha256": "94271c347a8978bcad2468f9ec88bb0739194750f58f021a76cd7d9f0c65d886"
+      "size": 1661,
+      "sha256": "a861607174ce603630c93ed0146891ba0684f99642dcb963ca60153ca481c893"
     },
     {
       "path": "README_EN.md",
@@ -94,8 +94,8 @@
     },
     {
       "path": "src/forward.js",
-      "size": 39161,
-      "sha256": "1de4bcdf683888c23be0575d4bb1bce9ffafd557ace97e9df4934edf723002fd"
+      "size": 43055,
+      "sha256": "20abf1d1d9a230098ec23d97a21826c734489be8cdc449bd49bf58ae54619639"
     },
     {
       "path": "src/http.js",
@@ -144,8 +144,8 @@
     },
     {
       "path": "src/updater.js",
-      "size": 29444,
-      "sha256": "bdc739dfe124651affa248160b27aaf7285cab763cbbc099a8f3a8b0a931d007"
+      "size": 29780,
+      "sha256": "baeef89336b3aec782c66334d6a1b4d448dc7e0b3f7a60767562bb1c52b56ab3"
     },
     {
       "path": "src/upstream.js",
