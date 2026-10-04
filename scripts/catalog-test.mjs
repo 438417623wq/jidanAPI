@@ -19,7 +19,9 @@
  * Mojobox ingestion, where the validator lives. Everything this suite checks is
  * checkable offline with the standard library alone.
  *
- * Run: node scripts/catalog-test.mjs
+ * Run: node scripts/catalog-test.mjs [--contributor]
+ * Contributor mode retains schema, provenance and adapter isolation checks;
+ * only publisher-owned revision and digest alignment wait for release preparation.
  */
 import crypto from 'node:crypto'
 import { execFileSync } from 'node:child_process'
@@ -31,6 +33,11 @@ import { publishedBytes } from './lib/published-bytes.mjs'
 const repo = fileURLToPath(new URL('..', import.meta.url))
 const read = rel => fs.readFileSync(path.join(repo, rel), 'utf8')
 const readJson = rel => JSON.parse(read(rel))
+const contributor = process.argv.includes('--contributor')
+if (process.argv.slice(2).some(arg => arg !== '--contributor')) {
+  console.error('usage: node scripts/catalog-test.mjs [--contributor]')
+  process.exit(1)
+}
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -98,9 +105,11 @@ check('source revision is a full commit sha', /^[0-9a-f]{40}$/.test(source.revis
 // byte) and satisfiable (the refresh commit touches only catalog/, so the
 // pointer it must match does not move under it). The refresh step is part of
 // the release runbook in docs/RELEASING.md.
-const contentRevision = spawnLastContentRevision()
+const contentRevision = contributor ? null : spawnLastContentRevision()
 if (contentRevision !== null) check('source revision is the last commit that touched the release content', source.revision, contentRevision)
-else console.log('ok   (revision cross-check skipped: git unavailable or the release content has no commits yet)')
+else console.log(contributor
+  ? 'pending release: content revision alignment is owned by the maintainer'
+  : 'ok   (revision cross-check skipped: git unavailable or the release content has no commits yet)')
 
 // ── provenance and license ────────────────────────────────────────────────────
 sub('provenance')
@@ -131,7 +140,8 @@ const recomputed = spot.map(rel => {
   const body = publishedBytes(fs.readFileSync(path.join(repo, rel)))
   return crypto.createHash('sha256').update(body).digest('hex')
 })
-check('the digests are the bytes on disk (LF-normalised), not copies',
+if (contributor) console.log('pending release: signed digest alignment is owned by the maintainer')
+else check('the digests are the bytes on disk (LF-normalised), not copies',
   spot.every((rel, index) => integrity.files.find(row => row.path === rel)?.sha256 === recomputed[index]), true)
 
 // ── adapter isolation ─────────────────────────────────────────────────────────
@@ -172,5 +182,8 @@ function spawnLastContentRevision() {
   }
 }
 
-console.log(failures === 0 ? '\ncatalog: the record, the bytes and the seam agree' : `\n${failures} check(s) failed`)
+console.log(failures === 0
+  ? contributor ? '\ncatalog: structure, provenance and adapter isolation agree; release byte/revision alignment not checked'
+    : '\ncatalog: the record, the bytes and the seam agree'
+  : `\n${failures} check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1

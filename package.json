@@ -13,6 +13,8 @@
   },
   "scripts": {
     "test": "node scripts/test-all.mjs",
+    "test:contributor": "node scripts/test-all.mjs --mode contributor",
+    "test:release": "node scripts/test-all.mjs --mode release",
     "manifest": "node scripts/build-manifest.mjs",
     "manifest:check": "node scripts/build-manifest.mjs --check",
     "selftest": "node scripts/host-selftest.mjs",
