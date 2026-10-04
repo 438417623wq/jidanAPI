@@ -21,3 +21,4 @@ scripts/eac-vault-mint.mjs
 # Gateway deployment secrets (self-hosted form) never get committed.
 worker/.env
 c3099.txt
+stats.json

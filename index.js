@@ -834,9 +834,11 @@ export function apply(ctx, config) {
         },
         dataDir,
         log: message => logger.info?.(`our-free-model egress: ${message}`),
+        onDead: scheduleOutletRestart,
       })
       outletFingerprint = fingerprint
       outletError = ''
+      outletUpSince = Date.now()
       logger.info?.(`our-free-model: egress outlet up (${outletLabel(url)} via ${mode})`)
       // Same as the close path: the exit IP, its country and the region-gated
       // verdicts all moved with the outlet, so settle them now instead of at the
@@ -846,6 +848,29 @@ export function apply(ctx, config) {
       outletError = String(error?.message ?? error)
       logger.warn?.(`our-free-model: egress outlet could not start (${outletError})`)
     }
+  }
+
+  // A managed mihomo that dies mid-run used to leave the outlet bricked until
+  // the user touched the settings page: the relay stays up but its dial port is
+  // gone, so every upstream turn fails. syncEgressOnce already restarts a dead
+  // relay with an unchanged fingerprint — this only calls it, with a backoff so
+  // a mihomo that dies at boot cannot spin into a start/exit loop. A run that
+  // lasted two minutes counts as healthy and resets the ladder.
+  const OUTLET_STABLE_MS = 120_000
+  let outletUpSince = 0
+  let outletRestartAttempts = 0
+  let outletRestartTimer = null
+  function scheduleOutletRestart() {
+    if (outletRestartTimer !== null) return
+    if (Date.now() - outletUpSince >= OUTLET_STABLE_MS) outletRestartAttempts = 0
+    const delay = Math.min(15_000 * 2 ** outletRestartAttempts, 600_000)
+    outletRestartAttempts += 1
+    logger.warn?.(`our-free-model: egress outlet went down; restarting in ${Math.round(delay / 1000)}s (attempt ${outletRestartAttempts})`)
+    outletRestartTimer = setTimeout(() => {
+      outletRestartTimer = null
+      void syncEgress().catch(() => {})
+    }, delay)
+    outletRestartTimer.unref?.()
   }
 
   /**

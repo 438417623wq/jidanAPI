@@ -99,7 +99,7 @@ window.__ModuleLoader__.load({
         'egress.node': '当前最佳节点',
         'egress.latency': '访问 opencode',
         'egress.measuring': '测量中…',
-        'egress.direct': '关闭时请求直连发出；订阅地址按密钥对待——只存在本机设置里，接口不回显，面板默认打码。',
+        'egress.direct': '关闭时请求直连发出；订阅地址按密钥对待——只存在本机设置里，不随常规接口数据下发，仅点「显示」时读取，面板默认打码。',
         'egress.error': '出口启动失败：{message}',
         'section.prefs': '插件设置',
         'section.prefsHint': '改动在下一次加载完全生效。',
@@ -115,6 +115,16 @@ window.__ModuleLoader__.load({
         'stat.reasoning': '推理 Token',
         'col.reason': '推理',
         'col.output': '输出',
+        'last.title': '最近一回合',
+        'last.justNow': '刚刚',
+        'last.minAgo': '{n} 分钟前',
+        'last.hourAgo': '{n} 小时前',
+        'last.dayAgo': '{n} 天前',
+        'last.input': '输入',
+        'last.originChat': '对话',
+        'last.originHarness': '桌面',
+        'last.originForward': '转发',
+        'last.originBench': '测速',
         'speed.title': '速度',
         'speed.tps': '输出速度',
         'speed.ttft': '首帧延迟',
@@ -309,7 +319,7 @@ window.__ModuleLoader__.load({
         'egress.node': 'Best node',
         'egress.latency': 'opencode access',
         'egress.measuring': 'measuring…',
-        'egress.direct': 'While off, requests go direct; the address is treated as a credential — kept in this machine\'s settings only, never echoed back, masked here by default.',
+        'egress.direct': 'While off, requests go direct; the address is treated as a credential — kept in this machine\'s settings only, never sent down with the regular API payloads, readable only through the reveal button, masked here by default.',
         'egress.error': 'The outlet failed to start: {message}',
         'section.prefs': 'Plugin settings',
         'section.prefsHint': 'Changes take full effect on the next load.',
@@ -335,6 +345,16 @@ window.__ModuleLoader__.load({
         'stat.reasoning': 'Reasoning tokens',
         'col.reason': 'reason',
         'col.output': 'output',
+        'last.title': 'Last turn',
+        'last.justNow': 'just now',
+        'last.minAgo': '{n} min ago',
+        'last.hourAgo': '{n} h ago',
+        'last.dayAgo': '{n} d ago',
+        'last.input': 'input',
+        'last.originChat': 'chat',
+        'last.originHarness': 'desktop',
+        'last.originForward': 'forward',
+        'last.originBench': 'bench',
         'speed.title': 'Speed',
         'speed.tps': 'Output speed',
         'speed.ttft': 'First frame',
@@ -1264,6 +1284,16 @@ window.__ModuleLoader__.load({
       const { stats, t } = props
       const days = useMemo(() => [...stats.days].sort((a, b) => a.day.localeCompare(b.day)), [stats.days])
       const recent = [...(stats.samples ?? [])].slice(-40)
+      // 「最近一回合」跟着一个轻量轮询走（#26）：看板其余部分仍是页面加载时的
+      // 快照，这一行单独刷新，让「刚发完一条消息」的用户不用整页重载就能看到
+      // 这一回合的 token 去向。聊天窗属于宿主内核，插件无法在对话流里注入，
+      // 这是插件表面能做到的最接近实时的位置。
+      const [fresh, setFresh] = useState(null)
+      useEffect(() => {
+        let alive = true
+        const timer = setInterval(() => api('/stats').then(data => { if (alive) setFresh(data) }).catch(() => {}), 60_000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [])
       // The host already dropped the windows it could not measure and took out of
       // the numerator the tokens it never streamed. Averaging per-call rates
       // instead let one 1 ms window publish 63 000 tok/s and carry the whole card
@@ -1321,10 +1351,34 @@ window.__ModuleLoader__.load({
           active.tps === null || active.tps === undefined ? null : ' · ',
           active.tps === null || active.tps === undefined ? null : `${active.tps} ${t('unit.tokPerSec')}`))
 
+      // 最近一回合（#26）：取最新一条调用样本，输入/输出 token、首帧、速度，
+      // 失败的调用也如实标出。数据源优先用轮询到的新快照，退回页面加载时的。
+      const lastSample = (fresh?.samples ?? stats.samples ?? []).slice(-1)[0] ?? null
+      const nameOfModel = id => models.find(m => m.model === id)?.name ?? id
+      const agoOf = at => {
+        const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+        if (seconds < 60) return t('last.justNow')
+        if (seconds < 3600) return t('last.minAgo').replace('{n}', String(Math.floor(seconds / 60)))
+        if (seconds < 86400) return t('last.hourAgo').replace('{n}', String(Math.floor(seconds / 3600)))
+        return t('last.dayAgo').replace('{n}', String(Math.floor(seconds / 86400)))
+      }
+      const originOf = value => ({ chat: t('last.originChat'), harness: t('last.originHarness'), forward: t('last.originForward'), bench: t('last.originBench') })[value] ?? String(value ?? '')
+      const lastTurnStrip = lastSample === null ? null : h('div',
+        { className: 'ofm_row', style: { flexWrap: 'wrap', gap: 14, alignItems: 'baseline', paddingBottom: 10, marginBottom: 12, borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+        h('b', { style: { fontSize: 13 } }, t('last.title')),
+        h('b', { style: { fontSize: 13 } }, nameOfModel(lastSample.model)),
+        h('span', { className: 'ofm_note' },
+          `${originOf(lastSample.origin)} · ${t('last.input')} ${kilo(lastSample.input)} · ${t('col.output')} ${kilo(lastSample.output)} tok`
+          + (lastSample.ttftMs != null ? ` · ${t('speed.ttft')} ${Math.round(lastSample.ttftMs)} ${t('unit.ms')}` : '')
+          + (lastSample.tps != null ? ` · ${t('speed.tps')} ${Math.round(lastSample.tps)} ${t('unit.tokPerSec')}` : '')
+          + (lastSample.ok === false ? ` · ${t('speed.failed')}` : '')),
+        h('span', { className: 'ofm_note', style: { marginLeft: 'auto' } }, agoOf(lastSample.at)))
+
       const speed = h(Panel, { title: t('speed.title'), hint: recent.length + ' ' + t('speed.calls') },
         recent.length === 0
           ? h('p', { className: 'ofm_note' }, t('speed.none'))
           : h(Fragment, null,
+            lastTurnStrip,
             h('div', { className: 'ofm_row', style: { gap: 24 } },
               sparkCell(t('speed.tps'), streamed.map(s => s.tps), SEASON[0], value => Math.round(value) + ' ' + t('unit.tokPerSec'), t, weightedTps),
               sparkCell(t('speed.ttft'), latencies.map(s => s.ttftMs), SEASON[2], value => Math.round(value) + ' ' + t('unit.ms'), t),

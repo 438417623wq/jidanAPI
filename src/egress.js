@@ -121,7 +121,7 @@ export async function egressFetch(url, init) {
  * idempotence — close the old one first — and this function only builds the
  * new one or fails.
  */
-export async function startEgressRelay({ config, dataDir, log = () => {} }) {
+export async function startEgressRelay({ config, dataDir, log = () => {}, onDead }) {
   const cfg = { mode: 'subscription', url: '', mihomoPath: '', ...config() }
   const mode = cfg.mode === 'client' ? 'client' : 'subscription'
   const url = String(cfg.url ?? '').trim()
@@ -191,10 +191,17 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
     sockets.add(socket)
     socket.on('close', () => sockets.delete(socket))
   })
-  await new Promise((resolve, reject) => {
-    server.once('error', reject)
-    server.listen(0, RELAY_HOST, () => { server.removeListener('error', reject); resolve() })
-  })
+  try {
+    await new Promise((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, RELAY_HOST, () => { server.removeListener('error', reject); resolve() })
+    })
+  } catch (error) {
+    // The listener is what turns `child` into an owned handle; without it the
+    // started mihomo would outlive the failed start holding its ports.
+    await killChild(child)
+    throw error
+  }
   const port = server.address().port
   const handle = {
     port,
@@ -217,7 +224,12 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
   if (child !== null) {
     child.on('exit', () => {
       handle.dead = 'the managed mihomo process exited'
-      log(`${handle.dead}; the outlet is down until it restarts`)
+      log(`${handle.dead}; a restart has been scheduled`)
+      // A dead managed mihomo otherwise stays dead until the user touches the
+      // settings page: every upstream request would hard-fail through the
+      // relay's closed dial port. The owner decides the retry policy (backoff,
+      // give-up) — this only reports the death once, on the way down.
+      try { onDead?.() } catch { /* a diagnostics callback cannot resurrect or worsen the relay */ }
     })
   }
   activeRelay = handle
@@ -259,7 +271,9 @@ function relayRequest(req, res) {
     return
   }
   const outlet = activeRelayOutlet()
-  activeRelay?.log?.(`relay: ${req.method} → ${upstream.href} (outlet ${outlet === null ? 'none' : 'ok'})`)
+  // Host only, never the href: query strings routinely carry credentials
+  // (Gemini's ?key=… being the canonical case), and this line runs per request.
+  activeRelay?.log?.(`relay: ${req.method} → ${upstream.protocol}//${upstream.host} (outlet ${outlet === null ? 'none' : 'ok'})`)
   if (outlet === null) {
     sendLocal(res, 502, 'the egress relay is not running')
     return
