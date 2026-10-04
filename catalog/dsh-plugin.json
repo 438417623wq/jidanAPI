@@ -3,7 +3,7 @@
   "manifestVersion": "0.15",
   "id": "dev.zouyuxuan122.dsh-our-free-model",
   "name": "dsh-our-free-model",
-  "version": "1.4.2",
+  "version": "1.4.3",
   "facets": {
     "host": {
       "entry": "index.js",
@@ -13,7 +13,7 @@
   "license": "MIT",
   "source": {
     "repository": "https://github.com/zouyuxuan122/dsh-our-free-model",
-    "revision": "e50356ad705823a671cf43a88eba8e2f94f91040"
+    "revision": "7dd9be4785f84adb93b8780497a9a98c38479dbd"
   },
   "x-ecosystem-packaging": {
     "adapterIsolation": "adapter/kernel.js is the only module that may import @deepseek-ai/*; enforced by scripts/catalog-test.mjs",
