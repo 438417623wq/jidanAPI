@@ -568,6 +568,9 @@ export function renderMihomoConfig({ subscription, mixedPort, apiPort, secret, l
   return [
     '# Managed by dsh-our-free-model. Edits are overwritten on the next sync.',
     `mixed-port: ${mixedPort}`,
+    // The outlet serves this plugin alone: a private loopback listener with no
+    // LAN exposure, no system proxy and no TUN — only `egressFetch` reroutes.
+    'bind-address: 127.0.0.1',
     'allow-lan: false',
     'mode: rule',
     'log-level: warning',
@@ -646,4 +649,67 @@ export function outletLabel(url) {
   } catch {
     return ''
   }
+}
+
+/**
+ * What the outlet is carrying traffic on right now, straight from mihomo's own
+ * controller: the node its url-test picked and the delay that won it the rank.
+ *
+ * Returns `null` for a `client` outlet (there is no controller to ask) or while
+ * url-test has not settled on a node yet. A controller that cannot answer at all
+ * throws: the caller keeps its last reading rather than reporting a bare outlet.
+ */
+export async function readOutletSelection(relay, { timeoutMs = 4000 } = {}) {
+  const managed = relay?.managed
+  if (managed === null || managed === undefined) return null
+  const group = await controllerJson(managed, '/proxies/ofm-outlet', timeoutMs)
+  const node = typeof group?.now === 'string' ? group.now : ''
+  if (node === '') return null
+  // The winner's own reading is the number url-test ranked on. Nodes that came
+  // from the provider are not addressable as `/proxies/<name>` (mihomo answers
+  // 404 for those), so the delay is read out of the provider's own table; the
+  // group's history is the last fallback, and in some builds it stays empty.
+  const provider = await controllerJson(managed, '/providers/proxies/egress', timeoutMs).catch(() => null)
+  const ranked = Array.isArray(provider?.proxies) ? provider.proxies.find(item => item?.name === node) : undefined
+  return { node, delayMs: lastDelay(ranked) ?? lastDelay(group) ?? 0 }
+}
+
+function lastDelay(proxy) {
+  const history = proxy?.history
+  if (!Array.isArray(history) || history.length === 0) return undefined
+  const delay = history[history.length - 1]?.delay
+  return typeof delay === 'number' && delay > 0 ? delay : undefined
+}
+
+function controllerJson(managed, path, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const request = http.request(
+      {
+        host: RELAY_HOST,
+        port: managed.apiPort,
+        path,
+        headers: { authorization: `Bearer ${managed.secret}` },
+        timeout: timeoutMs,
+      },
+      response => {
+        let body = ''
+        response.setEncoding('utf8')
+        response.on('data', chunk => { body += chunk })
+        response.on('end', () => {
+          if (response.statusCode !== 200) {
+            reject(new Error(`mihomo controller ${path} answered ${response.statusCode}`))
+            return
+          }
+          try {
+            resolve(JSON.parse(body))
+          } catch {
+            reject(new Error(`mihomo controller ${path} sent unparsable JSON`))
+          }
+        })
+      },
+    )
+    request.on('timeout', () => request.destroy(new Error(`mihomo controller ${path} timed out`)))
+    request.on('error', reject)
+    request.end()
+  })
 }

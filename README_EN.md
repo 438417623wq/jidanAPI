@@ -225,10 +225,29 @@ proxy`. Optional and off by default — with it off, requests go direct. Two mod
 Only three kinds of traffic are taken over: model inference, the model listing
 fetch, and the egress IP probe; announcements, upgrades, and the EAC lane stay
 direct so the subscription identity never mixes into the release channel.
+
+**Scope.** The outlet serves this plugin's opencode traffic and nothing else on
+this machine. The mihomo it spawns runs from a throwaway config of the plugin's
+own: `bind-address: 127.0.0.1` with `allow-lan: false`, no `tun:` section, no
+system proxy, no system-level proxy registration and no virtual adapter — the
+listener is a temporary free loopback port. Your browser, shell tools and other
+IDE extensions never go through it; only requests this plugin sends to the
+opencode gateway are rerouted. Single-proxy mode works the same way: the rewrite
+happens inside the plugin.
+
+**Live status.** While the outlet is on, the settings page adds three lines below
+it: the current outlet (masked host · mode), the **best node** (the node url-test
+picked, with the delay that won it the rank), and **opencode access** (the last
+model-listing round trip, in seconds). Node and latency are readings, refreshed
+every 15 seconds by asking mihomo's own controller; when a reading is missing the
+line says "measuring…" and outbound traffic is unaffected.
+
 **What it can and cannot buy you**: per-IP rate limits and region gates move
 with the outlet; per-session rate limits and fingerprint gates do not care
-which outlet you use. After toggling the outlet, hit Reprobe once so
-region-gated models regroup under the new exit.
+which outlet you use. Toggling the outlet re-probes on its own — a cold outlet
+needs a few seconds before it carries traffic, and the plugin waits for the new
+exit to answer before regrouping, so region-gated models follow the new exit.
+Reprobe (below) does the same on demand.
 
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models

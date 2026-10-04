@@ -81,6 +81,9 @@ window.__ModuleLoader__.load({
         'egress.active': '出口生效中',
         'egress.inactive': '未启用',
         'egress.outlet': '当前出口',
+        'egress.node': '当前最佳节点',
+        'egress.latency': '访问 opencode',
+        'egress.measuring': '测量中…',
         'egress.direct': '关闭时请求直连发出；URL 仅保存在本机设置中。',
         'egress.error': '出口启动失败：{message}',
         'section.prefs': '插件设置',
@@ -283,6 +286,9 @@ window.__ModuleLoader__.load({
         'egress.active': 'Outlet active',
         'egress.inactive': 'Not enabled',
         'egress.outlet': 'Current outlet',
+        'egress.node': 'Best node',
+        'egress.latency': 'opencode access',
+        'egress.measuring': 'measuring…',
         'egress.direct': 'While off, requests go direct; the URL stays in this machine\'s settings only.',
         'egress.error': 'The outlet failed to start: {message}',
         'section.prefs': 'Plugin settings',
@@ -1346,7 +1352,25 @@ window.__ModuleLoader__.load({
       const { settings, t, onApply, busy } = props
       const [draft, setDraft] = useState(settings.egress ?? {})
       useEffect(() => setDraft(settings.egress ?? {}), [settings.egress?.enabled, settings.egress?.mode, settings.egress?.url, settings.egress?.active, settings.egress?.error])
+      // Which node url-test is carrying traffic on, and what the last gateway
+      // round trip cost. mihomo re-ranks on its own schedule, so while the outlet
+      // is on this polls instead of trusting the snapshot that shipped with the
+      // settings. `/outlet` reads the controller, so it is only worth calling
+      // when an outlet is actually running.
+      const live = useAsync(() => api('/outlet'), [settings.egress?.enabled, settings.egress?.active])
+      const reloadOutlet = live.reload
+      const running = settings.egress?.active === true
+      useEffect(() => {
+        if (!running) return undefined
+        const timer = setInterval(() => reloadOutlet(), 15_000)
+        return () => clearInterval(timer)
+      }, [running, reloadOutlet])
+      const status = running && live.data ? live.data : draft
+      const node = typeof status?.node === 'string' ? status.node : ''
+      const nodeDelayMs = Number(status?.nodeDelayMs ?? 0)
+      const latencyMs = Number(status?.latencyMs ?? 0)
       const subscription = draft?.mode !== 'client'
+      const statusLine = text => h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, text)
       const apply = () => onApply({ egress: { enabled: draft?.enabled === true, mode: subscription ? 'subscription' : 'client', url: String(draft?.url ?? ''), mihomoPath: String(draft?.mihomoPath ?? '') } })
       return h(Panel, null,
         h('div', { className: 'ofm_row' },
@@ -1362,9 +1386,15 @@ window.__ModuleLoader__.load({
           h('span', { className: 'ofm_note' }, t('egress.mihomoHint'))) : null,
         draft?.error ? h('div', { className: 'ofm_callout ofm_error' }, t('egress.error').replace('{message}', draft.error)) : null,
         h('div', { className: 'ofm_note' }, t('egress.direct')),
-        draft?.active === true ? h('div', { className: 'ofm_row' },
+        running ? h('div', { className: 'ofm_row' },
           h('span', { className: 'ofm_note' }, t('egress.outlet')),
-          h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, `${draft.outlet ?? ''} · ${draft.mode ?? ''}`)) : null)
+          statusLine(`${draft.outlet ?? ''} · ${draft.mode ?? ''}`)) : null,
+        running ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.node')),
+          statusLine(node === '' ? t('egress.measuring') : nodeDelayMs > 0 ? `${node} · ${nodeDelayMs}ms` : node)) : null,
+        running ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.latency')),
+          statusLine(latencyMs > 0 ? `${(latencyMs / 1000).toFixed(2)}s` : t('egress.measuring'))) : null)
     }
 
     const field = (label, control) => h('label', { className: 'ofm_field' }, h('span', null, label), control)

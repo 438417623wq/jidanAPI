@@ -13,7 +13,7 @@ import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import http from 'node:http'
-import { startEgressRelay, egressFetch, egressActive, renderMihomoConfig, findMihomoBinary, outletLabel } from '../src/egress.js'
+import { startEgressRelay, egressFetch, egressActive, renderMihomoConfig, findMihomoBinary, outletLabel, readOutletSelection } from '../src/egress.js'
 
 let checks = 0
 let failures = 0
@@ -53,6 +53,28 @@ function startTarget() {
 
 function listen(server, host) {
   return new Promise(resolve => server.listen(0, host, () => resolve(server.address().port)))
+}
+
+/** Stand-in for mihomo's external-controller: serves the routes the node
+ *  reading uses and remembers the bearer token it was called with. */
+function startFakeController(routes) {
+  const server = http.createServer((req, res) => {
+    server.lastAuth = req.headers.authorization ?? ''
+    const body = routes[req.url]
+    if (body === undefined) {
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ message: 'not found' }))
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  })
+  const port = listen(server, '127.0.0.1')
+  return port.then(resolved => ({
+    port: resolved,
+    get lastAuth() { return server.lastAuth ?? '' },
+    close: () => new Promise(resolve => server.close(() => resolve())),
+  }))
 }
 
 /** Read from a socket until the matcher is happy. Dialers are strictly
@@ -181,6 +203,12 @@ async function main() {
   check(yaml.includes('expected-status: 204') && yaml.includes('generate_204'), 'health-check prunes non-204 (429) nodes')
   check(yaml.includes('type: url-test') && yaml.includes('- MATCH,ofm-outlet'), 'group is url-test and rules route through it')
   check(yaml.includes('mixed-port: 33001') && yaml.includes('external-controller: 127.0.0.1:33002'), 'ports land in the config')
+  // Confinement: this outlet serves the plugin's own opencode traffic only. It
+  // must never listen off-loopback, never register a system proxy, never take
+  // over routing via TUN.
+  check(yaml.includes('bind-address: 127.0.0.1'), 'listener is bound to loopback')
+  check(yaml.includes('allow-lan: false'), 'lan access stays off')
+  check(!yaml.includes('tun:') && !yaml.includes('enable: true\n  auto-detect'), 'no tun section, no system-proxy takeover')
 
   stage = 'validation'
   // 3 — locator and validation failures are immediate, actionable errors.
@@ -297,6 +325,40 @@ async function main() {
   // 11 — outletLabel shows the host, never the credential path.
   stage = 'label'
   check(outletLabel('https://dy2.ssydy.com/s/SECRET') === 'https://dy2.ssydy.com', 'subscription label masks the path')
+
+  // 12 — the settings page's node reading, against a fake mihomo controller.
+  stage = 'outlet selection'
+  check(await readOutletSelection(null) === null, 'no outlet means no reading')
+  check(await readOutletSelection({}) === null, 'an unmanaged relay has no controller to ask')
+  // Provider nodes are not addressable as /proxies/<name>, so the ranked delay has
+  // to come out of the provider table — this is the shape a live mihomo serves.
+  const controller = await startFakeController({
+    '/proxies/ofm-outlet': { now: 'JP 5', type: 'URLTest', history: [] },
+    '/providers/proxies/egress': { proxies: [{ name: 'JP 5', history: [{ time: 'now', delay: 294 }] }, { name: 'JP 4', history: [{ delay: 380 }] }] },
+  })
+  const relayStub = { managed: { mixedPort: 1, apiPort: controller.port, secret: 'shh', dir: dataDir } }
+  const selection = await readOutletSelection(relayStub)
+  check(selection?.node === 'JP 5', 'the group now-choice is read as the node')
+  check(selection?.delayMs === 294, 'the delay comes from the provider row of that node')
+  check(controller.lastAuth === 'Bearer shh', 'the controller is called with the bearer secret')
+  await controller.close()
+  let controllerThrew = false
+  try { await readOutletSelection(relayStub) } catch { controllerThrew = true }
+  check(controllerThrew, 'a controller that stopped answering raises, so the caller keeps the last reading')
+  // A node url-test just picked has no row yet, or no test logged: the name is
+  // still worth showing, the delay simply is not known.
+  const fresh = await startFakeController({
+    '/proxies/ofm-outlet': { now: 'SG 1', history: [] },
+    '/providers/proxies/egress': { proxies: [{ name: 'SG 2', history: [{ delay: 120 }] }] },
+  })
+  const unranked = await readOutletSelection({ managed: { mixedPort: 1, apiPort: fresh.port, secret: 'shh', dir: dataDir } })
+  check(unranked?.node === 'SG 1' && unranked?.delayMs === 0, 'a node without a delay yet is still reported by name')
+  await fresh.close()
+  // Builds that keep the reading on the group instead: the group history is the fallback.
+  const grouped = await startFakeController({ '/proxies/ofm-outlet': { now: 'HK 1', history: [{ delay: 210 }] } })
+  const fallback = await readOutletSelection({ managed: { mixedPort: 1, apiPort: grouped.port, secret: 'shh', dir: dataDir } })
+  check(fallback?.node === 'HK 1' && fallback?.delayMs === 210, 'the group history is used when the provider table has no row')
+  await grouped.close()
 
   fs.rmSync(dataDir, { recursive: true, force: true })
   console.log(`${failures === 0 ? 'PASS' : 'FAIL'}: egress ${checks - failures}/${checks} checks`)
