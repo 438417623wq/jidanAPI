@@ -98,8 +98,8 @@ PROFILE_UPGRADE_REQUIRED: offline dependency migration is not yet available
 手工以真实目录安装，在 `<DSH_HOME>/profiles/<profile>/` 下做三件事：
 
 1. 把发布文件**复制**进 `node_modules/dsh-our-free-model/`
-   （`index.js`、`client.js`、`src/`、`locale/`、`icon.svg`、`cordis.patch.yml`、`package.json`）
-2. `dependencies` 里加 `"dsh-our-free-model": "1.1.2"`——写版本号，**不要写 `link:`**
+   （`index.js`、`client.js`、`adapter/`、`src/`、`locale/`、`icon.svg`、`cordis.patch.yml`、`package.json`——`adapter/` 不能漏：`index.js` 第一行就 import 它）
+2. `dependencies` 里加 `"dsh-our-free-model": "1.3.2"`——写版本号，**不要写 `link:`**
 3. `dsh.profile.bundles` 末尾追加 `"dsh-our-free-model"`
 
 > **不要**再往 `cordis.patch.yml` 里加条目。被 `dsh.profile.bundles` 引用的包，它自带的
@@ -436,7 +436,7 @@ Tauri 通知通道存在，纯浏览器路径可用，被拒时设置页如实�
 - **升级与热重载的信任边界**：应用内升级的信任根自 v1.3.2 起是插件内 pin 的 Ed25519 公钥，而不是"HTTPS 到仓库"——清单必须带发布私钥的签名才可安装，镜像（含 jsDelivr）被投毒只会导致升级失败而不是代码被执行。能拿到**发布私钥**的人能推送任意代码，这与"能推送仓库的人"在信任模型上等同，但把"仓库账号被接管"从直接 RCE 降级成了"所有用户升级失败"。文件层面的完整性由签名+SHA-256 清单双重保障，代码层面的安全由客户端的白名单 HTML 渲染器与宿主的插件隔离承担。
 - **DSHEAC AIO 的 WebView2 权限策略可能拒绝通知授权**（本机实测 `denied`）。被拒时公告中心的开关会如实提示；纯浏览器访问 dsh web 不受影响。
 - **转发端口不是"必须抢到 18899"**。端口被占时监听顺延到下一个可用端口，并把实际端口写回设置（设置页给出提示）。这是有意的：宁可换端口，也不让本地转发静默停摆；占用者是谁由操作系统的错误码决定，插件只如实转述它。
-- **插件接口的鉴权取决于 composition**：挂了 connection 服务的 composition（dsh web、AIO 桌面端）下与内核 `/api` 同级（需要应用自己的 cookie/token）；没有 connection 服务的极简 composition 退回到结构化围栏（loopback + 同源检查），本机其它进程仍可访问——与内核在同类 composition 下的行为一致。
+- **插件接口的鉴权取决于 composition**：挂了 connection 服务的 composition（dsh web、AIO 桌面端）下与内核 `/api` 同级（需要应用自己的 cookie/token）；没有 connection 服务的极简 composition 退回到结构化围栏（loopback + 同源检查），本机其它进程仍可访问——与内核在同类 composition 下的行为一致。**这条同样适用于 `/forward/key` 与 `/forward/lan/key`**：在这类 composition 下，本机任意进程一条请求就能取走转发 Key 和局域网 Key，再从别的机器花掉本机的免费额度。使用这类 composition 时，这两把 Key 应当视作本机进程可读的文件（与 `settings.json` 同一信任级），需要更强隔离就在部署时挂上 connection 服务。
 
 ## 开发
 
@@ -523,7 +523,7 @@ npm run typecheck                 # tsc --noEmit，严格检查 adapter/ 接缝�
 - 插件的 HTTP 路由带**请求信任围栏**（v1.1 起修复）：插件的 `/api/our-free-model` 前缀在 webServer 的最长前缀分发下优先于内核 `/api`，曾绕过内核鉴权。现在每个请求先走 composition 的 `connection` 服务准入（与内核 `/api` 完全同级的 cookie/token 校验）；connection 缺席的 composition 退回结构化围栏——loopback Host、拒绝跨站 `sec-fetch-site`、`Origin`/`Referer` 必须与 Host 同源同端口，**Host 缺失或为空也拒**（fail closed，不退回 socket 本地地址）。实测：异源 Host/Origin 403，无 cookie 回环请求 401。`connection` 是逐请求取的，因为浏览器半身要到插件加载之后才把它 provide 出来——快照式地在 apply 时读一次，围栏会整轮进程退化成结构化那一层（本轮把这条读取改回快照，picker-test 的 401 断言当场变红）。
 - **公告 HTML 在客户端经严格白名单渲染**：`scripts/sanitize-test.mjs` 用 XSS 语料（脚本注入、事件属性、`javascript:`/`data:` URL、iframe/svg/form、样式注入、畸形标签）验证全部丢弃；不经过任何 `innerHTML` sink。公告源的 `feedUrl` 可被用户改指向任意 URL，因此渲染器按不可信输入对待。
 - **应用内升级的完整性链（v1.3.2 加签）**：清单 Ed25519 签名验证（公钥 pin 在 `src/updater.js`，无签名/验签失败的清单直接拒绝，未签名镜像不会被安装）→ 清单校验（semver、路径逃逸、哈希格式、`base` 必须是清单相对路径）→ 下载逐文件 SHA-256 + 字节数 → staging 回读校验 → 安装后回读校验 → 任一步失败恢复备份；安装前强制重新拉取清单，杜绝陈旧清单。文件与代码边界见[已知边界](#已知边界)。
-- **更新通道与 `feedUrl` 彻底解耦**（v1.3.2）：`feedUrl` 只重定向公告 feed，永远不再重定向升级清单——此前一个设置项就能把升级源指到任意服务器并配上自配平的哈希，等价于把"改一个设置值"升级成"在宿主进程里执行任意代码"。公告 override 本身也收紧为仅 https（回环 http 除外，本机镜像与测试仍可用）且不得内嵌凭据。
+- **更新通道与 `feedUrl` 彻底解耦**（v1.3.2）：`feedUrl` 只重定向公告 feed，永远不再重定向升级清单——此前一个设置项就能把升级源指到任意服务器并配上自配平的哈希，等价于把"改一个设置值"升级成"在宿主进程里执行任意代码"。公告 override 本身也收紧为仅 https（回环 http 除外，本机镜像与测试仍可用）且不得内嵌凭据。**目标域不受限**：任何 https 地址都可以作为 `feedUrl`，插件按 `feedPollMinutes` 的间隔轮询它——因此在没有 connection 服务的 composition 里（见上面的鉴权说明），能改设置的本机调用者可以让进程持续请求任意外部地址。这与插件的其余外联一样按"设置即信任"对待：能改 `settings.json` 的人本来就能装代码。
 - **转发监听只绑回环地址，且按解析结果绑定**（v1.3.2）：`localhost` 这类主机名先经 `dns.lookup` 解析、全部结果都是回环才放行，绑定用解析出的 IP——hosts 文件或企业 DNS 把 `localhost` 指到可路由接口时，校验与监听不再各说各话。
 - 卸载只需移除 bundle 条目，插件不留任何补丁；它的数据目录是纯 JSON，可直接删除。
 
