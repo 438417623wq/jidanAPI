@@ -2,9 +2,9 @@
   "subject": {
     "id": "dev.zouyuxuan122.dsh-our-free-model",
     "name": "dsh-our-free-model",
-    "version": "1.4.1",
+    "version": "1.4.2",
     "sourceRepository": "https://github.com/zouyuxuan122/dsh-our-free-model",
-    "sourceRevision": "98a4c159ddea00b853ff874f7c2056d8e50202f4"
+    "sourceRevision": "e50356ad705823a671cf43a88eba8e2f94f91040"
   },
   "license": {
     "spdx": "MIT",
