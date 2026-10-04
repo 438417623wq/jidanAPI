@@ -37,7 +37,7 @@
  *   PORT                 default 17788
  *   RATE_LIMIT_PER_MINUTE  per-IP fixed-window limit, default 60, 0 = off
  *   RATE_LIMIT_PER_DAY   per-IP per-day cap, default 1000, 0 = off
- *   CONCURRENCY_PER_IP   per-IP in-flight chat turns, default 20, 0 = off
+ *   CONCURRENCY_PER_IP   per-IP in-flight chat turns, default 5, 0 = off
  *   ADMIN_TOKEN          token for the /stats dashboard; unset = dashboard off
  *   STATS_PATH           stats file, default ./stats.json next to this script
  *   MOUNT_PREFIX         optional sub-path mount (e.g. "/eac" serving the lane
@@ -264,7 +264,7 @@ export function createGatewayServer(hostEnv = {}) {
   const maxBody = Number.parseInt(env.MAX_BODY_BYTES ?? '8388608', 10) || 8388608
   const perMinute = Number.parseInt(env.RATE_LIMIT_PER_MINUTE ?? '60', 10)
   const perDay = Number.parseInt(env.RATE_LIMIT_PER_DAY ?? '1000', 10)
-  const concLimit = Number.parseInt(env.CONCURRENCY_PER_IP ?? '20', 10)
+  const concLimit = Number.parseInt(env.CONCURRENCY_PER_IP ?? '5', 10)
   const adminToken = String(env.ADMIN_TOKEN ?? '')
   const preludeSeconds = (() => { const n = Number.parseInt(env.SSE_PRELUDE_SECONDS ?? '15', 10); return Number.isFinite(n) ? n : 15 })()
   const prefix = String(env.MOUNT_PREFIX ?? '').replace(/\/+$/, '')

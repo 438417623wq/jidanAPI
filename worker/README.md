@@ -23,7 +23,7 @@ x-ofm-signature: hex(HMAC-SHA256(secret, "<ts>\n<METHOD>\n<path>\n<hex(sha256(bo
 
 自建部署（方式零）的网关自带三层自防滥用，全部在 `.env` 配置：
 
-- `CONCURRENCY_PER_IP=20` —— 单 IP 并发上限（只对对话转发计数，超限 429）；
+- `CONCURRENCY_PER_IP=5` —— 单 IP 并发上限（只对对话转发计数，超限 429）。默认 5：一条 LLM 流会占住一个上游连接几十秒到几分钟，免费中继撑不住大户并发冲顶，20 的旧默认让单 IP 就能打满上游连接池、拖垮整机（连面板都登不进去的现场就是它）；
 - `RATE_LIMIT_PER_MINUTE=60` / `RATE_LIMIT_PER_DAY=1000` —— 单 IP 频率与日额度；
 - `ADMIN_TOKEN=<随机串>` —— 管理看板令牌。设置后浏览器打开 `https://<网关域名>/eac/stats?t=<ADMIN_TOKEN>`：请求热力图（星期×小时）、72 小时请求曲线、按 IP 与按模型的 Token 消耗扇形图、每 IP 明细表（请求数、频率、Token、拒绝数、并发峰值）。看板 30 秒自动刷新，统计数据落盘 `stats.json`（重启不丢），IP 以盐值哈希存储、非可逆。
 

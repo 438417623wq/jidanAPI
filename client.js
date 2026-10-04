@@ -579,7 +579,14 @@ window.__ModuleLoader__.load({
 `
 
     // ── helpers ───────────────────────────────────────────────────────────────
-    const API = '/api/our-free-model'
+    // 用页面 base 解析，而不是 origin-absolute 的「/api/...」：DSH 挂在反向代理
+    // 子路径下（https://<host>/<prefix>/）时，前导斜杠会把 <prefix> 丢掉，请求
+    // 直接打到站点根被前置网关 404，设置面板报「无法连接插件后端」（#54）。
+    // 相对路径随页面 base 走，根路径部署下与原值完全一致。解析不了（无 document
+    // 的宿主、非常规 base）就退回根路径原值——行为不比修复前差。
+    const API = (() => {
+      try { return new URL('api/our-free-model', document.baseURI).pathname } catch { return '/api/our-free-model' }
+    })()
     const SEASON = ['#4C8DFF', '#3ECFA0', '#F2A65A', '#E36AA6', '#8B7BF0', '#39B8C4', '#D9743E', '#7BB24A']
 
     async function api(path, options) {

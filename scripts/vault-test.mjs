@@ -49,7 +49,7 @@ process.env.OUR_FREE_MODEL_BASE ??= 'http://127.0.0.1:9'
 const { detectSealedHost, unlockSealedLane, openSeal, openSealWith, deriveSealKey, SEAL_AAD, IV_BYTES, TAG_BYTES } = await import('../src/vault.js')
 const { buildEacCatalog, eacDisplayName, isEacEntry, EAC_CHANNEL } = await import('../src/catalog.js')
 const { FreeModelAdapter } = await import('../src/adapter.js')
-const { signSealedRequest, fetchSealedListing, postSealedStreamed } = await import('../src/eac.js')
+const { signSealedRequest, fetchSealedListing, postSealedStreamed, lane } = await import('../src/eac.js')
 const gateway = await import('../worker/worker.js')
 const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-node.mjs')
 
@@ -682,6 +682,10 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
       process.argv.push('web-desktop')
     }
     globalThis.fetch = stubbedFetch
+    // The sealed lane no longer reads the global fetch (its signed bodies must
+    // survive fetch-swap plugins, issue #50); point the lane's seam at the same
+    // stub so this boot block stays network-free.
+    lane.fetch = stubbedFetch
     const routes = []
     const ctx = fakeContext({ inject, mounted: ['llm', 'webServer', 'attachments'], onRegister: route => routes.push(route) })
     apply(ctx, configOf())
@@ -697,6 +701,7 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
         process.execPath = previousExecPath
         process.env.DSH_HOME = previousHome
         globalThis.fetch = realFetch
+        lane.fetch = null
         for (const disposer of ctx.__disposers.reverse()) {
           try { disposer() } catch { /* teardown best effort */ }
         }
@@ -707,6 +712,7 @@ const { createGatewayServer, resetAnalytics } = await import('../worker/gateway-
       process.execPath = previousExecPath
       process.env.DSH_HOME = previousHome
       globalThis.fetch = realFetch
+      lane.fetch = null
       for (const disposer of ctx.__disposers.reverse()) {
         try { disposer() } catch { /* teardown best effort */ }
       }

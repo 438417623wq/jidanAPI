@@ -58,6 +58,25 @@ export function recoveryMessages(messages, checkpoint) {
   return [...messages, { role: 'user', content: [{ type: 'text', text: instruction }] }]
 }
 
+/**
+ * A turn whose answer text hit the output ceiling (finish `length`) was cut
+ * mid-answer, not faulted: the harness shows "send 继续 to resume" and the user
+ * has to do it by hand (issue #28). Feed the partial answer back as an
+ * assistant turn and ask for exactly one continuation with the remaining
+ * budget. No checkpoint injection — the draft is already valid assistant
+ * output, and the wire's own history carries it.
+ */
+export function continuationMessages(messages, partialAnswer) {
+  const trimmed = typeof partialAnswer === 'string' ? partialAnswer.trim() : ''
+  const history = trimmed === '' ? messages : [...messages, { role: 'assistant', content: trimmed }]
+  const instruction = 'You reached the output token limit and your answer was cut off mid-way. '
+    + 'Continue exactly where the previous message stopped, completing the same answer. '
+    + 'Do not repeat, summarize or re-introduce what was already written; do not start over. '
+    + 'Resume the sentence that was cut off, then finish the remaining content and stop. '
+    + 'Do not call tools for this continuation.'
+  return [...history, { role: 'user', content: [{ type: 'text', text: instruction }] }]
+}
+
 /** 文本字节只作保守余量检查，不宣称是模型 tokenizer 的精确计数。 */
 export function checkpointFits(payload, entry, checkpoint, outputBudget) {
   const context = entry.contextWindow

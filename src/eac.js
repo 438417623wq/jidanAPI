@@ -22,10 +22,76 @@
  */
 
 import crypto from 'node:crypto'
+import https from 'node:https'
+import http from 'node:http'
+import { Readable } from 'node:stream'
+// Web-stream adapter: http.js's readHead/readSse speak getReader(), so the
+// node:http response is converted into a proper WHATWG ReadableStream.
+import { ReadableStream } from 'node:stream/web'
 import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody } from './http.js'
 
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
+
+/**
+ * Test seam: the offline suite drives this lane through a fetch-shaped stub
+ * (it must not reach the network). Production code never touches it — the
+ * whole point of laneFetch is that nothing else in the process can intercept
+ * the signed bytes. Assignment is module-private by convention, exactly like
+ * the free lane's upstream override.
+ */
+export const lane = { fetch: null }
+
+/**
+ * The lane's own poster over `node:http`/`node:https`, not the global fetch.
+ * The signature covers sha256(body), so the body must reach the gateway
+ * byte-for-byte as signed. Local proxy plugins (billion-context et al.) work
+ * by replacing `globalThis.fetch` and re-serializing the request body on the
+ * way out; a re-serialized body breaks the HMAC even though the credential is
+ * perfectly valid, and the gateway answers `request signature rejected`
+ * (issue #50). The core `node:https` module cannot be swapped by another
+ * plugin, so the signed bytes leave this process untouched.
+ *
+ * Returns a Response-shaped object ({ ok, status, headers: { get }, body,
+ * text() }) — just the surface the posters below consume, so the rest of the
+ * lane keeps reading like the free lane's fetch-based flow. The body is a
+ * WHATWG ReadableStream over the response chunks (via Readable.toWeb), which
+ * is what http.js's readHead/readSse consume; nothing is buffered before the
+ * sniff window, so first tokens still flow out unheld.
+ */
+function laneFetch(url, { method = 'GET', headers = {}, body = undefined, signal } = {}) {
+  if (typeof lane.fetch === 'function') return lane.fetch(url, { method, headers, body, signal })
+  return new Promise((resolve, reject) => {
+    const target = new URL(url)
+    const transport = target.protocol === 'http:' ? http : https
+    const request = transport.request({
+      protocol: target.protocol,
+      hostname: target.hostname,
+      port: target.port || (target.protocol === 'http:' ? 80 : 443),
+      path: target.pathname + target.search,
+      method,
+      headers: body !== undefined ? { ...headers, 'content-length': Buffer.byteLength(body, 'utf8') } : headers,
+    }, response => {
+      resolve({
+        ok: response.statusCode >= 200 && response.statusCode < 300,
+        status: response.statusCode,
+        headers: { get: name => response.headers[String(name).toLowerCase()] ?? null },
+        body: Readable.toWeb(response),
+        async text() {
+          const chunks = []
+          for await (const chunk of response) chunks.push(Buffer.from(chunk))
+          return Buffer.concat(chunks).toString('utf8')
+        },
+      })
+    })
+    request.on('error', reject)
+    const abort = () => request.destroy(new Error('The operation was aborted'))
+    signal?.addEventListener('abort', abort, { once: true })
+    request.on('close', () => signal?.removeEventListener?.('abort', abort))
+    if (body !== undefined) request.write(body, 'utf8')
+    request.end()
+  })
+}
 
 /**
  * The signing headers for one gateway request. Exported for the offline suite,
@@ -80,7 +146,7 @@ export async function fetchSealedListing(credential, { signal, timeoutMs = LISTI
   signal?.addEventListener('abort', onCallerAbort, { once: true })
   const listingUrl = `${credential.base}/models`
   try {
-    const response = await fetch(listingUrl, { headers: headersFor(credential, 'GET', listingUrl, ''), redirect: 'error', signal: controller.signal })
+    const response = await laneFetch(listingUrl, { headers: headersFor(credential, 'GET', listingUrl, ''), redirect: 'error', signal: controller.signal })
     const text = await response.text()
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: errorPageMessage(text, response.status) } } }
@@ -110,7 +176,7 @@ export async function postSealedStreamed({ credential, body, signal, onData, tim
   const turnUrl = `${credential.base}/chat/completions`
   let response
   try {
-    response = await fetch(turnUrl, {
+    response = await laneFetch(turnUrl, {
       method: 'POST',
       headers: headersFor(credential, 'POST', turnUrl, bodyText),
       body: bodyText,
