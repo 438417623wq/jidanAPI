@@ -33,9 +33,14 @@
  *
  * Security notes that the settings route relies on:
  *
- *   - The relay binds `127.0.0.1` on an ephemeral port only; it answers
- *     requests carrying `x-ofm-egress-target` and refuses anything whose target
- *     is not an absolute http(s) URL. Nothing else in the process rewrites.
+ *   - The relay binds `127.0.0.1` on an ephemeral port and is deliberately not
+ *     an open proxy: every start mints a random key, `egressFetch` presents it,
+ *     and any other caller — a neighbouring local process, a rebound page — is
+ *     refused before a single dial. A keyed caller still needs an absolute
+ *     http(s) target, and nothing else in the process rewrites.
+ *   - The managed mihomo's mixed port is passworded (`authentication`) with a
+ *     per-start credential the plugin is the only holder of, so the outlet
+ *     cannot be borrowed by another process on this machine.
  *   - The subscription URL is a bearer credential: it is written to the mihomo
  *     config file (mode 0600-ish, inside the plugin's own data dir), never
  *     logged, and surfaced to the settings page as a hostname only.
@@ -48,7 +53,7 @@ import net from 'node:net'
 import tls from 'node:tls'
 import http from 'node:http'
 import path from 'node:path'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, timingSafeEqual } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
 import { spawn } from 'node:child_process'
 
@@ -56,6 +61,11 @@ import { spawn } from 'node:child_process'
 const RELAY_HOST = '127.0.0.1'
 /** Carries the absolute target URL from `egressFetch` to the relay. */
 const TARGET_HEADER = 'x-ofm-egress-target'
+/** Carries this start's relay key. Every listen mints one, `egressFetch` is the
+ *  only thing that learns it, and a request without it is not the plugin — it
+ *  is refused before a single dial, so the loopback port is nobody's open
+ *  proxy. Never forwarded upstream: the relay strips it like the target. */
+const KEY_HEADER = 'x-ofm-egress-key'
 /** One dial (connect, CONNECT response, socks5 handshake, TLS) gets this long. */
 const DIAL_TIMEOUT_MS = 10_000
 /** A freshly spawned mihomo gets this long to open its mixed port. */
@@ -86,9 +96,9 @@ export function egressActive() {
  * `fetch`, through the outlet when one is running and straight out when not.
  *
  * The rewrite is deliberately boring: same method, same body, same signal, plus
- * the target in a header and the path replaced by the origin-form the loopback
- * relay serves. Call sites keep `redirect: 'error'` in `init`, so a 3xx is a
- * response, never a second hop that would dodge the outlet.
+ * the target and this start's key in headers, and the path replaced by the
+ * origin-form the loopback relay serves. Call sites keep `redirect: 'error'` in
+ * `init`, so a 3xx is a response, never a second hop that would dodge the outlet.
  */
 export async function egressFetch(url, init) {
   const relay = activeRelay
@@ -99,6 +109,7 @@ export async function egressFetch(url, init) {
   }
   const headers = new Headers(init?.headers ?? {})
   headers.set(TARGET_HEADER, target.href)
+  headers.set(KEY_HEADER, relay.key)
   return fetch(`http://${RELAY_HOST}:${relay.port}${target.pathname}${target.search}`, { ...init, headers })
 }
 
@@ -115,6 +126,9 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
   const mode = cfg.mode === 'client' ? 'client' : 'subscription'
   const url = String(cfg.url ?? '').trim()
   if (url === '') throw new Error('the egress outlet is enabled but empty — paste a proxy address or a subscription link')
+  // Minted per start, not per process: a key that leaked from a previous relay
+  // must not open this one. Lives in the handle only, and is never written down.
+  const key = randomBytes(16).toString('hex')
   let child = null
   let managed = null
   let outlet
@@ -131,12 +145,18 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
     const mixedPort = await freePort()
     const apiPort = await freePort()
     const secret = randomBytes(16).toString('hex')
+    // The mixed port is passworded for the same reason the relay is keyed: an
+    // outlet any local process can borrow is an outlet that will be borrowed.
+    // Only this module's dialer ever learns this credential — it rides in the
+    // outlet URL below, never in the rendered config the user can read.
+    const outletAuth = `ofm:${randomBytes(12).toString('hex')}`
     const configPath = path.join(dir, 'mihomo.yaml')
     fs.writeFileSync(configPath, renderMihomoConfig({
       subscription: url,
       mixedPort,
       apiPort,
       secret,
+      auth: outletAuth,
       logFile: path.join(dir, 'mihomo.log'),
     }), { mode: 0o600 })
     child = spawn(binary, ['-d', dir, '-f', configPath], { windowsHide: true, stdio: 'ignore' })
@@ -148,12 +168,20 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
     // "the mixed port answers", not "the subscription parsed" — a bad link
     // still opens the port and then reports zero nodes through the API, which
     // the first health-check surfaces as a dead group rather than a hang here.
-    await waitForPort(RELAY_HOST, mixedPort, READY_TIMEOUT_MS, () => {
-      if (spawnError !== null) throw new Error(`mihomo could not start (${spawnError.message})`)
-      if (exited !== null) throw new Error(`${exited} — see ${path.join(dir, 'mihomo.log')}`)
-    })
+    try {
+      await waitForPort(RELAY_HOST, mixedPort, READY_TIMEOUT_MS, () => {
+        if (spawnError !== null) throw new Error(`mihomo could not start (${spawnError.message})`)
+        if (exited !== null) throw new Error(`${exited} — see ${path.join(dir, 'mihomo.log')}`)
+      })
+    } catch (error) {
+      // Nothing owns this child yet — the handle that would kill it is not built
+      // until the listener is up — so a start that fails here has to reap it
+      // itself, or a wedged mihomo outlives the attempt holding the mixed port.
+      await killChild(child)
+      throw error
+    }
     log(`managed mihomo on ${RELAY_HOST}:${mixedPort} (controller ${RELAY_HOST}:${apiPort})`)
-    outlet = { kind: 'url', url: new URL(`http://${RELAY_HOST}:${mixedPort}`) }
+    outlet = { kind: 'url', url: new URL(`http://${outletAuth}@${RELAY_HOST}:${mixedPort}`) }
     managed = { mixedPort, apiPort, secret, dir }
   }
 
@@ -170,6 +198,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
   const port = server.address().port
   const handle = {
     port,
+    key,
     mode,
     url,
     outlet,
@@ -182,15 +211,7 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
       if (activeRelay === handle) activeRelay = null
       for (const socket of sockets) socket.destroy()
       await new Promise(resolve => server.close(resolve))
-      if (child !== null && child.exitCode === null && child.signalCode === null) {
-        child.removeAllListeners('exit')
-        child.kill()
-        await new Promise(resolve => {
-          const timer = setTimeout(resolve, 3_000)
-          child.once('exit', () => { clearTimeout(timer); resolve() })
-        })
-        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
-      }
+      await killChild(child)
     },
   }
   if (child !== null) {
@@ -214,6 +235,16 @@ export async function startEgressRelay({ config, dataDir, log = () => {} }) {
  * beyond Node's own flow control, so a streaming turn keeps its chunk cadence.
  */
 function relayRequest(req, res) {
+  const key = String(req.headers[KEY_HEADER] ?? '')
+  delete req.headers[KEY_HEADER]
+  if (!sameSecret(key, activeRelay?.key ?? '')) {
+    // Not the plugin: a neighbouring local process, a page that guessed the
+    // port, a fetch left over from a previous generation. Refused before any
+    // dial happens, and the caller learns nothing about the outlet.
+    activeRelay?.log?.('relay: refused a caller without this start’s key')
+    sendLocal(res, 403, 'the egress relay answers its own plugin only')
+    return
+  }
   const targetHeader = req.headers[TARGET_HEADER]
   delete req.headers[TARGET_HEADER]
   let upstream
@@ -554,6 +585,31 @@ async function waitForPort(host, port, timeoutMs, check) {
 }
 
 /**
+ * Stop a spawned outlet child: ask nicely, then insist. Shared by `close()` and
+ * by a failed start — a mihomo that never opened its port still holds it, and
+ * once the attempt has given up nothing else can reach that child.
+ */
+async function killChild(proc) {
+  if (proc === null || proc.exitCode !== null || proc.signalCode !== null) return
+  proc.removeAllListeners('exit')
+  try { proc.kill() } catch { /* already gone */ }
+  await new Promise(resolve => {
+    const timer = setTimeout(resolve, 3_000)
+    proc.once('exit', () => { clearTimeout(timer); resolve() })
+  })
+  if (proc.exitCode === null && proc.signalCode === null) {
+    try { proc.kill('SIGKILL') } catch { /* already gone */ }
+  }
+}
+
+/** Constant-time relay-key comparison; the length check keeps `timingSafeEqual` from throwing. */
+function sameSecret(given, expected) {
+  const a = Buffer.from(String(given ?? ''))
+  const b = Buffer.from(String(expected ?? ''))
+  return a.length >= 16 && a.length === b.length && timingSafeEqual(a, b)
+}
+
+/**
  * The mihomo configuration this plugin runs: subscription as a proxy-provider,
  * a url-test group that re-measures on an interval, and MATCH routed through
  * it — so every connection the plugin makes leaves via the freshest
@@ -563,8 +619,12 @@ async function waitForPort(host, port, timeoutMs, check) {
  * gstatic's `generate_204`, so a 429 (or any error page) marks the node dead
  * and url-test excludes it. That is the 429-penalty half of the health score,
  * delegated to the component that already measures every node anyway.
+ *
+ * `auth` (when the caller supplies one) password-protects the mixed port, the
+ * same way the relay key protects the loopback port in front of it: a listener
+ * every local process can borrow is a listener that will be borrowed.
  */
-export function renderMihomoConfig({ subscription, mixedPort, apiPort, secret, logFile }) {
+export function renderMihomoConfig({ subscription, mixedPort, apiPort, secret, auth, logFile }) {
   return [
     '# Managed by dsh-our-free-model. Edits are overwritten on the next sync.',
     `mixed-port: ${mixedPort}`,
@@ -572,6 +632,10 @@ export function renderMihomoConfig({ subscription, mixedPort, apiPort, secret, l
     // LAN exposure, no system proxy and no TUN — only `egressFetch` reroutes.
     'bind-address: 127.0.0.1',
     'allow-lan: false',
+    ...(auth === undefined ? [] : [
+      'authentication:',
+      `  - ${JSON.stringify(auth)}`,
+    ]),
     'mode: rule',
     'log-level: warning',
     ...(logFile === undefined ? [] : [`log-file: ${JSON.stringify(logFile)}`]),

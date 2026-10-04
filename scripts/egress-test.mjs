@@ -167,10 +167,17 @@ async function startFakeSocks5({ requireAuth }) {
   return { port, server }
 }
 
-/** A fake HTTP proxy: answers CONNECT, then splices. */
-async function startFakeConnect() {
+/** A fake HTTP proxy: answers CONNECT, then splices. With `requireAuth` it
+ *  demands the Basic credential the outlet URL carries — the same demand the
+ *  managed mihomo mixed port now makes. */
+async function startFakeConnect({ requireAuth = null } = {}) {
   const server = http.createServer((req, res) => { res.writeHead(405); res.end() })
   server.on('connect', (req, socket, head) => {
+    server.lastAuth = req.headers['proxy-authorization'] ?? ''
+    if (requireAuth !== null && server.lastAuth !== `Basic ${Buffer.from(requireAuth).toString('base64')}`) {
+      socket.end('HTTP/1.1 407 Proxy Authentication Required\r\nproxy-authenticate: Basic realm="ofm"\r\n\r\n')
+      return
+    }
     const [host, port] = req.url.split(':')
     const upstream = net.connect({ host, port: Number(port) })
     upstream.on('connect', () => {
@@ -181,7 +188,8 @@ async function startFakeConnect() {
     })
     upstream.on('error', () => socket.destroy())
   })
-  return listen(server, '127.0.0.1')
+  const port = await listen(server, '127.0.0.1')
+  return { port, server }
 }
 
 let stage = 'boot'
@@ -209,6 +217,13 @@ async function main() {
   check(yaml.includes('bind-address: 127.0.0.1'), 'listener is bound to loopback')
   check(yaml.includes('allow-lan: false'), 'lan access stays off')
   check(!yaml.includes('tun:') && !yaml.includes('enable: true\n  auto-detect'), 'no tun section, no system-proxy takeover')
+  // The mixed port is only for this plugin's own dialer, so it must demand a
+  // credential — but only when the caller supplied one: the renderer never
+  // invents a password the module could not then use to dial.
+  check(!yaml.includes('authentication:'), 'no authentication block unless the caller supplies a credential')
+  const keyed = renderMihomoConfig({ subscription: 'https://example.com/s/tok', mixedPort: 33001, apiPort: 33002, secret: 'shh', auth: 'ofm:s3cret', logFile: 'C:/x/m.log' })
+  check(keyed.includes('authentication:\n  - "ofm:s3cret"'), 'a supplied credential reaches the config')
+  check(keyed.indexOf('authentication:') < keyed.indexOf('proxy-providers:'), 'the credential is a top-level key, not nested under a provider')
 
   stage = 'validation'
   // 3 — locator and validation failures are immediate, actionable errors.
@@ -262,6 +277,7 @@ async function main() {
   check(echoJson.body === '{"model":"free"}' && echoJson.headers?.['content-type'] === 'application/json', 'body and headers cross the relay')
   check(echoJson.headers?.authorization === 'Bearer sk-test', 'authorization header is forwarded verbatim')
   check(echoJson.headers?.['x-ofm-egress-target'] === undefined, 'the target header stops at the relay')
+  check(echoJson.headers?.['x-ofm-egress-key'] === undefined, 'the relay key stops at the relay too')
   check(socks5a.server.lastTarget.host === '127.0.0.1' && socks5a.server.lastTarget.port === targetPort, 'socks5 dialed the real target')
 
   // 5 — 429 and its retry-after are responses, not errors.
@@ -282,12 +298,26 @@ async function main() {
   check(decoder.decode(second.value) === 'B', 'second stream chunk follows')
   check(gap >= 80, `chunks keep their cadence through the relay (gap ${gap}ms >= 80ms)`)
   await reader.cancel().catch(() => {})
-  // 7 — a loopback request without the target header is refused, not proxied.
-  // Checked while the relay is still up: undici pools connections per origin,
-  // so a raw fetch at a just-closed port would hit a stale pooled socket.
+  // 7 — a loopback caller that is not this plugin never reaches a dial: no key
+  // (a neighbouring process, a page that guessed the port) is a 403, a wrong
+  // key is a 403, and a key holder that forgot the target is a 400. All checked
+  // while the relay is still up: undici pools connections per origin, so a raw
+  // fetch at a just-closed port would hit a stale pooled socket.
   stage = 'bare fetch'
   const bare = await fetch(`http://127.0.0.1:${relay.port}/anything`)
-  check(bare.status === 400, 'relay refuses requests without a target header')
+  check(bare.status === 403, 'relay refuses a caller without this start’s key')
+  const shortKey = await fetch(`http://127.0.0.1:${relay.port}/anything`, {
+    headers: { 'x-ofm-egress-key': 'f', 'x-ofm-egress-target': `${base}/stolen` },
+  })
+  check(shortKey.status === 403, 'a short key is refused, not compared')
+  const wrongKey = await fetch(`http://127.0.0.1:${relay.port}/anything`, {
+    headers: { 'x-ofm-egress-key': 'f'.repeat(32), 'x-ofm-egress-target': `${base}/stolen` },
+  })
+  check(wrongKey.status === 403, 'a wrong key is refused even with a target')
+  const targetless = await fetch(`http://127.0.0.1:${relay.port}/anything`, {
+    headers: { 'x-ofm-egress-key': relay.key },
+  })
+  check(targetless.status === 400, 'a keyed request without a target is still refused')
   stage = 'socks5-auth close'
   await relay.close()
   check(egressActive() === false, 'close deactivates the relay')
@@ -303,14 +333,24 @@ async function main() {
   stage = 'socks5h close'
   await relay.close()
 
-  // 9 — HTTP CONNECT outlet.
+  // 9 — HTTP CONNECT outlet, passworded: the credential in the outlet URL has
+  // to reach the proxy as Basic auth, and the same proxy has to refuse an
+  // outlet that has none (which is why the managed port is passworded at all).
   stage = 'connect start'
-  const connectPort = await startFakeConnect()
-  relay = await startEgressRelay({ config: () => ({ mode: 'client', url: `http://127.0.0.1:${connectPort}` }), dataDir, log: message => console.log('[relay9]', message) })
+  const connectProxy = await startFakeConnect({ requireAuth: 'ofm:s3cret' })
+  relay = await startEgressRelay({ config: () => ({ mode: 'client', url: `http://ofm:s3cret@127.0.0.1:${connectProxy.port}` }), dataDir, log: message => console.log('[relay9]', message) })
   stage = 'connect fetch'
   const viaConnect = await egressFetch(`${base}/connect-ok`, { method: 'PUT', body: 'payload' })
   const connectJson = await viaConnect.json()
   check(viaConnect.status === 200 && connectJson.method === 'PUT' && connectJson.body === 'payload', 'HTTP CONNECT outlet carries the request')
+  check(connectProxy.server.lastAuth === `Basic ${Buffer.from('ofm:s3cret').toString('base64')}`, 'outlet userinfo is dialed as Basic auth')
+  const credentialless = await startEgressRelay({ config: () => ({ mode: 'client', url: `http://127.0.0.1:${connectProxy.port}` }), dataDir, log: () => {} })
+  const refused = await egressFetch(`${base}/connect-no-auth`).catch(error => error)
+  const refusedStatus = refused instanceof Response ? refused.status : 0
+  const refusedBody = refused instanceof Response ? await refused.text() : String(refused?.message ?? refused)
+  check(refusedStatus === 502 && refusedBody.includes('407'), `the same proxy refuses a credentialless outlet (${refusedStatus}: ${refusedBody.slice(0, 120)})`)
+  check(connectProxy.server.lastAuth === '', 'the credentialless dial presented no credentials')
+  await credentialless.close()
   await relay.close()
 
   // 10 — subscription mode with an explicit bad binary path fails before spawn.
