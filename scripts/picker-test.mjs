@@ -224,6 +224,14 @@ function readSettings() {
   return [row.probeIntervalMinutes, row.feedPollMinutes, row.defaultMaxTokens]
 }
 
+// The ack version rides a query string with no length limit of its own and lands
+// in settings.json beside every other setting; nothing downstream ever compares
+// more than a version id, so the write is capped on the way in rather than
+// letting a caller pick the file's shape.
+await callRoute(api(), 'POST', `/api/our-free-model/announcement/ack?version=${'v'.repeat(4096)}`)
+const ackedVersion = JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).announcementAck
+check('an oversized ack version is capped before it reaches disk', typeof ackedVersion === 'string' && ackedVersion.length <= 64, true)
+
 // The forward listener spends this machine's free lane, so it binds loopback and
 // nothing else: a routable address in the settings file would put the whole
 // subnet's traffic through the user's egress on the strength of one string.
@@ -238,6 +246,22 @@ const listed = await fetch(`http://127.0.0.1:${forwardPort}/v1/models`, {
   headers: { authorization: `Bearer ${JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).forwardKey}` },
 })
 check('and the listener answers its own model list', listed.status, 200)
+// The listing already hides a model the gateway names but will not route. The
+// request path has to apply the same gate: naming it in a body used to bypass
+// the picker's verdict and dial upstream for an answer the probe already knew.
+const unroutedProbes = () => stub.requests.filter(row => row.body?.model === 'jev-1.13-free').length
+const jevBefore = unroutedProbes()
+const unrouted = await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/completions`, {
+  method: 'POST',
+  headers: {
+    authorization: `Bearer ${JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8')).forwardKey}`,
+    'content-type': 'application/json',
+  },
+  body: JSON.stringify({ model: 'jev-1.13-free', messages: [{ role: 'user', content: 'hi' }] }),
+})
+check('the forward port refuses a model the picker hides', unrouted.status, 404)
+check('and says so in the answer', /not found/.test(await unrouted.text()), true)
+check('without dialling upstream for a verdict it already has', unroutedProbes(), jevBefore)
 await callRoute(api(), 'POST', '/api/our-free-model/settings', { forward: { enabled: false, host: '127.0.0.1', port: forwardPort } })
 
 // ── the fence as the mounted route actually applies it ───────────────────────

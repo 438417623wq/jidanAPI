@@ -238,10 +238,15 @@ export function apply(ctx, config) {
   /** A turn refused for geography means the egress moved; re-classify promptly. */
   let reprobeTimer
   function scheduleReprobe() {
-    if (reprobeTimer !== undefined) return
+    if (disposed || reprobeTimer !== undefined) return
     reprobeTimer = setTimeout(() => {
       reprobeTimer = undefined
-      void refreshAvailability(true).catch(() => {})
+      // Teardown clears this handle, but the trigger comes from a turn that can
+      // land the instant after `disposed` was set; a forced round against
+      // disposed stores would be swallowed whole and still spend the quota.
+      if (disposed) return
+      void refreshAvailability(true)
+        .catch(error => logger.warn?.(`our-free-model: region reprobe failed (${error?.message ?? error})`))
     }, 4000)
     reprobeTimer.unref?.()
   }
@@ -289,7 +294,30 @@ export function apply(ctx, config) {
   })
 
   // ── catalog + availability ──────────────────────────────────────────────────
-  async function refreshCatalog({ probe = true, force = false } = {}) {
+  // One round at a time, coalesced: the boot refresh, a model discovery, and
+  // the refresh button all arrive together at startup, and each used to fetch
+  // the listing and probe the lane on its own. A forced round covers every
+  // waiter; one that still needs forcing (a reprobe inside the 429 backoff,
+  // where an unforced round deliberately skips the probe) runs its own after
+  // the shared round rather than inheriting its softer options.
+  let catalogRefresh = null
+  let catalogRefreshForced = false
+  async function refreshCatalog(opts) {
+    const { probe = true, force = false } = opts ?? {}
+    while (catalogRefresh !== null) {
+      const shared = catalogRefresh
+      const sharedForced = catalogRefreshForced
+      const value = await shared
+      if (!force || sharedForced) return value
+    }
+    const run = refreshCatalogOnce({ probe, force })
+    catalogRefresh = run
+    catalogRefreshForced = force
+    try { return await run } finally {
+      if (catalogRefresh === run) { catalogRefresh = null; catalogRefreshForced = false }
+    }
+  }
+  async function refreshCatalogOnce({ probe, force }) {
     let ids = []
     try {
       ids = parseListing(await fetchListing())
@@ -554,7 +582,14 @@ export function apply(ctx, config) {
    * lives, and toggling the relay must not close and re-bind the local port
    * under a request that is already in flight on it.
    */
+  let relaySyncInFlight = null
   async function syncRelay() {
+    while (relaySyncInFlight !== null) await relaySyncInFlight.catch(() => {})
+    const run = syncRelayOnce()
+    relaySyncInFlight = run
+    try { await run } finally { if (relaySyncInFlight === run) relaySyncInFlight = null }
+  }
+  async function syncRelayOnce() {
     const desired = settings.get().forward ?? {}
     const lan = desired.lan ?? {}
     const wanted = lan.enabled === true
@@ -602,8 +637,11 @@ export function apply(ctx, config) {
       })
       relayError = ''
       // The port that was actually bound goes back into the settings, so the
-      // address the page shows is the address that answers.
-      settings.update({ forward: { ...desired, lan: { ...lan, port: relay.port } } })
+      // address the page shows is the address that answers. Out of the CURRENT
+      // settings — not the entry-time snapshot: an overlapped save during the
+      // bind would otherwise be rolled back to the values this run started with.
+      const settledForward = settings.get().forward ?? {}
+      settings.update({ forward: { ...settledForward, lan: { ...(settledForward.lan ?? {}), port: relay.port } } })
       settings.flush()
     } catch (error) {
       relayError = String(error?.message ?? error)
@@ -622,8 +660,10 @@ export function apply(ctx, config) {
     const entry = catalog.find(candidate => candidate.id === request.model)
     // OpenAI semantics: a model the roster does not carry is the caller's
     // mistake (404 model_not_found), not the gateway's — a 502 here read as
-    // "the plugin is broken" to every client that inspects the status.
-    if (entry === undefined) throw httpError(404, `model "${request.model}" not found`)
+    // "the plugin is broken" to every client that inspects the status. The same
+    // gate as `/v1/models` below: a model the picker hides for having no route
+    // must not become dialable just by naming it in a request body.
+    if (entry === undefined || !routableModelIds().has(entry.id)) throw httpError(404, `model "${request.model}" not found`)
     const openAi = request.openAi ?? {}
     const messages = fromOpenAiMessages(openAi, request.responses === true)
     // The caller's defs reach the adapter in the harness's own flat spelling,
@@ -663,9 +703,15 @@ export function apply(ctx, config) {
     return outcome
   }
 
-  function publicModelRows() {
+  /** What the picker selects and the forward port may dial — one definition, two surfaces. */
+  function routableModelIds() {
     const membership = new Set(state().membership[ROUTE_MAIN] ?? [])
     if (settings.get().exposeRegionModels !== false) for (const id of state().membership[ROUTE_REGION] ?? []) membership.add(id)
+    return membership
+  }
+
+  function publicModelRows() {
+    const membership = routableModelIds()
     return catalog
       .filter(entry => membership.has(entry.id))
       .map(entry => ({
@@ -935,9 +981,16 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     void (async () => {
       attributionUserAgent = await resolveAttributionUserAgent(logger)
+      if (disposed) return
       await refreshCatalog({ probe: true, force: true })
+      // Every await here is a chance for teardown to have run underneath this
+      // boot: a resumed refresh would start listeners the disposer already
+      // closed and force a probe round against stores it disposed.
+      if (disposed) return
       await syncForward()
+      if (disposed) return
       await syncRelay()
+      if (disposed) return
       syncWatcher()
       emitTopology()
       push.emit('hello', helloPayload())
@@ -976,24 +1029,27 @@ export function apply(ctx, config) {
    * boot, so a model that throttled, recovered, or moved behind the region gate
    * would keep the picker position it was first given.
    */
+  // `ms` may be a function: the period is re-read on every re-arm, so an
+  // interval changed on the settings page takes effect from the next cycle
+  // instead of echoing a number the running timer will never observe.
   function every(task, ms) {
+    const period = () => typeof ms === 'function' ? ms() : ms
     let handle = setTimeout(function tick() {
       if (disposed) return
       task()
-      handle = setTimeout(tick, ms)
+      handle = setTimeout(tick, period())
       handle.unref?.()
-    }, ms)
+    }, period())
     handle.unref?.()
     ctx.effect(() => () => clearTimeout(handle), 'our-free-model: interval')
   }
 
-  const feedMinutes = positiveOr(settings.get().feedPollMinutes, 30, 5)
   if (!managed) {
     every(() => {
       void feed.poll()
       const hours = settings.get().updateCheckHours ?? 6
       if (hours > 0) void updater.check().then(() => pushUpdate(false)).catch(() => {})
-    }, feedMinutes * 60_000)
+    }, () => positiveOr(settings.get().feedPollMinutes, 30, 5) * 60_000)
   }
   // The probe period is in minutes, and one minute is the floor — a value of 0 or
   // a negative one would otherwise spin. This used to read `Math.max(60, …)`,
@@ -1004,9 +1060,18 @@ export function apply(ctx, config) {
       await watchEgress()
       await refreshCatalog({ probe: true })
     })().catch(error => logger.warn?.(`our-free-model: periodic refresh failed (${error?.message ?? error})`))
-  }, positiveOr(settings.get().probeIntervalMinutes, 15, 1) * 60_000)
+  }, () => positiveOr(settings.get().probeIntervalMinutes, 15, 1) * 60_000)
+  // A failing egress watch means the network is down, which is worth one line —
+  // and only the first of a streak, or a dead link would write every two minutes
+  // until the next restart. A success resets the flag for the next outage.
+  let egressWarned = false
   every(() => {
-    void watchEgress().catch(() => {})
+    void watchEgress()
+      .then(() => { egressWarned = false })
+      .catch(error => {
+        if (!egressWarned) logger.warn?.(`our-free-model: egress watch failed (${error?.message ?? error})`)
+        egressWarned = true
+      })
   }, 120_000)
   // The first update check waits for the boot refresh to settle, then runs once
   // even when the periodic poll is disabled (hours === 0 means opt out fully).
@@ -1302,7 +1367,10 @@ function createApiRoutes(deps) {
         return send(200, { version: ANNOUNCEMENT_VERSION, acknowledged })
       }
       if (method === 'POST' && routePath === '/announcement/ack') {
-        deps.settings.update({ announcementAck: String(url.searchParams.get('version') ?? ANNOUNCEMENT_VERSION) })
+        // Bounded like every other write to this file: the query string is
+        // caller-controlled, and the comparison downstream only ever matches a
+        // version id — nothing needs the whole string.
+        deps.settings.update({ announcementAck: String(url.searchParams.get('version') ?? ANNOUNCEMENT_VERSION).slice(0, 64) })
         deps.settings.flush()
         return send(200, { ok: true })
       }
@@ -1390,11 +1458,6 @@ function createApiRoutes(deps) {
         deps.settings.flush()
         await deps.syncForward()
         await deps.syncRelay()
-        if (patch.probeIntervalMinutes !== undefined || patch.feedPollMinutes !== undefined) {
-          // Poll periods live in fiber effects; the next load picks a change up,
-          // so surface that rather than pretending it hot-applied.
-          deps.logger.info?.('our-free-model: poll interval change applies on the next load')
-        }
         return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo()) })
       }
       if (method === 'POST' && routePath === '/refresh') {
