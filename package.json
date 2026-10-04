@@ -28,9 +28,7 @@
     "locale",
     "icon.svg",
     "cordis.patch.yml",
-    "LICENSE",
-    "README.md",
-    "README_EN.md"
+    "LICENSE"
   ],
   "keywords": [
     "dsh",
