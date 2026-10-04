@@ -420,7 +420,7 @@ window.__ModuleLoader__.load({
 .ofm_paneltitle{font-size:12px;font-weight:650;color:var(--dsw-alias-label-secondary);display:flex;align-items:center;gap:8px}
 .ofm_paneltitle .ofm_sec_hint{font-weight:400}
 .ofm_row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.ofm_heat{display:grid;grid-auto-flow:column;grid-template-rows:repeat(7,1fr);gap:0;overflow-x:auto;padding:2px 0 6px}
+.ofm_heat{display:grid;grid-auto-flow:column;grid-auto-columns:12px;grid-template-rows:repeat(7,12px);justify-content:start;gap:0;overflow-x:auto;padding:2px 0 6px}
 .ofm_cell{width:12px;height:12px;border-radius:2px;background:var(--dsw-alias-bg-layer-1);outline:1px solid var(--dsw-alias-border-l1);outline-offset:-1px}
 .ofm_cell.l1{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 22%,transparent);outline-color:transparent}
 .ofm_cell.l2{background:color-mix(in srgb,var(--dsw-alias-state-business-primary) 42%,transparent);outline-color:transparent}
@@ -962,14 +962,16 @@ window.__ModuleLoader__.load({
           t('heat.legendMore')))
     }
 
-    /** Column-major weeks ending today, always Sunday-aligned rows. */
+    /** Column-major local-calendar weeks, from Sunday through today (17 weeks by default). */
     function buildHeatCells(days, span = 119) {
+      if (days.length === 0) return []
       const byDay = new Map(days.map(row => [row.day, row]))
       const end = new Date()
-      end.setHours(0, 0, 0, 0)
+      // Noon avoids midnight DST transitions shifting subsequent dates to 01:00.
+      end.setHours(12, 0, 0, 0)
       const cells = []
       const start = new Date(end)
-      start.setDate(start.getDate() - (span - 1 - end.getDay()))
+      start.setDate(start.getDate() - end.getDay() - (Math.ceil(span / 7) - 1) * 7)
       for (let cursor = new Date(start); cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
         const key = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`
         const row = byDay.get(key)
@@ -1727,9 +1729,8 @@ window.__ModuleLoader__.load({
     exports.apply = apply
     exports.inject = inject
     exports.name = 'our-free-model'
-    // Test seam for scripts/sanitize-test.mjs: the parser runs headlessly with
-    // the same stub React the lint script uses.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom }
+    // Headless test seams use the same stub React as scripts/client-lint.mjs.
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap }
     return module.exports
   },
 })
