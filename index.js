@@ -517,6 +517,7 @@ export function apply(ctx, config) {
         complete: (request, onChunk) => runForwarded(request, onChunk),
         modelRows: () => publicModelRows(),
         log: message => logger.warn?.(`our-free-model forward: ${message}`),
+        onTrace: event => logger.info?.(`our-free-model request: ${JSON.stringify(event)}`),
       })
       forwardError = ''
       // The requested port is somebody else's for good — a `netsh interface
@@ -632,6 +633,7 @@ export function apply(ctx, config) {
           }
         },
         log: message => logger.warn?.(`our-free-model lan relay: ${message}`),
+        onTrace: event => logger.info?.(`our-free-model request: ${JSON.stringify(event)}`),
       })
       relayError = ''
       // The port that was actually bound goes back into the settings, so the

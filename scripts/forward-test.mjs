@@ -16,9 +16,9 @@
  * - `/v1/responses` honors `instructions`, `max_output_tokens` and `stream`.
  *
  * Plus the two wire-level gaps behind the "unstable over the LAN" report:
- * thinking that arrives under a name other than `reasoning` now reaches the
- * harness as thinking, and an answer that stays silent while the lane thinks
- * keeps its client's idle watchdog fed with SSE comment frames.
+ * thinking that arrives under a name other than `reasoning` reaches the
+ * harness as thinking, and SSE comment frames keep a silent transport active.
+ * Comments do not reset a content-only idle watchdog.
  *
  * Run: node scripts/forward-test.mjs
  */
@@ -29,6 +29,7 @@ import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort
 import { toToolDefs } from '../src/messages.js'
 import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
+import { until } from './lib/fake-kernel.mjs'
 
 let failures = 0
 const check = (name, fn) => {
@@ -58,11 +59,12 @@ function makeLane() {
 }
 
 const openServers = []
-async function serve(lane) {
+async function serve(lane, options = {}) {
   const server = await startForwardServer({
     config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
     complete: lane.complete,
     modelRows: () => [],
+    ...options,
   })
   openServers.push(server)
   return `http://127.0.0.1:${server.port}`
@@ -638,18 +640,19 @@ await checkAsync('startForwardServer reports the port it settled on and still se
 
 // ── the LAN relay ────────────────────────────────────────────────────────────
 /** A relay whose target is a real local listener, so the hop is exercised. */
-async function serveRelay({ targetPort, enabled = true, lanKey = 'lan-test', localKey = 'k-test', host = '127.0.0.1', port = 0 }) {
-  const server = await startLanRelay({ config: () => ({ enabled, host, port, lanKey, localKey, targetPort }) })
+async function serveRelay({ targetPort, enabled = true, lanKey = 'lan-test', localKey = 'k-test', host = '127.0.0.1', port = 0, onTrace }) {
+  const server = await startLanRelay({ config: () => ({ enabled, host, port, lanKey, localKey, targetPort }), onTrace })
   openServers.push(server)
   return { base: `http://127.0.0.1:${server.port}`, port: server.port }
 }
 
 /** A local listener with a roster and one key, as the plugin starts it. */
-async function localListener(lane) {
+async function localListener(lane, onTrace) {
   const server = await startForwardServer({
     config: () => ({ host: '127.0.0.1', port: 0, enabled: true, key: 'k-test' }),
     complete: lane.complete,
     modelRows: () => [{ id: 'mimo-v2.6-flash-free', created: 1, owned_by: 'our-free-model' }],
+    onTrace,
   })
   openServers.push(server)
   return { base: `http://127.0.0.1:${server.port}`, port: server.port }
@@ -726,6 +729,272 @@ await checkAsync('a second relay hop is refused instead of spinning', async () =
   const first = await serveRelay({ targetPort: 0, localKey: 'lan-test' })
   const second = await serveRelay({ targetPort: first.port, localKey: 'lan-test' })
   assert.equal((await lanGet(second.base, '/v1/models')).status, 508)
+})
+
+// Request diagnostics must exist before a complete body or usage sample (#34).
+const terminalEvents = events => events.filter(event => event.stage === 'finished' || event.stage === 'aborted')
+const waitFor = condition => until(condition, { timeoutMs: 2000, intervalMs: 5, what: 'request trace' })
+const assertTrace = events => {
+  assert.ok(events.length > 0)
+  const id = events[0].requestId
+  assert.match(id, /^[a-f0-9]{32}$/)
+  assert.ok(events.every(event => event.requestId === id))
+  for (let i = 0; i < events.length; i += 1) {
+    assert.ok(Number.isFinite(events[i].at))
+    assert.ok(Number.isFinite(events[i].elapsedMs) && events[i].elapsedMs >= 0)
+    if (i > 0) assert.ok(events[i].elapsedMs >= events[i - 1].elapsedMs)
+  }
+  assert.equal(terminalEvents(events).length, 1)
+}
+
+await checkAsync('receipt is logged while the request body is still uploading', async () => {
+  const events = []
+  const lane = makeLane()
+  const base = await serve(lane, { onTrace: event => events.push(event) })
+  const client = http.request(`${base}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: 'Bearer k-test', 'content-type': 'application/json' },
+  })
+  const done = new Promise((resolve, reject) => {
+    client.once('error', reject)
+    client.once('response', res => {
+      res.resume()
+      res.once('end', resolve)
+    })
+  })
+  try {
+    client.write('{"model":"m",')
+    await waitFor(() => events.length > 0)
+    assert.deepEqual(events.map(event => event.stage), ['received'])
+    assert.equal(lane.seen.length, 0, 'the adapter has not been called')
+    client.end('"messages":[]}')
+    await done
+    await waitFor(() => terminalEvents(events).length === 1)
+    assert.deepEqual(events.map(event => event.stage), ['received', 'body_received', 'dispatch', 'generation_finished', 'finished'])
+    assertTrace(events)
+  } finally {
+    client.destroy()
+  }
+})
+
+await checkAsync('an abandoned upload has one terminal event without a dispatch', async () => {
+  const events = []
+  const lane = makeLane()
+  const base = await serve(lane, { onTrace: event => events.push(event) })
+  const client = http.request(`${base}/v1/responses`, {
+    method: 'POST', headers: { authorization: 'Bearer k-test' },
+  })
+  client.on('error', () => {})
+  try {
+    client.write('{"model":"m",')
+    await waitFor(() => events.length > 0)
+    client.destroy()
+    await waitFor(() => terminalEvents(events).length === 1)
+    assert.deepEqual(events.map(event => event.stage), ['received', 'aborted'])
+    assert.equal(lane.seen.length, 0)
+    assertTrace(events)
+  } finally {
+    client.destroy()
+  }
+})
+
+for (const path of ['/v1/chat/completions', '/v1/responses']) {
+  for (const stream of [false, true]) {
+    await checkAsync(`${path} traces ${stream ? 'streaming' : 'JSON'} execution without caller data`, async () => {
+      const events = []
+      const lane = makeLane()
+      lane.script = () => ({
+        chunks: stream ? [
+          { type: 'text-delta', index: 0, text: '' },
+          { type: 'usage', usage: { inputTokens: 1, outputTokens: 0 } },
+          { type: 'text-delta', index: 0, text: 'secret-output' },
+          { type: 'text-delta', index: 0, text: 'more-secret-output' },
+        ] : [],
+        outcome: { text: 'secret-output', toolCalls: [] },
+      })
+      const base = await serve(lane, { onTrace: event => events.push(event) })
+      const response = await authFetch(base, `${path}?private=secret-query`, {
+        model: 'secret-model', stream, messages: [{ role: 'user', content: 'secret-prompt' }],
+        input: 'secret-input', user: 'secret-user', instructions: 'secret-instructions',
+      })
+      await response.text()
+      await waitFor(() => terminalEvents(events).length === 1)
+      assert.deepEqual(events.map(event => event.stage), [
+        'received', 'body_received', 'dispatch', ...(stream ? ['first_delta'] : []), 'generation_finished', 'finished',
+      ])
+      assertTrace(events)
+      assert.equal(response.headers.get('x-ofm-request-id'), events[0].requestId)
+      assert.equal(events.at(-1).outcome, 'completed')
+      assert.equal(events.at(-1).status, 200)
+      assert.ok(!JSON.stringify(events).includes('secret-'))
+      assert.ok(!JSON.stringify(events).includes('k-test'))
+    })
+  }
+}
+
+await checkAsync('rejected requests and invalid JSON never report dispatch', async () => {
+  const events = []
+  const lane = makeLane()
+  const base = await serve(lane, { onTrace: event => events.push(event) })
+  const denied = await fetch(`${base}/v1/chat/completions`, { method: 'POST', body: 'secret' })
+  await denied.text()
+  assert.equal(denied.status, 401)
+  await waitFor(() => terminalEvents(events).length === 1)
+  assert.deepEqual(events.map(event => event.stage), ['received', 'finished'])
+  assert.equal(events.at(-1).outcome, 'failed')
+  assertTrace(events)
+  events.length = 0
+  const invalid = await authFetch(base, '/v1/responses', 'secret-invalid-json')
+  await invalid.text()
+  assert.equal(invalid.status, 400)
+  await waitFor(() => terminalEvents(events).length === 1)
+  assert.deepEqual(events.map(event => event.stage), ['received', 'finished'])
+  assertTrace(events)
+  assert.equal(lane.seen.length, 0)
+  assert.ok(!JSON.stringify(events).includes('secret'))
+})
+
+await checkAsync('SSE heartbeats do not produce a first-delta event', async () => {
+  const events = []
+  let release
+  const ready = new Promise(resolve => { release = resolve })
+  const base = await serve(makeLane(), {
+    onTrace: event => events.push(event),
+    heartbeatMs: 5,
+    complete: async () => {
+      await ready
+      return { text: '', toolCalls: [] }
+    },
+  })
+  try {
+    const response = await authFetch(base, '/v1/chat/completions', { model: 'm', stream: true })
+    const reader = response.body.getReader()
+    let text = ''
+    while (!text.includes(': ping')) {
+      const { value, done } = await reader.read()
+      assert.equal(done, false)
+      text += Buffer.from(value).toString()
+    }
+    assert.ok(!events.some(event => event.stage === 'first_delta'))
+    release()
+    while (!(await reader.read()).done) { /* Drain the final response. */ }
+    await waitFor(() => terminalEvents(events).length === 1)
+    assertTrace(events)
+  } finally {
+    release()
+  }
+})
+
+await checkAsync('a failed SSE generation is not logged as a successful HTTP 200', async () => {
+  const events = []
+  const lane = makeLane()
+  lane.script = () => ({ chunks: [], outcome: { error: 'secret-failure' } })
+  const base = await serve(lane, { onTrace: event => events.push(event) })
+  const response = await authFetch(base, '/v1/responses', { model: 'm', stream: true })
+  await response.text()
+  await waitFor(() => terminalEvents(events).length === 1)
+  assert.equal(response.status, 200)
+  assert.equal(events.at(-1).outcome, 'failed')
+  assert.equal(events.find(event => event.stage === 'generation_finished').outcome, 'failed')
+  assert.ok(!JSON.stringify(events).includes('secret-failure'))
+  assertTrace(events)
+})
+
+await checkAsync('a disconnected generation records cancellation before a late result', async () => {
+  const events = []
+  let release
+  const ready = new Promise(resolve => { release = resolve })
+  let signal
+  const base = await serve(makeLane(), {
+    onTrace: event => events.push(event),
+    complete: async request => {
+      signal = request.signal
+      await ready
+      return { text: 'late result', toolCalls: [] }
+    },
+  })
+  const controller = new AbortController()
+  const pending = fetch(`${base}/v1/chat/completions`, {
+    method: 'POST', headers: { authorization: 'Bearer k-test' },
+    body: JSON.stringify({ model: 'm' }), signal: controller.signal,
+  }).catch(error => error)
+  try {
+    await waitFor(() => events.some(event => event.stage === 'dispatch'))
+    controller.abort()
+    await pending
+    await waitFor(() => terminalEvents(events).length === 1)
+    assert.equal(signal.aborted, true)
+    assert.equal(events.at(-1).stage, 'aborted')
+    const count = events.length
+    release()
+    await ready
+    await new Promise(resolve => setImmediate(resolve))
+    assert.equal(events.length, count)
+    assertTrace(events)
+  } finally {
+    controller.abort()
+    release()
+    await pending
+  }
+})
+
+await checkAsync('LAN diagnostics link both hops and replace the caller ID', async () => {
+  const events = []
+  const lane = makeLane()
+  const upstream = await localListener(lane, event => events.push(event))
+  const relay = await serveRelay({ targetPort: upstream.port, onTrace: event => events.push(event) })
+  const response = await fetch(`${relay.base}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer lan-test', 'x-ofm-request-id': 'a'.repeat(32) },
+    body: JSON.stringify({ model: 'm', messages: [] }),
+  })
+  await response.text()
+  await waitFor(() => terminalEvents(events).length === 2)
+  const localEvents = events.filter(event => event.hop === 'forward')
+  const relayEvents = events.filter(event => event.hop === 'relay')
+  assertTrace(localEvents)
+  assertTrace(relayEvents)
+  assert.notEqual(localEvents[0].requestId, relayEvents[0].requestId)
+  assert.ok(localEvents.every(event => event.parentId === relayEvents[0].requestId))
+  assert.notEqual(relayEvents[0].requestId, 'a'.repeat(32))
+  assert.equal(response.headers.get('x-ofm-request-id'), relayEvents[0].requestId)
+  assert.ok(relayEvents.some(event => event.stage === 'relay_dispatch'))
+  assert.ok(relayEvents.some(event => event.stage === 'relay_connected'))
+  assert.ok(relayEvents.some(event => event.stage === 'body_received'))
+  assert.equal(relayEvents.at(-1).outcome, 'relayed')
+  assert.equal(lane.seen.length, 1)
+})
+
+await checkAsync('a diagnostic callback that throws cannot fail a completion', async () => {
+  const lane = makeLane()
+  const base = await serve(lane, { onTrace: () => { throw new Error('logging failed') } })
+  const response = await authFetch(base, '/v1/chat/completions', { model: 'm' })
+  assert.equal(response.status, 200)
+  await response.text()
+  assert.equal(lane.seen.length, 1)
+})
+
+await checkAsync('a malformed request URL remains an HTTP error without crashing diagnostics', async () => {
+  const events = []
+  const base = await serve(makeLane(), { onTrace: event => events.push(event) })
+  const status = await new Promise((resolve, reject) => {
+    const client = http.request(base, { method: 'POST', path: 'http://[' }, res => {
+      res.resume()
+      res.once('end', () => resolve(res.statusCode))
+    })
+    client.once('error', reject)
+    client.end()
+  })
+  assert.equal(status, 500)
+  assert.equal((await fetch(`${base}/health`)).status, 200)
+  assert.deepEqual(events, [])
+})
+
+await checkAsync('health and roster polling produce no request diagnostics', async () => {
+  const events = []
+  const base = await serve(makeLane(), { onTrace: event => events.push(event) })
+  await (await fetch(`${base}/health`)).text()
+  await (await fetch(`${base}/v1/models`, { headers: { authorization: 'Bearer k-test' } })).text()
+  assert.deepEqual(events, [])
 })
 
 for (const server of openServers) await server.close()

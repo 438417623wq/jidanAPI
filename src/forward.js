@@ -33,9 +33,64 @@ import http from 'node:http'
 import net from 'node:net'
 import dns from 'node:dns'
 import crypto from 'node:crypto'
+import { performance } from 'node:perf_hooks'
 import { baseModelId, FINGERPRINT_TOOLS } from './upstream.js'
 
 const MAX_BODY_BYTES = 8 * 1024 * 1024
+const REQUEST_ID_HEADER = 'x-ofm-request-id'
+const COMPLETION_PATHS = new Set(['/v1/chat/completions', '/chat/completions', '/v1/responses', '/responses'])
+const NO_TRACE = { step() {}, setOutcome() {} }
+
+/** Fixed-size diagnostics: never serialize caller headers, bodies or errors. */
+function traceRequest(req, res, hop, onTrace) {
+  let path
+  try {
+    path = new URL(req.url ?? '/', 'http://localhost').pathname.replace(/\/+$/, '') || '/'
+  } catch {
+    return NO_TRACE
+  }
+  if (req.method !== 'POST' || !COMPLETION_PATHS.has(path)) {
+    return NO_TRACE
+  }
+  const started = performance.now()
+  const requestId = crypto.randomBytes(16).toString('hex')
+  const parent = req.headers[REQUEST_ID_HEADER]
+  const parentId = hop === 'forward' && req.headers['x-ofm-relay-hop'] === '1'
+    && typeof parent === 'string' && /^[a-f0-9]{32}$/.test(parent) ? parent : undefined
+  let ended = false
+  let outcome = hop === 'relay' ? 'relayed' : 'completed'
+  const step = (stage, fields = {}) => {
+    if (ended) return
+    try {
+      onTrace({
+        requestId, ...(parentId === undefined ? {} : { parentId }),
+        hop, path, stage, at: Date.now(),
+        elapsedMs: Math.round((performance.now() - started) * 1000) / 1000,
+        ...fields,
+      })
+    } catch { /* Diagnostics must not interrupt the request. */ }
+  }
+  const end = stage => {
+    if (ended) return
+    step(stage, {
+      status: res.headersSent ? res.statusCode : null,
+      outcome: stage === 'aborted' ? 'aborted' : res.statusCode >= 400 ? 'failed' : outcome,
+    })
+    ended = true
+    req.off('aborted', onAbort)
+    res.off('finish', onFinish)
+    res.off('close', onClose)
+  }
+  const onAbort = () => end('aborted')
+  const onFinish = () => end('finished')
+  const onClose = () => end(res.writableFinished ? 'finished' : 'aborted')
+  req.once('aborted', onAbort)
+  res.once('finish', onFinish)
+  res.once('close', onClose)
+  res.setHeader(REQUEST_ID_HEADER, requestId)
+  step('received')
+  return { requestId, step, setOutcome: value => { outcome = value } }
+}
 
 /** Mint a forward-proxy key. Not derived from anything user-visible. */
 export function generateKey() {
@@ -240,11 +295,14 @@ export async function bindForwardPort(server, { address, port, attempts = BIND_A
  *   runs one completion through the adapter and reports chunks as they arrive
  * @param {() => Array<{id: string, created: number, owned_by: string}>} options.modelRows
  * @param {(message: string) => void} [options.log]
+ * @param {(event: object) => void} [options.onTrace] - bounded request diagnostics, separate from warnings
  * @returns {Promise<{server: http.Server, port: number, close: () => Promise<void>}>}
  */
-export async function startForwardServer({ config, complete, modelRows, log = () => {}, heartbeatMs = SSE_HEARTBEAT_MS }) {
+export async function startForwardServer({ config, complete, modelRows, log = () => {}, onTrace = () => {}, heartbeatMs = SSE_HEARTBEAT_MS }) {
   const server = http.createServer((req, res) => {
-    void handle(req, res).catch(error => {
+    const trace = traceRequest(req, res, 'forward', onTrace)
+    void handle(req, res, trace).catch(error => {
+      trace.setOutcome('failed')
       log(`request failed: ${error?.message ?? error}`)
       if (!res.headersSent) {
         const status = Number(error?.statusCode)
@@ -256,7 +314,7 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
     })
   })
 
-  async function handle(req, res) {
+  async function handle(req, res, trace) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname.replace(/\/+$/, '') || '/'
     const settings = config()
@@ -286,11 +344,11 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
       return
     }
     if (req.method === 'POST' && (path === '/v1/chat/completions' || path === '/chat/completions')) {
-      await serveCompletion(req, res, complete, chatCompletions, heartbeatMs)
+      await serveCompletion(req, res, complete, chatCompletions, heartbeatMs, trace)
       return
     }
     if (req.method === 'POST' && (path === '/v1/responses' || path === '/responses')) {
-      await serveCompletion(req, res, complete, responsesEndpoint, heartbeatMs)
+      await serveCompletion(req, res, complete, responsesEndpoint, heartbeatMs, trace)
       return
     }
     openAiError(res, 404, 'not_found_error', `no route for ${req.method} ${path}`)
@@ -362,18 +420,21 @@ const RELAY_HOP_HEADER = 'x-ofm-relay-hop'
  * @param {object} options
  * @param {() => {enabled: boolean, host: string, port: number, lanKey: string, localKey: string, targetPort: number}} options.config
  * @param {(message: string) => void} [options.log]
+ * @param {(event: object) => void} [options.onTrace] - bounded request diagnostics
  * @returns {Promise<{server: http.Server, port: number, host: string, close: () => Promise<void>}>}
  */
-export async function startLanRelay({ config, log = () => {} }) {
+export async function startLanRelay({ config, log = () => {}, onTrace = () => {} }) {
   const server = http.createServer((req, res) => {
-    void relay(req, res).catch(error => {
+    const trace = traceRequest(req, res, 'relay', onTrace)
+    void relay(req, res, trace).catch(error => {
+      trace.setOutcome('failed')
       log(`lan relay request failed: ${error?.message ?? error}`)
       if (!res.headersSent) openAiError(res, 502, 'server_error', String(error?.message ?? error))
       else res.end()
     })
   })
 
-  async function relay(req, res) {
+  async function relay(req, res, trace) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const path = url.pathname.replace(/\/+$/, '') || '/'
     // A browser cannot put a key on a preflight, and answering one spends
@@ -415,6 +476,9 @@ export async function startLanRelay({ config, log = () => {} }) {
     // the key that belongs to this machine.
     headers.authorization = `Bearer ${settings.localKey}`
     headers[RELAY_HOP_HEADER] = '1'
+    delete headers[REQUEST_ID_HEADER]
+    if (trace.requestId !== undefined) headers[REQUEST_ID_HEADER] = trace.requestId
+    trace.step('relay_dispatch')
     const target = http.request({
       host: '127.0.0.1',
       port: settings.targetPort,
@@ -422,16 +486,23 @@ export async function startLanRelay({ config, log = () => {} }) {
       path: `${path}${url.search}`,
       headers,
     })
+    target.once('socket', socket => {
+      if (socket.connecting) socket.once('connect', () => trace.step('relay_connected'))
+      else trace.step('relay_connected')
+    })
+    req.once('end', () => trace.step('body_received'))
     target.on('response', upstream => {
       const relayed = { ...upstream.headers }
       // Hop-by-hop headers belong to the hop that is ending here, not the next.
       delete relayed.connection
       delete relayed['keep-alive']
       delete relayed['transfer-encoding']
+      if (trace.requestId !== undefined) relayed[REQUEST_ID_HEADER] = trace.requestId
       res.writeHead(upstream.statusCode ?? 502, relayed)
       upstream.pipe(res)
     })
     target.on('error', error => {
+      trace.setOutcome('failed')
       log(`lan relay upstream failed: ${error?.message ?? error}`)
       if (!res.headersSent) openAiError(res, 502, 'server_error', 'the local forward listener did not answer')
       else res.end()
@@ -469,7 +540,7 @@ export async function startLanRelay({ config, log = () => {} }) {
 }
 
 /** 转发客户端断开时中止正在生成的段，也阻止后续恢复请求。 */
-async function serveCompletion(req, res, complete, endpoint, heartbeatMs) {
+async function serveCompletion(req, res, complete, endpoint, heartbeatMs, trace) {
   const controller = new AbortController()
   const socket = req.socket
   const abort = () => {
@@ -485,7 +556,25 @@ async function serveCompletion(req, res, complete, endpoint, heartbeatMs) {
   res.once('close', abort)
   if (req.aborted || req.destroyed || socket?.destroyed) abort()
   try {
-    await endpoint(req, res, (request, onChunk) => complete({ ...request, signal: controller.signal }, onChunk), { heartbeatMs })
+    await endpoint(req, res, async (request, onChunk) => {
+      trace.step('dispatch')
+      let sawDelta = false
+      const tracedChunk = typeof onChunk !== 'function' ? undefined : chunk => {
+        const hasContent = (chunk.type === 'text-delta' || chunk.type === 'reasoning-delta')
+          ? typeof chunk.text === 'string' && chunk.text.length > 0
+          : chunk.type === 'tool-call-delta' && typeof chunk.argumentsDelta === 'string' && chunk.argumentsDelta.length > 0
+        if (!sawDelta && hasContent) {
+          sawDelta = true
+          trace.step('first_delta')
+        }
+        onChunk(chunk)
+      }
+      const result = await complete({ ...request, signal: controller.signal }, tracedChunk)
+      const outcome = result.error !== undefined ? 'failed' : result.truncated === true ? 'truncated' : 'completed'
+      trace.setOutcome(outcome)
+      trace.step('generation_finished', { outcome })
+      return result
+    }, { heartbeatMs, trace })
   } finally {
     req.removeListener('aborted', abort)
     socket?.removeListener('close', abort)
@@ -518,17 +607,16 @@ function sendSse(res, event) {
  * Reasoning models on this lane think for a minute or more before the first
  * token, and the newest ones never stream that thinking at all: measured live,
  * a call sat silent for 70 seconds while the lane billed 3024 reasoning tokens.
- * Every client-side idle watchdog reads that silence as a dead socket — pi-ai
- * aborts the turn once `streamIdleTimeoutMs` passes with nothing on the wire —
- * so the wait has to be kept visible.
+ * Comment frames keep the transport alive. They do not reset pi-ai's
+ * content-idle watchdog, which only consumes effective content deltas.
  */
 export const SSE_HEARTBEAT_MS = 15000
 
 /**
- * Feed a streaming response's idle watchdog until the response ends.
+ * Keep the transport active until the response ends.
  *
  * A comment frame is ignored by every client that speaks SSE, and it is a real
- * byte on the socket, which is what a watchdog counts. The timer is unref'd so
+ * byte on the socket, but is not model output. The timer is unref'd so
  * a closing listener never waits on it, and it is stopped on `close` — the one
  * event every way of ending this response goes through, including a client that
  * walked away mid-stream.
@@ -622,6 +710,7 @@ function createToolWire(body) {
 /** Drive one chat-completion through `complete`, in either response style. */
 async function chatCompletions(req, res, complete, options = {}) {
   const body = await readBody(req)
+  options.trace?.step('body_received')
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
   if (model === '') {
@@ -745,6 +834,7 @@ function executableCalls(outcome, tools) {
 /** Responses-API spelling, so Codex-shaped local clients work too. */
 async function responsesEndpoint(req, res, complete, options = {}) {
   const body = await readBody(req)
+  options.trace?.step('body_received')
   const effortSuffix = /\(([^()]+)\)\s*$/.exec(String(body.model ?? ''))
   const model = baseModelId(String(body.model ?? ''))
   if (model === '') {
