@@ -33,6 +33,7 @@ import { buildCatalog, buildEacCatalog, isEacEntry, parseListing } from './src/c
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
 import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
+import { outletLabel, startEgressRelay } from './src/egress.js'
 import { fetchSealedListing } from './src/eac.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
@@ -158,6 +159,10 @@ export function apply(ctx, config) {
   /** The optional LAN relay: a second door, with a key of its own. */
   let relay = null
   let relayError = ''
+  /** The optional egress outlet (subscription or single client), off by
+   *  default. Named `outlet*` so the `egress` IP/country snapshot stays clear. */
+  let outletRelay = null
+  let outletError = ''
 
   // ── the co-paid lane ────────────────────────────────────────────────────────
   /**
@@ -647,6 +652,65 @@ export function apply(ctx, config) {
     }
   }
 
+  // ── egress outlet ───────────────────────────────────────────────────────────
+  // Same serialisation gate as the two listeners above: the boot chain and every
+  // settings POST call this, and overlapping runs would leak a spawned mihomo
+  // (the loser overwrites `outletRelay` while the winner's child still runs).
+  let outletSyncInFlight = null
+  /** What the currently running outlet was started with — restart on change. */
+  let outletFingerprint = ''
+  async function syncEgress() {
+    while (outletSyncInFlight !== null) await outletSyncInFlight.catch(() => {})
+    const run = syncEgressOnce()
+    outletSyncInFlight = run
+    try { await run } finally { if (outletSyncInFlight === run) outletSyncInFlight = null }
+  }
+  async function syncEgressOnce() {
+    const desired = settings.get().egress ?? {}
+    const wanted = desired.enabled === true
+    const mode = desired.mode === 'client' ? 'client' : 'subscription'
+    const url = String(desired.url ?? '').trim()
+    const mihomoPath = String(desired.mihomoPath ?? '').trim()
+    const fingerprint = `${mode}\n${url}\n${mihomoPath}`
+    if (outletRelay !== null && wanted && outletFingerprint === fingerprint && !outletRelay.dead) return
+    if (outletRelay === null && !wanted) return
+    if (outletRelay !== null) {
+      const closing = outletRelay
+      outletRelay = null
+      outletFingerprint = ''
+      await closing.close().catch(() => {})
+    }
+    if (!wanted) {
+      outletError = ''
+      return
+    }
+    if (url === '') {
+      outletError = 'the outlet needs a subscription or proxy URL'
+      logger.warn?.(`our-free-model: egress outlet not started (${outletError})`)
+      return
+    }
+    try {
+      outletRelay = await startEgressRelay({
+        config: () => {
+          const current = settings.get().egress ?? {}
+          return {
+            mode: current.mode === 'client' ? 'client' : 'subscription',
+            url: String(current.url ?? '').trim(),
+            mihomoPath: String(current.mihomoPath ?? '').trim(),
+          }
+        },
+        dataDir,
+        log: message => logger.info?.(`our-free-model egress: ${message}`),
+      })
+      outletFingerprint = fingerprint
+      outletError = ''
+      logger.info?.(`our-free-model: egress outlet up (${outletLabel(url)} via ${mode})`)
+    } catch (error) {
+      outletError = String(error?.message ?? error)
+      logger.warn?.(`our-free-model: egress outlet could not start (${outletError})`)
+    }
+  }
+
   /**
    * Run one forwarded OpenAI request through the adapter.
    *
@@ -803,7 +867,7 @@ export function apply(ctx, config) {
   }
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
-    refreshCatalog, refreshAvailability, syncForward, syncRelay,
+    refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     forwardInfo: () => ({
       running: forward !== null,
       port: forward?.port ?? 0,
@@ -817,6 +881,18 @@ export function apply(ctx, config) {
         error: relayError,
         addresses: lanAddresses(),
       },
+    }),
+    // The subscription URL is a credential: only its masked label ever leaves
+    // this process. `active` mirrors what egressFetch is actually doing right
+    // now (direct until the relay finishes starting, direct again once closed).
+    egressInfo: () => ({
+      running: outletRelay !== null,
+      active: outletRelay !== null,
+      mode: outletRelay?.mode ?? '',
+      outlet: outletRelay === null ? '' : outletLabel(outletRelay.url ?? ''),
+      // `dead` is the managed mihomo dying after startup — surfaced through the
+      // same field so the settings page shows why traffic fell back to direct.
+      error: outletError !== '' ? outletError : (outletRelay?.dead ?? ''),
     }),
     rotateKey: () => {
       const minted = generateKey()
@@ -962,6 +1038,7 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     void forward?.close().catch(() => {})
     void relay?.close().catch(() => {})
+    void outletRelay?.close().catch(() => {})
   }, 'our-free-model: forward listener')
 
   ctx.effect(() => () => { registration() }, 'our-free-model: adapter routes')
@@ -979,6 +1056,10 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     void (async () => {
       attributionUserAgent = await resolveAttributionUserAgent(logger)
+      if (disposed) return
+      // First: the catalog refresh and its probe round below go through
+      // egressFetch, so the outlet must be carrying traffic before they run.
+      await syncEgress()
       if (disposed) return
       await refreshCatalog({ probe: true, force: true })
       // Every await here is a chance for teardown to have run underneath this
@@ -1452,11 +1533,30 @@ function createApiRoutes(deps) {
           }
           next.forward = forward
         }
+        if (patch.egress !== undefined) {
+          const egressPatch = pick(patch.egress, ['enabled', 'mode', 'url', 'mihomoPath'])
+          if (egressPatch.mode !== undefined && egressPatch.mode !== 'subscription' && egressPatch.mode !== 'client') {
+            return send(400, { error: 'the egress mode is "subscription" or "client"' })
+          }
+          for (const key of ['url', 'mihomoPath']) {
+            if (egressPatch[key] !== undefined) {
+              const value = String(egressPatch[key]).trim()
+              if (value.length > 2048) return send(400, { error: `the egress ${key} is too long` })
+              egressPatch[key] = value
+            }
+          }
+          const egress = { ...(current.egress ?? {}), ...egressPatch }
+          if (egress.enabled === true && String(egress.url ?? '') === '') {
+            return send(400, { error: 'the outlet needs a subscription or proxy URL' })
+          }
+          next.egress = egress
+        }
         deps.settings.update(next)
         deps.settings.flush()
         await deps.syncForward()
         await deps.syncRelay()
-        return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo()) })
+        await deps.syncEgress()
+        return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo(), deps.egressInfo()) })
       }
       if (method === 'POST' && routePath === '/refresh') {
         await deps.refreshCatalog({ probe: true, force: true })
@@ -1526,7 +1626,7 @@ async function readJson(req) {
   }
 }
 
-function publicSettings(settings, forwardInfo) {
+function publicSettings(settings, forwardInfo, egressInfo) {
   return {
     enabled: settings.enabled !== false,
     exposeRegionModels: settings.exposeRegionModels !== false,
@@ -1554,6 +1654,16 @@ function publicSettings(settings, forwardInfo) {
         error: forwardInfo.lan?.error ?? '',
         addresses: forwardInfo.lan?.addresses ?? [],
       },
+    },
+    // Like `feedUrl` above, the subscription/proxy URL is this machine owner's
+    // own credential, shown back to them so they can edit it; `outlet` is the
+    // masked label for the status line.
+    egress: {
+      ...(settings.egress ?? {}),
+      outlet: egressInfo?.outlet ?? '',
+      running: egressInfo?.running === true,
+      active: egressInfo?.active === true,
+      error: egressInfo?.error ?? '',
     },
   }
 }
@@ -1584,8 +1694,9 @@ function buildSummary(deps) {
       route: (state.membership[ROUTE_MAIN] ?? []).includes(entry.id) ? ROUTE_MAIN
         : (state.membership[ROUTE_REGION] ?? []).includes(entry.id) ? ROUTE_REGION : null,
     })),
-    settings: publicSettings(deps.settings.get(), forwardInfo),
+    settings: publicSettings(deps.settings.get(), forwardInfo, deps.egressInfo()),
     egress: forwardInfo.egress ?? snapshot.egress ?? null,
+    outlet: deps.egressInfo(),
     probedAt: snapshot.at ?? 0,
     announcementVersion: ANNOUNCEMENT_VERSION,
     version: deps.meta().version,

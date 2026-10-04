@@ -29,6 +29,7 @@ const suites = [
   ['feed', 'feed-test.mjs', []],
   ['updater', 'updater-test.mjs', []],
   ['forward', 'forward-test.mjs', []],
+  ['egress', 'egress-test.mjs', []],
   ['effort', 'effort-test.mjs', []],
   ['projection', 'projection-test.mjs', []],
   ['fingerprint', 'fingerprint-test.mjs', []],

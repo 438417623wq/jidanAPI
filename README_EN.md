@@ -210,6 +210,26 @@ port and the network address it settled on. While it is on, anyone who can reach
 this machine can spend its free quota with that key — enable it only on a
 network you trust, and narrow the sources with a firewall if you can.
 
+**Send requests through a proxy outlet.** `Settings → Our Free Model → Egress
+proxy`. Optional and off by default — with it off, requests go direct. Two modes:
+
+- **Subscription mode**: paste a Clash/V2Ray subscription URL; the plugin spawns
+  mihomo locally (auto-detected — e.g. Clash Verge's `verge-mihomo.exe` — or set
+  the path yourself) with a built-in url-test group that re-measures every five
+  minutes and sends traffic to the fastest node, health-checking dead nodes out.
+  The subscription URL stays in the local settings file, never rides a request,
+  and the settings page shows only its masked host.
+- **Single-proxy mode**: type an `http://` / `https://` / `socks5://` /
+  `socks5h://` proxy address and every handled request dials through it.
+
+Only three kinds of traffic are taken over: model inference, the model listing
+fetch, and the egress IP probe; announcements, upgrades, and the EAC lane stay
+direct so the subscription identity never mixes into the release channel.
+**What it can and cannot buy you**: per-IP rate limits and region gates move
+with the outlet; per-session rate limits and fingerprint gates do not care
+which outlet you use. After toggling the outlet, hit Reprobe once so
+region-gated models regroup under the new exit.
+
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models
 between the two groups on its own.

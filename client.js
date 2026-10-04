@@ -70,6 +70,19 @@ window.__ModuleLoader__.load({
         'section.dashHint': '数据只写入本机，不会上传。',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
+        'section.egress': '出口代理（订阅分流）',
+        'section.egressHint': '把推理与探测请求从代理出口发出，缓解按 IP 的频率限制。',
+        'egress.enabled': '启用出口',
+        'egress.modeSubscription': '订阅模式（本地 mihomo 自动测速分流）',
+        'egress.url': '订阅 / 代理 URL',
+        'egress.mihomoPath': 'mihomo 路径',
+        'egress.mihomoHint': '订阅模式留空则自动查找本机 mihomo（如 Clash Verge）。',
+        'egress.apply': '应用',
+        'egress.active': '出口生效中',
+        'egress.inactive': '未启用',
+        'egress.outlet': '当前出口',
+        'egress.direct': '关闭时请求直连发出；URL 仅保存在本机设置中。',
+        'egress.error': '出口启动失败：{message}',
         'section.prefs': '插件设置',
         'section.prefsHint': '改动在下一次加载完全生效。',
         'heat.title': 'Token 热力图',
@@ -259,6 +272,19 @@ window.__ModuleLoader__.load({
         'section.dashHint': 'Written to this machine only; nothing is uploaded.',
         'section.forward': 'Local forward (OpenAI compatible)',
         'section.forwardHint': 'Let other local tools reach these models through one base URL.',
+        'section.egress': 'Egress outlet (subscription routing)',
+        'section.egressHint': 'Send inference and probe traffic through a proxy outlet to ease per-IP rate limits.',
+        'egress.enabled': 'Enable outlet',
+        'egress.modeSubscription': 'Subscription mode (local mihomo picks the fastest node)',
+        'egress.url': 'Subscription / proxy URL',
+        'egress.mihomoPath': 'mihomo path',
+        'egress.mihomoHint': 'Leave empty in subscription mode to auto-locate a local mihomo (e.g. Clash Verge).',
+        'egress.apply': 'Apply',
+        'egress.active': 'Outlet active',
+        'egress.inactive': 'Not enabled',
+        'egress.outlet': 'Current outlet',
+        'egress.direct': 'While off, requests go direct; the URL stays in this machine\'s settings only.',
+        'egress.error': 'The outlet failed to start: {message}',
         'section.prefs': 'Plugin settings',
         'section.prefsHint': 'Changes take full effect on the next load.',
         'heat.title': 'Token heatmap',
@@ -1311,6 +1337,36 @@ window.__ModuleLoader__.load({
               h(Button, { kind: 'ghost', title: t('forward.lanRotateWarn'), onClick: async () => { const payload = await post('/forward/lan/rotate'); setLanKey(payload.key ?? ''); setLanShown(true) } }, t('forward.rotate')))) : null))
     }
 
+    // ── egress outlet ─────────────────────────────────────────────────────────
+    // Two ways out: a Clash subscription load-balanced by a spawned mihomo, or
+    // one hand-written http/https/socks5 URL. Until this is on AND started,
+    // egressFetch sends every request direct — nothing here is load-bearing for
+    // plain use, and the URL is this owner's own credential (like feedUrl).
+    function Egress(props) {
+      const { settings, t, onApply, busy } = props
+      const [draft, setDraft] = useState(settings.egress ?? {})
+      useEffect(() => setDraft(settings.egress ?? {}), [settings.egress?.enabled, settings.egress?.mode, settings.egress?.url, settings.egress?.active, settings.egress?.error])
+      const subscription = draft?.mode !== 'client'
+      const apply = () => onApply({ egress: { enabled: draft?.enabled === true, mode: subscription ? 'subscription' : 'client', url: String(draft?.url ?? ''), mihomoPath: String(draft?.mihomoPath ?? '') } })
+      return h(Panel, null,
+        h('div', { className: 'ofm_row' },
+          h(Switch, { checked: draft?.enabled === true, label: t('egress.enabled'), onChange: () => setDraft(c => ({ ...c, enabled: !(c?.enabled === true) })) }),
+          h('span', { className: 'ofm_pill' }, h('span', { className: `ofm_dot ${draft?.active === true ? 'ok' : draft?.error ? 'err' : ''}` }), draft?.active === true ? t('egress.active') : t('egress.inactive'))),
+        h('div', { className: 'ofm_row' },
+          h(Switch, { checked: subscription, label: t('egress.modeSubscription'), onChange: () => setDraft(c => ({ ...c, mode: subscription ? 'client' : 'subscription' })) })),
+        h('div', { className: 'ofm_row' },
+          field(t('egress.url'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.url ?? '', placeholder: subscription ? 'https://…/s/…' : 'socks5://127.0.0.1:1080', onChange: e => setDraft(c => ({ ...c, url: e.target.value })) })),
+          h(Button, { kind: 'primary', disabled: busy, onClick: apply }, t('egress.apply'))),
+        subscription ? h('div', { className: 'ofm_row' },
+          field(t('egress.mihomoPath'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.mihomoPath ?? '', placeholder: 'auto', onChange: e => setDraft(c => ({ ...c, mihomoPath: e.target.value })) })),
+          h('span', { className: 'ofm_note' }, t('egress.mihomoHint'))) : null,
+        draft?.error ? h('div', { className: 'ofm_callout ofm_error' }, t('egress.error').replace('{message}', draft.error)) : null,
+        h('div', { className: 'ofm_note' }, t('egress.direct')),
+        draft?.active === true ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.outlet')),
+          h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, `${draft.outlet ?? ''} · ${draft.mode ?? ''}`)) : null)
+    }
+
     const field = (label, control) => h('label', { className: 'ofm_field' }, h('span', null, label), control)
 
     // ── preferences ───────────────────────────────────────────────────────────
@@ -1545,6 +1601,7 @@ window.__ModuleLoader__.load({
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t: tagged })
             : h('p', { className: 'ofm_note' }, t('loading'))),
         h(Section, { title: t('section.forward'), hint: t('section.forwardHint') }, h(Forward, { settings: data.settings, t: tagged, onApply: apply, busy })),
+        h(Section, { title: t('section.egress'), hint: t('section.egressHint') }, h(Egress, { settings: data.settings, t: tagged, onApply: apply, busy })),
         h(Section, { title: t('section.prefs'), hint: t('section.prefsHint') }, h(Preferences, { summary: data, t: tagged, onApply: apply, busy })),
         h(Section, { title: t('section.upgrade'), hint: t('section.upgradeHint') }, h(UpgradePanel, { t: tagged, settings: data.settings, onApply: apply, busy })))
     }
