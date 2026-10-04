@@ -375,7 +375,7 @@ export class FreeModelAdapter {
         // 用剩余预算自动续写一次，替代宿主提示的「发送继续」手动接力（#28）。
         // 只在首段触发（recovering 段自己也撞墙就如实报 max-tokens，不无限续），
         // 且不与断流/空停续写共用 attempt 名额以外的路径。
-        const maxTokensCut = !recovering && reason.kind === 'max-tokens' && outcome.brokenToolCall !== true
+        const maxTokensCut = policy.enabled && !recovering && reason.kind === 'max-tokens' && outcome.brokenToolCall !== true
           && outcome.sawText === true && outcome.sawToolCall !== true
           && typeof outcome.answerText === 'string' && outcome.answerText.trim() !== ''
         const silentStop = !interrupted && !maxTokensCut && reason.kind === 'stop'
