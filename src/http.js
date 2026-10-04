@@ -23,6 +23,7 @@
  */
 
 import { CLIENT_UA, UPSTREAM_BASE, gatewayHeaders, truncateSession } from './upstream.js'
+import { egressFetch } from './egress.js'
 
 /** Harness-neutral failure codes (packages/llm/llm/src/error.ts vocabulary; CLIENT_ERROR extends it like CONFIG_DISABLED does). */
 export const CODE = {
@@ -300,7 +301,7 @@ export async function postStreamed({ path, body, session, requestId, attribution
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
-    response = await fetch(`${UPSTREAM_BASE}${path}`, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal })
+    response = await egressFetch(`${UPSTREAM_BASE}${path}`, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal })
   } catch (error) {
     // The signal's own reason is what fetch rejects with, and Node's is a
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
@@ -439,7 +440,7 @@ export async function getJson(path, { session, requestId, attributionUserAgent, 
   const onCallerAbort = () => { callerAborted = true; controller.abort() }
   signal?.addEventListener('abort', onCallerAbort, { once: true })
   try {
-    const response = await fetch(`${UPSTREAM_BASE}${path}`, { headers, redirect: 'error', signal: controller.signal })
+    const response = await egressFetch(`${UPSTREAM_BASE}${path}`, { headers, redirect: 'error', signal: controller.signal })
     const text = await response.text()
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 200) } } }

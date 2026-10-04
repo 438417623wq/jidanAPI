@@ -210,6 +210,56 @@ port and the network address it settled on. While it is on, anyone who can reach
 this machine can spend its free quota with that key — enable it only on a
 network you trust, and narrow the sources with a firewall if you can.
 
+**Send requests through a proxy outlet.** `Settings → Our Free Model → Egress
+proxy`. Optional and off by default — with it off, requests go direct. Two modes:
+
+- **Subscription mode**: paste a Clash/V2Ray subscription URL; the plugin spawns
+  mihomo locally (auto-detected — e.g. Clash Verge's `verge-mihomo.exe` — or set
+  the path yourself) with a built-in url-test group that re-measures every five
+  minutes and sends traffic to the fastest node, health-checking dead nodes out.
+  **The subscription URL is treated as a credential** — the path of a
+  subscription link *is* its token — so it lives at the same standard as the two
+  forward keys: kept in the local settings file, never sent with a request, and
+  never echoed in a settings payload. The panel shows the masked host only
+  (`https://host/…`); "Show" and "Copy" fetch the value from the settings page
+  itself (`GET /egress/url`), an empty input means "keep the stored address", and
+  "Clear" removes it and takes the outlet down with it.
+- **Single-proxy mode**: type an `http://` / `https://` / `socks5://` /
+  `socks5h://` proxy address and every handled request dials through it.
+
+**At rest.** mihomo has to read that address out of a config file (the plugin
+writes a throwaway `mihomo.yaml` into its data directory and spawns mihomo from
+there), so the on-disk copy stays plain text. What this treatment removes is the
+payload echo, the log line and the shoulder — not another process on the same
+machine.
+
+Only three kinds of traffic are taken over: model inference, the model listing
+fetch, and the egress IP probe; announcements, upgrades, and the EAC lane stay
+direct so the subscription identity never mixes into the release channel.
+
+**Scope.** The outlet serves this plugin's opencode traffic and nothing else on
+this machine. The mihomo it spawns runs from a throwaway config of the plugin's
+own: `bind-address: 127.0.0.1` with `allow-lan: false`, no `tun:` section, no
+system proxy, no system-level proxy registration and no virtual adapter — the
+listener is a temporary free loopback port. Your browser, shell tools and other
+IDE extensions never go through it; only requests this plugin sends to the
+opencode gateway are rerouted. Single-proxy mode works the same way: the rewrite
+happens inside the plugin.
+
+**Live status.** While the outlet is on, the settings page adds three lines below
+it: the current outlet (masked host · mode), the **best node** (the node url-test
+picked, with the delay that won it the rank), and **opencode access** (the last
+model-listing round trip, in seconds). Node and latency are readings, refreshed
+every 15 seconds by asking mihomo's own controller; when a reading is missing the
+line says "measuring…" and outbound traffic is unaffected.
+
+**What it can and cannot buy you**: per-IP rate limits and region gates move
+with the outlet; per-session rate limits and fingerprint gates do not care
+which outlet you use. Toggling the outlet re-probes on its own — a cold outlet
+needs a few seconds before it carries traffic, and the plugin waits for the new
+exit to answer before regrouping, so region-gated models follow the new exit.
+Reprobe (below) does the same on demand.
+
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models
 between the two groups on its own.

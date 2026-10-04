@@ -166,6 +166,11 @@ export const SETTINGS_INITIAL = {
      *  binds a routable address, and demands a key of its own (`forwardLanKey`). */
     lan: { enabled: false, port: 0 },
   },
+  /** Route inference/probe traffic through an outlet. `mode: 'subscription'`
+   *  spawns a local mihomo that load-balances a Clash subscription; `mode:
+   *  'client'` dials one http/https/socks5/socks5h URL directly. Off by
+   *  default — requests go straight out until this is turned on. */
+  egress: { enabled: false, mode: 'subscription', url: '', mihomoPath: '' },
   /** Cap a turn's output so a slow lane cannot run away. */
   defaultMaxTokens: 32768,
   /** 所有模型默认允许一次纯推理检查点续写，false 可关闭。 */
