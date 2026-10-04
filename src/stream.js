@@ -19,6 +19,43 @@ import crypto from 'node:crypto'
 import { classifyFailure } from './http.js'
 import { restoreToolName } from './upstream.js'
 
+/** DeepSeek v4-family models occasionally leak internal DSML control markup
+ * into the visible content at the reasoning→action boundary (observed live
+ * 2026-10-04: `\n\n<｜DSML｜ calls>\n` streamed as content right before a
+ * legitimate tool call — the serving stack failed to intercept that token on
+ * that sampling). Scrub `<｜DSML｜…>` fragments from the visible text as it
+ * flows; a tail that could still complete into the opening is held back until
+ * the next delta resolves it, and the close flush spills (or drops) what is
+ * left. A user quoting the token verbatim in an answer loses those characters —
+ * the trade is deliberate: leaking control tokens routinely is worse. */
+const DSML_OPENING = '<｜DSML｜'
+const DSML_TAG = /<｜DSML｜[^>]*>/g
+
+function createDsmlScrubber() {
+  let held = ''
+  return {
+    push(delta) {
+      let text = held + delta
+      held = ''
+      const cut = text.lastIndexOf('<')
+      if (cut !== -1) {
+        const tail = text.slice(cut)
+        if (DSML_OPENING.startsWith(tail) || (tail.startsWith(DSML_OPENING) && !tail.includes('>'))) {
+          held = tail
+          text = text.slice(0, cut)
+        }
+      }
+      return text.replace(DSML_TAG, '')
+    },
+    flush() {
+      const out = held
+      held = ''
+      if (out === '' || DSML_OPENING.startsWith(out) || (out.startsWith(DSML_OPENING) && !out.includes('>'))) return ''
+      return out.replace(DSML_TAG, '')
+    },
+  }
+}
+
 /** Mint a tool-call id for providers that stream arguments without one. */
 function mintToolCallId() {
   return `call_${crypto.randomBytes(12).toString('hex')}`
@@ -38,6 +75,7 @@ class BlockSink {
     this.checkpointTruncated = false
     this.brokenToolCall = false
     this.lastToolKey = undefined
+    this.dsml = createDsmlScrubber()
   }
 
   /**
@@ -81,10 +119,12 @@ class BlockSink {
 
   text(key, delta) {
     if (delta === undefined || delta === null || delta === '') return
+    const scrubbed = this.dsml.push(delta)
+    if (scrubbed === '') return
     this.sawText = true
     const block = this.slot(key, 'text')
-    block.text += delta
-    this.emit({ type: 'text-delta', index: block.index, text: delta })
+    block.text += scrubbed
+    this.emit({ type: 'text-delta', index: block.index, text: scrubbed })
   }
 
   reasoning(key, delta) {
@@ -114,7 +154,14 @@ class BlockSink {
   }
 
   closeAll() {
+    const spill = this.dsml.flush()
+    let spilled = false
     for (const block of this.open.values()) {
+      if (block.kind === 'text' && !spilled && spill !== '') {
+        spilled = true
+        block.text += spill
+        this.emit({ type: 'text-delta', index: block.index, text: spill })
+      }
       if (block.kind === 'text' && block.text !== '') this.emit({ type: 'block-end', index: block.index, block: { type: 'text', text: block.text } })
       else if (block.kind === 'reasoning' && block.text !== '') this.emit({ type: 'block-end', index: block.index, block: { type: 'reasoning', text: block.text } })
       else if (block.kind === 'tool-call') {

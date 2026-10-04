@@ -1,5 +1,5 @@
 {
-  "version": "1.4.3",
+  "version": "1.4.4",
   "algorithm": "sha256",
   "files": [
     {
@@ -50,7 +50,7 @@
     {
       "path": "package.json",
       "size": 1525,
-      "sha256": "07b6b15f3805a2ffa2fb5bc1799970dedad64314a74c1d441deedaf221009026"
+      "sha256": "94271c347a8978bcad2468f9ec88bb0739194750f58f021a76cd7d9f0c65d886"
     },
     {
       "path": "README_EN.md",
@@ -134,8 +134,8 @@
     },
     {
       "path": "src/stream.js",
-      "size": 21280,
-      "sha256": "63cc0e5b132420bca77d892303476f2297715d383e1ae1ba90815a90fee262a9"
+      "size": 23111,
+      "sha256": "9d670191c2b750446edb1f36157b23b075cd63828e24b7b089aa60a6f4a288a2"
     },
     {
       "path": "src/trust.js",
