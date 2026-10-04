@@ -279,6 +279,19 @@ function sha256File(file) {
  * Download and hash-verify the whole release into `stageDir`.
  * @returns {Promise<{bytes: number, files: number}>}
  */
+const STAGE_ATTEMPTS = 3
+const STAGE_BACKOFF_MS = 700
+
+/** A CN egress to the CDN drops connections regularly, and a one-shot staging
+ * turned one flaky second into a whole failed upgrade ("fetch failed" on a
+ * random file). Transport-class failures retry with a short backoff; integrity
+ * failures (size/digest) never do — a wrong body is the trust chain refusing,
+ * not a bad hair day. */
+function isTransientDownloadError(error) {
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return true
+  return /fetch failed|network|ECONN|ETIMEDOUT|EAI_AGAIN|terminated|socket/i.test(String(error?.message ?? error))
+}
+
 export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl = fetch, concurrency = 4, onProgress = () => {}, timeoutMs = 30000 }) {
   fs.rmSync(stageDir, { recursive: true, force: true })
   fs.mkdirSync(stageDir, { recursive: true })
@@ -290,24 +303,34 @@ export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl 
     while (cursor < manifest.files.length) {
       const file = manifest.files[cursor++]
       const target = path.join(stageDir, ...file.path.split('/'))
-      try {
-        const response = await fetchImpl(bustCdnCache(fileUrlOf(manifestUrl, manifest, file.path)), {
-          redirect: 'error',
-          signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
-        })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const body = Buffer.from(await response.arrayBuffer())
-        if (body.length !== file.size) throw new Error(`size ${body.length} != manifest ${file.size}`)
-        const digest = crypto.createHash('sha256').update(body).digest('hex')
-        if (digest !== file.sha256) throw new Error('sha256 mismatch')
-        fs.mkdirSync(path.dirname(target), { recursive: true })
-        fs.writeFileSync(target, body)
-        done += 1
-        bytes += body.length
-        onProgress({ done, total: manifest.files.length, file: file.path })
-      } catch (error) {
-        failures.push(`${file.path}: ${error?.message ?? error}`)
+      let lastError
+      for (let attempt = 1; attempt <= STAGE_ATTEMPTS; attempt += 1) {
+        try {
+          const response = await fetchImpl(bustCdnCache(fileUrlOf(manifestUrl, manifest, file.path)), {
+            redirect: 'error',
+            signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+          })
+          if (!response.ok) throw new Error(`HTTP ${response.status}`)
+          const body = Buffer.from(await response.arrayBuffer())
+          if (body.length !== file.size) throw new Error(`size ${body.length} != manifest ${file.size}`)
+          const digest = crypto.createHash('sha256').update(body).digest('hex')
+          if (digest !== file.sha256) throw new Error('sha256 mismatch')
+          fs.mkdirSync(path.dirname(target), { recursive: true })
+          fs.writeFileSync(target, body)
+          done += 1
+          bytes += body.length
+          onProgress({ done, total: manifest.files.length, file: file.path })
+          lastError = null
+          break
+        } catch (error) {
+          lastError = error
+          const httpStatus = /^HTTP (\d{3})$/.exec(String(error?.message ?? ''))?.[1]
+          const retryable = httpStatus ? httpStatus === '429' || httpStatus.startsWith('5') : isTransientDownloadError(error)
+          if (attempt >= STAGE_ATTEMPTS || !retryable) break
+          await new Promise(resolve => setTimeout(resolve, STAGE_BACKOFF_MS * attempt))
+        }
       }
+      if (lastError) failures.push(`${file.path}: ${lastError?.message ?? lastError}`)
     }
   })
   await Promise.all(workers)

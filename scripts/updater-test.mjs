@@ -150,6 +150,30 @@ await checkAsync('a hash mismatch aborts staging', async () => {
   assert.equal(fs.existsSync(path.join(data, 'stage')), false, 'the bad staging copy is removed')
   fs.rmSync(data, { recursive: true, force: true })
 })
+await checkAsync('stageRelease retries a dropped connection and succeeds', async () => {
+  const data = makeDataDir()
+  const manifest = parseManifest(newManifest)
+  let calls = 0
+  const flaky = async (url, opts) => {
+    calls += 1
+    if (calls === 2) throw new TypeError('fetch failed')
+    return fetch(url, opts)
+  }
+  const stats = await stageRelease({ manifest, manifestUrl: `${base}/repo/feed/manifest.json`, stageDir: path.join(data, 'stage'), fetchImpl: flaky })
+  assert.equal(stats.files, 4)
+  assert.equal(calls, 5, 'exactly one file was retried once')
+  verifyStaged(path.join(data, 'stage'), manifest)
+  fs.rmSync(data, { recursive: true, force: true })
+})
+await checkAsync('an integrity failure never retries', async () => {
+  const data = makeDataDir()
+  const manifest = parseManifest(corruptManifest)
+  let calls = 0
+  const counting = (url, opts) => { calls += 1; return fetch(url, opts) }
+  await assert.rejects(() => stageRelease({ manifest, manifestUrl: `${corruptBase}/repo/feed/manifest.json`, stageDir: path.join(data, 'stage'), fetchImpl: counting }), /sha256 mismatch|staging failed/)
+  assert.equal(calls, 4, 'one attempt per file — the trust chain does not get benefit of the doubt')
+  fs.rmSync(data, { recursive: true, force: true })
+})
 await checkAsync('PluginUpdater.check detects the newer version', async () => {
   const pkg = makePackage(OLD)
   const data = makeDataDir()
