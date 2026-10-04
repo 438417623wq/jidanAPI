@@ -1,5 +1,5 @@
 {
-  "version": "1.4.1",
+  "version": "1.4.2",
   "algorithm": "sha256",
   "files": [
     {
@@ -50,7 +50,7 @@
     {
       "path": "package.json",
       "size": 1525,
-      "sha256": "dbae19fb0b39d2768232fec6b21ef6a022c804024afa6c8e57b0714a3b4cb46d"
+      "sha256": "1bff94bd9bdea8a2c90cc14e681c3a87ee2e62447facfe24307e3222d36e9d8c"
     },
     {
       "path": "README_EN.md",
