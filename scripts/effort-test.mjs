@@ -103,6 +103,52 @@ check('a named rung is recorded as itself', records.at(-1).effort, 'light')
 await sentBudget({ reasoningEffort: 'turbo' })
 check('a rung the plugin does not declare is recorded as the default it became', records.at(-1).effort, 'balanced')
 
+// ── DSML leak scrubbing ──────────────────────────────────────────────────────
+// DeepSeek v4 models sometimes stream their internal control markup as visible
+// content at the reasoning→action boundary. The sink must strip it live, split
+// across deltas or not, without touching the real answer or the tool calls.
+{
+  const { readStream } = await import('../src/stream.js')
+  await (async () => {
+    const frames = [
+      '{"choices":[{"index":0,"delta":{"content":"\\n\\n<｜"}}]}',
+      '{"choices":[{"index":0,"delta":{"content":"DSML｜ calls>\\n"}}]}',
+      '{"choices":[{"index":0,"delta":{"content":"正式回答"}}]}',
+      '{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]
+    const chunks = []
+    for await (const chunk of readStream(frames, 'chat', new Map())) chunks.push(chunk)
+    const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
+    check('no DSML fragment reaches the user', /DSML｜/.test(text), false)
+    check('the real answer survives the scrub', text, '\n\n\n正式回答')
+    const end = chunks.find(c => c.type === 'block-end' && c.block?.type === 'text')
+    check('the closed block carries the same clean text', end?.block?.text, '\n\n\n正式回答')
+  })()
+  await (async () => {
+    const frames = [
+      '{"choices":[{"index":0,"delta":{"content":"完整标记<｜DSML｜ calls>一次到达"}}]}',
+      '{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]
+    const chunks = []
+    for await (const chunk of readStream(frames, 'chat', new Map())) chunks.push(chunk)
+    const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
+    check('a tag arriving whole in one delta is stripped too', text, '完整标记一次到达')
+  })()
+  await (async () => {
+    const frames = [
+      '{"choices":[{"index":0,"delta":{"content":"普通 <div> 标签和结尾的孤立 < 保留"}}]}',
+      '{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}',
+      'data: [DONE]',
+    ]
+    const chunks = []
+    for await (const chunk of readStream(frames, 'chat', new Map())) chunks.push(chunk)
+    const text = chunks.filter(c => c.type === 'text-delta').map(c => c.text).join('')
+    check('ordinary markup passes untouched', text, '普通 <div> 标签和结尾的孤立 < 保留')
+  })()
+}
+
 await stub.close()
 console.log(failures === 0 ? '\neffort: the ladder is the budget' : `\n${failures} check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1

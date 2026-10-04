@@ -2,10 +2,18 @@
   "$schema": "./announcements.schema.md",
   "announcements": [
     {
+      "id": "2026-10-04-v1.4.4-release",
+      "title": "v1.4.4：剥除 DeepSeek 泄漏的 DSML 控制标记——思考结束后不再显示 <｜DSML｜ calls>",
+      "level": "update",
+      "pinned": true,
+      "createdAt": "2026-10-04T11:20:00Z",
+      "html": "<p><strong>Our Free Model v1.4.4</strong> 修一个 DeepSeek V4 系模型的显示缺陷：有的回合里，模型在<strong>思考结束、准备调用工具</strong>的那一刻，会把内部的控制标记 <code>&lt;｜DSML｜ calls&gt;</code> 当成正文漏出来（服务端那次采样没有拦住这个特殊 token），用户就会在回答开头看到这串乱码。</p><ul><li><strong>流式剥除</strong>——插件的流解析器现在会实时把 <code>&lt;｜DSML｜…&gt;</code> 控制片段从可见正文里剥掉（半个标记会缓存到能判定为止再吐），正式的工具调用帧不受影响，工具照常执行。</li><li><strong>两条车道同时生效</strong>——免费道与 EAC 渠道走同一个解析器；EAC 渠道的六个 DeepSeek/Kimi/GLM 模型同样受保护。</li><li>1.4.3 的升级下载三次重试原样保留。</li></ul><p>全部 21 个离线套件通过，清单逐字节 Ed25519 重签。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
+    },
+    {
       "id": "2026-10-04-v1.4.3-release",
       "title": "v1.4.3：升级下载逐文件三次重试——瞬时断流不再让整包升级失败",
       "level": "update",
-      "pinned": true,
+      "pinned": false,
       "createdAt": "2026-10-04T10:30:00Z",
       "html": "<p><strong>Our Free Model v1.4.3</strong> 修的是升级链路自己：<strong>升级下载逐文件三次重试</strong>。有用户在 1.3.1 → 1.4.2 升级时遇到 <code>staging failed: …: fetch failed</code>——国内出口到 CDN 的连接会瞬间抖动，而 staging 此前每个文件只有一次机会，抖一下整包失败。现在传输类失败（连接被断、超时、5xx/429）自动退避重试两次；<strong>完整性失败（大小/SHA-256 不符）依旧一次拒绝</strong>——那是信任链在拒绝，不给侥幸。全部 21 个离线套件通过，清单逐字节 Ed25519 重签。遇到升级失败请直接再点一次「立即升级」，1.4.3 起会自己扛住瞬时抖动。</p>"
     },
