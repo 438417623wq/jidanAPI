@@ -14,8 +14,6 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
-cookies3099.txt
-c3099.txt
 
 # Co-paid lane minting: plaintext lives outside the repo.
 scripts/eac-vault-mint.mjs
