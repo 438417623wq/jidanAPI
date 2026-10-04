@@ -324,7 +324,7 @@ async function main() {
 
   // 11 — outletLabel shows the host, never the credential path.
   stage = 'label'
-  check(outletLabel('https://dy2.ssydy.com/s/SECRET') === 'https://dy2.ssydy.com', 'subscription label masks the path')
+  check(outletLabel('https://outlet.example.com/s/SECRET') === 'https://outlet.example.com', 'subscription label masks the path')
 
   // 12 — the settings page's node reading, against a fake mihomo controller.
   stage = 'outlet selection'
