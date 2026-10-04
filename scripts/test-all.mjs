@@ -23,6 +23,7 @@ const suites = [
   ['manifest', 'build-manifest.mjs', ['--check']],
   ['release', 'release-e2e.mjs', []],
   ['client-lint', 'client-lint.mjs', []],
+  ['heatmap', 'heatmap-test.mjs', []],
   ['trust', 'trust-test.mjs', []],
   ['sanitize', 'sanitize-test.mjs', []],
   ['feed', 'feed-test.mjs', []],
