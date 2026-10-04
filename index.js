@@ -803,6 +803,11 @@ export function apply(ctx, config) {
       return current === undefined ? undefined : (req => current.admit(req))
     },
   }
+  const logAdmissionRejection = surface => ({ status, source, reason }) => {
+    // Fixed fields only: headers, request URLs and admission errors may contain
+    // credentials. JSON API and SSE must report the same admission boundary.
+    logger.warn?.(`our-free-model: ${surface} admission rejected status=${status} source=${source} reason=${reason}`)
+  }
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay,
@@ -913,6 +918,7 @@ export function apply(ctx, config) {
     managedDistribution: managed,
     push,
     connection: fenceConnection,
+    onAdmissionRejection: logAdmissionRejection('settings API'),
     logger,
   })
 
@@ -938,10 +944,10 @@ export function apply(ctx, config) {
 
   /** Adopt one request as a live push stream, after the trust fence. */
   function eventsRoute(req, res) {
-    const rejection = rejectionFor(req, fenceConnection)
+    const rejection = rejectionFor(req, fenceConnection, logAdmissionRejection('events'))
     if (rejection !== undefined) {
       res.writeHead(rejection, { 'content-type': 'text/plain; charset=utf-8' })
-      res.end(rejection === 401 ? 'unauthorized' : 'forbidden')
+      res.end(rejection === 401 ? 'unauthorized' : rejection === 503 ? 'admission unavailable' : 'forbidden')
       return
     }
     push.attach(req, res, helloPayload())
@@ -1343,13 +1349,15 @@ function createApiRoutes(deps) {
     const url = new URL(req.url ?? '/', 'http://localhost')
     const routePath = url.pathname.replace(/^\/api\/our-free-model/, '').replace(/\/+$/, '') || '/'
     const method = String(req.method ?? 'GET').toUpperCase()
-    const rejection = rejectionFor(req, deps.connection)
+    const rejection = rejectionFor(req, deps.connection, deps.onAdmissionRejection)
     const send = (status, payload) => {
       const body = JSON.stringify(payload)
       res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
       res.end(body)
     }
-    if (rejection !== undefined) return send(rejection, { error: rejection === 401 ? 'unauthorized' : 'forbidden' })
+    if (rejection !== undefined) return send(rejection, {
+      error: rejection === 401 ? 'unauthorized' : rejection === 503 ? 'admission unavailable' : 'forbidden',
+    })
     try {
       if (method === 'GET' && routePath === '/summary') {
         return send(200, buildSummary(deps))
