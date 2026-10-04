@@ -119,6 +119,13 @@ const answered = await (await fetch(`http://127.0.0.1:${forwardPort}/v1/chat/com
 })).json()
 check('a non-streaming call answers', String(answered.choices?.[0]?.message?.content ?? ''), 'hello from the tui')
 check('usage comes back in the OpenAI spelling the caller reads', [answered.usage?.prompt_tokens, answered.usage?.completion_tokens], [11, 7])
+const requestTraces = () => ctx.__logs
+  .filter(line => line.startsWith('info our-free-model request: '))
+  .map(line => JSON.parse(line.slice('info our-free-model request: '.length)))
+await until(() => requestTraces().some(event => event.stage === 'finished'), { what: 'forward diagnostics to reach the host logger' })
+check('forward lifecycle events reach the host info logger',
+  requestTraces().map(event => event.stage), ['received', 'body_received', 'dispatch', 'generation_finished', 'finished'])
+check('the host diagnostics do not include the local key', JSON.stringify(requestTraces()).includes(key), false)
 
 // The same listener's Responses route has to carry a caller's *tool* history
 // upstream, not only its prose. Those rows arrive in OpenAI's spelling, with the
@@ -163,6 +170,17 @@ check('and a keyless liveness probe answers nothing on a routable address',
   (await fetch(`http://127.0.0.1:${lanPort}/health`)).status, 401)
 check('the relay carries the API paths, not whatever else answers on loopback',
   (await fetch(`http://127.0.0.1:${lanPort}/health`, { headers: { authorization: `Bearer ${lanKey}` } })).status, 404)
+const lanAnswer = await fetch(`http://127.0.0.1:${lanPort}/v1/chat/completions`, {
+  method: 'POST', headers: { authorization: `Bearer ${lanKey}`, 'content-type': 'application/json' },
+  body: JSON.stringify({ model: 'space-bunny-free', messages: [{ role: 'user', content: 'hi' }] }),
+})
+await lanAnswer.json()
+await until(() => requestTraces().some(event => event.hop === 'relay' && event.stage === 'finished'), { what: 'relay diagnostics to reach the host logger' })
+const relayId = lanAnswer.headers.get('x-ofm-request-id')
+check('host logs link a relay request to the local completion',
+  requestTraces().some(event => event.hop === 'forward' && event.parentId === relayId && event.stage === 'finished'), true)
+check('the host diagnostics do not include either forward key',
+  requestTraces().some(event => JSON.stringify(event).includes(key) || JSON.stringify(event).includes(lanKey)), false)
 
 // A turn the lane refuses must not arrive as an empty 200.
 stub.api.refuseAll = true
