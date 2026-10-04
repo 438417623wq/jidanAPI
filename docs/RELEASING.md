@@ -6,6 +6,11 @@
 
 一切通过插件仓库根目录下的 `feed/` 目录完成，**推送即发布**。
 
+普通贡献者与维护者的检查分工、受保护的签名补丁准备流程见
+[`contributor-ci-signing.md`](contributor-ci-signing.md)。贡献者运行
+`npm run test:contributor`；main 合并前必须通过 `release-readiness`，
+默认 `npm test` 仍包含完整发布校验。不要让贡献者持有发布私钥。
+
 ## 推送公告
 
 编辑 [`feed/announcements.json`](../feed/announcements.json)，往 `announcements`
@@ -36,7 +41,7 @@
 # 1. 修改 package.json 的 version 与 feed/announcements.json（版本说明）
 # 2. 重新生成清单（把每个发布文件的字节数与 SHA-256 写进 feed/manifest.json；
 #    同一份文件清单也会写进 catalog/integrity.json，供生态目录审计用）
-node scripts/build-manifest.mjs
+node scripts/build-manifest.mjs --key /安全目录/既有发布私钥.pem
 # 3. 确认清单与实物一致（不一致就非零退出；已接进 npm test）
 node scripts/build-manifest.mjs --check
 # 4. 提交并推送（目录记录 revision 的两步提交见下一节），再打 tag 并创建 Release
@@ -51,6 +56,10 @@ node scripts/live-audit.mjs          # 打印 OK 才算发出去；FAIL 就按�
 第 2 步不是可选项：清单是发布者对每个文件的**字节数与 SHA-256 的承诺**，改了发布文
 件却没重跑，客户端就会下到新文件、拿旧哈希去校验，校验机制会（正确地）拒绝安装——于
 是这一版的一键升级对所有旧版本用户都失败。`--check` 就是让这种事在提交前失败。
+
+`--key` 与 `OFM_MANIFEST_KEY` 都接收私钥**文件路径**；没有既有私钥时拒绝写入，
+不得提交占位签名或替换公钥。受保护工作流的 `RELEASE_MANIFEST_PRIVATE_KEY`
+则是 PEM **内容**，由可信 main 的 `prepare-release.mjs` 使用，两者不要混用。
 
 摘要按 **LF 归一化后的字节**计算，不是工作区字节：`.gitattributes` 是
 `* text=auto eol=lf`，用户下载到的是 blob，而编辑器可以把工作区改成 CRLF 且
@@ -126,8 +135,8 @@ CDN 上 `…@main/index.js` 仍返回 v1.3.0 的 56 999 字节——清单声明
 相对清单自身 URL 解析，因此对不可变 ref 跑它（`--source …/@v1.3.1/feed/manifest.json`）
 验的是发布物本身，而默认三个源验的是用户实际会走的那条路。
 
-用 `feedUrl` 设置可把源指向任意 URL（含 `{repo}` 占位符），本地测试时指向一个静态文件
-服务器即可。
+`feedUrl` 仅覆写公告源（含 `{repo}` 占位符），不改变升级源或签名信任根。
+本地升级测试由测试程序注入 `defaultSources`；发布复核使用 `live-audit.mjs --source`。
 
 ---
 
@@ -137,6 +146,11 @@ This document is for maintainers and is not part of the release: `package.json`'
 `files` does not include `docs/`, so it never reaches an installed copy and never
 appears in [`README_EN.md`](../README_EN.md). Everything lives in the repository's
 `feed/` directory — **pushing is publishing**.
+
+See [`contributor-ci-signing.md`](contributor-ci-signing.md) for contributor
+checks and protected signature preparation. Contributors run
+`npm run test:contributor`; maintainers must pass `release-readiness` before
+merging into main. The default `npm test` still checks the complete release.
 
 ## Push an announcement
 
@@ -166,7 +180,7 @@ become code execution.
 # 1. bump `version` in package.json, and the release note in feed/announcements.json
 # 2. regenerate the manifest (size + SHA-256 of every published file; the same
 #    list is written to catalog/integrity.json for ecosystem catalog audits)
-node scripts/build-manifest.mjs
+node scripts/build-manifest.mjs --key /secure/path/to/existing-release-key.pem
 # 3. confirm the manifest matches the tree (non-zero exit otherwise; part of npm test)
 node scripts/build-manifest.mjs --check
 # 4. commit and push (see the two-step catalog revision convention below), then
@@ -186,6 +200,11 @@ downloads the *new* file while verifying it against the *old* hash — verificat
 then correctly refuses to install, and the one-click upgrade is broken for every
 user on an older version. `--check` is what makes that fail before a commit
 instead of in the field.
+
+`--key` and `OFM_MANIFEST_KEY` accept a private-key **file path**. No key means
+no manifest write; do not add a placeholder signature or replace the public
+key. The protected workflow's `RELEASE_MANIFEST_PRIVATE_KEY` instead contains
+the existing key's **PEM text**, used only by the trusted main signer.
 
 Digests are computed over **LF-normalised** bytes, not working-tree bytes:
 `.gitattributes` says `* text=auto eol=lf`, so users download the blob while an
@@ -282,5 +301,6 @@ equivalent to an older install clicking *Upgrade* and succeeding. The manifest's
 immutable ref (`--source …/@v1.3.1/feed/manifest.json`) verifies the release itself,
 while the default sources verify the route a user actually takes.
 
-The `feedUrl` setting can point the source at any URL (with a `{repo}`
-placeholder) — point it at a static file server for local testing.
+`feedUrl` overrides only announcements (with a `{repo}` placeholder), never the
+update source or signing trust root. Local updater tests inject `defaultSources`;
+release audits use `live-audit.mjs --source`.

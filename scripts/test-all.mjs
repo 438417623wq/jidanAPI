@@ -1,15 +1,15 @@
 /**
  * Run every offline suite in one command.
  *
- *     node scripts/test-all.mjs [--only <name>]
+ *     node scripts/test-all.mjs [--mode all|contributor|release] [--only <name>]
  *
  * These are the checks that need no network and spend no free-lane quota: each
  * one mounts the real module against a local stand-in. The live end-to-end run
  * against the gateway is separate and costs minutes and quota, so it stays a
  * deliberate act: `node scripts/host-selftest.mjs`.
  *
- * The manifest check is in here because shipping a manifest that disagrees with
- * the files it describes breaks the in-app upgrade for every user at once
+ * The default includes the manifest check because shipping a manifest that
+ * disagrees with its files breaks the in-app upgrade for every user at once
  * (issue #1), and nothing else fails when that happens.
  */
 import { spawn } from 'node:child_process'
@@ -17,11 +17,26 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const scriptsDir = fileURLToPath(new URL('.', import.meta.url))
-const only = process.argv.indexOf('--only') === -1 ? null : process.argv[process.argv.indexOf('--only') + 1]
+const options = { mode: 'all', only: null }
+for (let index = 2; index < process.argv.length; index += 1) {
+  const flag = process.argv[index]
+  if (!['--mode', '--only'].includes(flag) || !process.argv[index + 1] || process.argv[index + 1].startsWith('--')) {
+    console.error(`usage: node scripts/test-all.mjs [--mode all|contributor|release] [--only <name>] (invalid ${flag})`)
+    process.exit(1)
+  }
+  options[flag.slice(2)] = process.argv[++index]
+}
+if (!['all', 'contributor', 'release'].includes(options.mode)) {
+  console.error(`unknown test mode "${options.mode}"`)
+  process.exit(1)
+}
+const { mode, only } = options
+const releaseSuites = new Set(['manifest', 'release', 'catalog'])
 
 const suites = [
   ['manifest', 'build-manifest.mjs', ['--check']],
   ['release', 'release-e2e.mjs', []],
+  ['release-preparation', 'release-preparation-test.mjs', []],
   ['client-lint', 'client-lint.mjs', []],
   ['heatmap', 'heatmap-test.mjs', []],
   ['trust', 'trust-test.mjs', []],
@@ -39,10 +54,12 @@ const suites = [
   ['speed-stat', 'speed-stat-test.mjs', []],
   ['picker', 'picker-test.mjs', []],
   ['tui', 'tui-test.mjs', []],
-  ['catalog', 'catalog-test.mjs', []],
+  ['catalog', 'catalog-test.mjs', mode === 'contributor' ? ['--contributor'] : []],
   ['vault', 'vault-test.mjs', []],
   ['offline', 'offline-test.mjs', []],
-].filter(([name]) => only === null || name.startsWith(only))
+].filter(([name]) => (mode === 'contributor' ? !['manifest', 'release'].includes(name)
+  : mode === 'release' ? releaseSuites.has(name) : true)
+  && (only === null || name.startsWith(only)))
 
 if (only !== null && suites.length === 0) {
   console.error(`--only "${only}" selected no suite`)
@@ -101,6 +118,7 @@ function runSuite(script, args) {
 }
 
 const results = []
+console.log(`test mode: ${mode}${mode === 'contributor' ? ' — code checks only; release readiness is checked separately' : ''}`)
 for (const [name, script, args] of suites) {
   const run = await runSuite(script, args)
   const output = `${run.stdout}${run.stderr}`.trimEnd().split('\n')

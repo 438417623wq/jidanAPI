@@ -1,0 +1,57 @@
+name: prepare-release
+
+# Run from main only. Configure release-signing with reviewers and main-only
+# deployment branches BEFORE adding RELEASE_MANIFEST_PRIVATE_KEY to it.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: 已审查且包含最新 main 的候选完整提交 SHA
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      # Trusted workflow and signer come from this run's main commit. No
+      # candidate checkout, npm install, lifecycle hook or candidate code runs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Fetch the reviewed commit as Git objects
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git -c "http.extraheader=AUTHORIZATION: basic $AUTH" fetch --no-tags origin "$CANDIDATE_SHA"
+          git -c "http.extraheader=AUTHORIZATION: basic $AUTH" fetch --no-tags origin main
+          test "$(git rev-parse refs/remotes/origin/main)" = "$GITHUB_SHA"
+          git merge-base --is-ancestor "$GITHUB_SHA" "$CANDIDATE_SHA"
+      - name: Prepare the signed patch without executing candidate code
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          OFM_RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_MANIFEST_PRIVATE_KEY }}
+        run: |
+          node scripts/prepare-release.mjs \
+            --base "$GITHUB_SHA" \
+            --candidate "$CANDIDATE_SHA" \
+            --output "$RUNNER_TEMP/ofm-release-signature"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: signed-release-${{ inputs.candidate_sha }}
+          path: ${{ runner.temp }}/ofm-release-signature/
+          if-no-files-found: error
+          retention-days: 7

@@ -1,17 +1,16 @@
 name: test
 
-# The repository *is* the release channel: `feed/manifest.json` publishes byte
-# counts and SHA-256 digests that the in-app upgrader verifies against files
-# fetched from this repository. A pushed commit whose manifest disagrees with its
-# own tree breaks the one-click upgrade for every installed user at once, and
-# nothing else fails — which is exactly what shipped in 1.2.1 (issue #1), and what
-# recurred on `main` afterwards. This workflow is the gate that would have caught
-# both: every offline suite, plus the manifest drift check.
+# main is the live update source. Contributor checks do not need a signing key,
+# but the separate release-readiness check must pass before merging shipped
+# changes into main. Maintainers prepare signatures on the reviewed candidate.
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   offline:
@@ -31,7 +30,25 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: npm test
+      - name: Validate code or the complete main tree
+        env:
+          TEST_MODE: ${{ github.event_name == 'pull_request' && 'contributor' || 'all' }}
+        run: node scripts/test-all.mjs --mode "$TEST_MODE"
+
+  # Keep this check required on main. A red result on a source PR means the
+  # maintainer still has release preparation to do, not that the author needs
+  # access to the publisher's private key.
+  release-readiness:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm run test:release
 
   # The adapter seam (and only it) is kept under strict TypeScript checking. This
   # job installs the one devDependency; the offline job above stays install-free.
