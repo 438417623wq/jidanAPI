@@ -384,6 +384,56 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
   }
 }
 
+/**
+ * Address families a machine holds but a peer on *this* network cannot reach
+ * through: Windows' WSL/Hyper-V/Docker switches, virtual-machine host-only nets,
+ * VPN and tunnel adapters, and the Bluetooth/Direct adapters. Their addresses are
+ * real and would answer a connect — which is the whole problem, because the
+ * settings page has one line for this URL and it is the line a user copies to the
+ * other machine.
+ */
+const VIRTUAL_IFACE = /(vethernet|hyper-?v|wsl|virtualbox|vmware|docker|br-|veth|tailscale|zerotier|utun|awdl|llw|anpi|^(?:tun|tap|utun)\d|loopback|bluetooth|wi-?fi direct|local area connection\*|virtual|虚拟|环回|蓝牙|隧道)/i
+
+/**
+ * The IPv4 addresses another machine on this network could dial, best first.
+ *
+ * Two properties matter, because the caller reads this on every ask and puts the
+ * first entry in front of the user as *the* address.
+ *
+ * It is re-derived, never cached: a laptop that changed networks, woke from sleep,
+ * or brought a VPN up holds a different set of addresses than it did a minute ago,
+ * and an address that was true at relay start is the one that goes stale in the
+ * panel. `os.networkInterfaces()` is the caller's input for exactly that reason.
+ *
+ * And the physical interfaces come first. A machine commonly holds two private
+ * addresses at once — the router's `192.168.x.y` and something like
+ * `10.208.90.204` on a virtual switch or VPN adapter — and taking whichever the
+ * OS happened to list first showed the user the one that cannot answer from
+ * outside. Order is otherwise the OS's own, so a machine with several real
+ * interfaces keeps the order the platform reports.
+ *
+ * @param {Record<string, Array<{family?: string, internal?: boolean, address?: string}>|undefined>} interfaces
+ * @returns {string[]} addresses, most likely to answer first; empty when none can
+ */
+export function rankLanAddresses(interfaces) {
+  const rows = []
+  const seen = new Set()
+  for (const [name, entries] of Object.entries(interfaces ?? {})) {
+    for (const entry of entries ?? []) {
+      if (entry?.family !== 'IPv4' || entry.internal === true) continue
+      const address = String(entry.address ?? '')
+      // `169.254.x.y` is APIPA: the DHCP offer never came, and the address means
+      // "this link is broken", not "dial me".
+      if (address === '' || address.startsWith('169.254.') || seen.has(address)) continue
+      seen.add(address)
+      rows.push({ address, virtual: VIRTUAL_IFACE.test(String(name)) })
+    }
+  }
+  // A stable sort keeps the OS's order inside each group.
+  rows.sort((a, b) => Number(a.virtual) - Number(b.virtual))
+  return rows.map(row => row.address)
+}
+
 /** The routes the LAN relay carries — the local listener's surface and nothing else. */
 const RELAY_PATHS = new Set([
   '/v1/models', '/models',

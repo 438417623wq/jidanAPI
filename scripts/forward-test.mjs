@@ -25,7 +25,7 @@
 import http from 'node:http'
 import net from 'node:net'
 import assert from 'node:assert/strict'
-import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS } from '../src/forward.js'
+import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort, classifyBindError, startHeartbeat, SSE_HEARTBEAT_MS, rankLanAddresses } from '../src/forward.js'
 import { toToolDefs } from '../src/messages.js'
 import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
@@ -220,6 +220,44 @@ await checkAsync('a non-JSON body answers 400', async () => {
   assert.equal(response.status, 400)
   const payload = await response.json()
   assert.equal(payload.error.type, 'invalid_request_error')
+})
+
+// ── the address a peer on this network should dial ───────────────────────────
+// The relay binds every interface, so the address to hand out is a property of
+// the machine right now — and a machine commonly holds two private addresses at
+// once, the router's 192.168.x.y and something on a virtual switch or VPN
+// adapter. The settings page puts the first entry in front of the user as *the*
+// address, so the physical interface has to lead and a re-read has to happen
+// rather than a cached answer from relay start.
+await checkAsync('a virtual adapter does not lead the LAN address list', async () => {
+  assert.deepEqual(rankLanAddresses({
+    'Wi-Fi': [{ family: 'IPv4', internal: false, address: '192.168.1.20' }],
+    'vEthernet (WSL)': [{ family: 'IPv4', internal: false, address: '10.208.90.204' }],
+  }), ['192.168.1.20', '10.208.90.204'])
+})
+
+await checkAsync('the platform order holds inside each group, and IPv6, loopback and APIPA are out', async () => {
+  assert.deepEqual(rankLanAddresses({
+    'Ethernet': [{ family: 'IPv4', internal: false, address: '10.0.0.5' }, { family: 'IPv6', internal: false, address: 'fe80::1' }],
+    'Wi-Fi': [
+      { family: 'IPv4', internal: true, address: '127.0.0.1' },
+      { family: 'IPv4', internal: false, address: '169.254.3.4' },
+      { family: 'IPv4', internal: false, address: '192.168.1.20' },
+    ],
+    'Tailscale': [{ family: 'IPv4', internal: false, address: '100.64.0.9' }],
+  }), ['10.0.0.5', '192.168.1.20', '100.64.0.9'])
+})
+
+await checkAsync('an address two interfaces share is reported once', async () => {
+  assert.deepEqual(rankLanAddresses({
+    'Wi-Fi': [{ family: 'IPv4', internal: false, address: '192.168.1.20' }],
+    'Ethernet': [{ family: 'IPv4', internal: false, address: '192.168.1.20' }],
+  }), ['192.168.1.20'])
+})
+
+await checkAsync('a machine with nothing dialable reports an empty list', async () => {
+  assert.deepEqual(rankLanAddresses({ 'Loopback': [{ family: 'IPv4', internal: true, address: '127.0.0.1' }] }), [])
+  assert.deepEqual(rankLanAddresses(undefined), [])
 })
 
 // ── the responses endpoint (#20 / Codex-shaped clients) ──────────────────────

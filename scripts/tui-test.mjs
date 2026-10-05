@@ -13,7 +13,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { chatFrames, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
+import { callRoute, chatFrames, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -177,6 +177,15 @@ check('…and sends its result, keyed to the call it answers',
 const written = JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'settings.json'), 'utf8'))
 const lanPort = written.forward?.lan?.port ?? 0
 check('the LAN relay came up and wrote back the port it settled on', lanPort > 0, true)
+// The address to hand out is re-read from this machine's interfaces on every
+// ask — the panel polls it while the relay is on — so a machine that moved
+// networks is not told to dial where it used to be.
+const lanApi = ctx.__captured.serverRoutes.find(route => route.path === '/api/our-free-model')?.handler
+const lanRead = await callRoute(lanApi, 'GET', '/api/our-free-model/forward/lan/addresses')
+check('the panel can re-read the LAN addresses while the relay is up',
+  [lanRead.status, Array.isArray(lanRead.json?.addresses)], [200, true])
+check('and the settings snapshot carries the same list',
+  Array.isArray((await callRoute(lanApi, 'GET', '/api/our-free-model/summary')).json?.settings?.forward?.lan?.addresses), true)
 const lanKey = written.forwardLanKey
 check('with a key of its own, minted apart from the local one', typeof lanKey === 'string' && lanKey !== '' && lanKey !== key, true)
 const lanModels = await fetch(`http://127.0.0.1:${lanPort}/v1/models`, { headers: { authorization: `Bearer ${lanKey}` } })

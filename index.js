@@ -33,7 +33,7 @@ import { FreeModelAdapter, ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/
 import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, resolveDshHome } from './src/store.js'
 import { buildCatalog, buildEacCatalog, buildKiloCatalog, isEacEntry, isKiloEntry, parseListing, reviveKiloCatalog } from './src/catalog.js'
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
-import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
+import { generateKey, rankLanAddresses, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
 import { chanGatewayCredential, chanGatewayEnabled, chanGatewayPort, startChanRelay } from './src/chan-relay.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
 import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
@@ -842,15 +842,16 @@ export function apply(ctx, config) {
     return minted
   }
 
-  /** IPv4 addresses another machine on this network could dial. */
+  /**
+   * IPv4 addresses another machine on this network could dial, best first.
+   *
+   * Read fresh on every ask — the panel polls it while the relay is on — because
+   * the answer is a property of the machine's interfaces and they change under a
+   * laptop that switched networks. The ordering lives in `rankLanAddresses`
+   * (`src/forward.js`), next to the relay it describes.
+   */
   function lanAddresses() {
-    const out = []
-    for (const entries of Object.values(os.networkInterfaces())) {
-      for (const entry of entries ?? []) {
-        if (entry.family === 'IPv4' && entry.internal !== true) out.push(entry.address)
-      }
-    }
-    return out
+    return rankLanAddresses(os.networkInterfaces())
   }
 
   /**
@@ -1551,6 +1552,9 @@ export function apply(ctx, config) {
     push,
     connection: fenceConnection,
     onAdmissionRejection: logAdmissionRejection('settings API'),
+    /** Read on every ask, so a machine that changed networks answers with the
+     *  interfaces it has now rather than the ones the relay started on. */
+    lanAddresses,
     logger,
   })
 
@@ -2208,6 +2212,14 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/forward/lan/rotate') {
         return send(200, { key: deps.rotateLanKey() })
+      }
+      // The relay binds every interface, so which address a peer should dial is a
+      // property of this machine right now — not of the moment the relay started.
+      // The panel polls this while the relay is on: a laptop that switched
+      // networks (or brought a VPN up) holds different addresses, and the one it
+      // was showing is the one the user copies to the other machine.
+      if (method === 'GET' && routePath === '/forward/lan/addresses') {
+        return send(200, { addresses: deps.lanAddresses() })
       }
       // The subscription/proxy URL is a credential, so it lives outside every
       // routine payload and leaves the process only when the settings page asks
