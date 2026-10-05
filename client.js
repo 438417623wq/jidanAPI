@@ -1272,7 +1272,7 @@ window.__ModuleLoader__.load({
     // saturation, so the panel and the server can never disagree about the
     // color. The panel renders nothing at all when the host has no lane or the
     // gateway is dark — a gauge that lies would be worse than no gauge.
-    const POOL_REPO_URL = 'https://github.com/zouyuxuan122/dsh-our-free-model'
+    const POOL_REPO_URL = 'https://github.com/Ebony-Vinyl/dsh-our-free-model'
     const FISH_PATH = 'M1 7c2.5-3.5 7-5 11-3.2L18.5 1v12L12 10.2C8 12 3.5 10.5 1 7zm16.4 0l5.1-3.4v6.8L17.4 7zM8.4 5.6a1 1 0 11-2 0 1 1 0 012 0z'
     function PoolPanel(props) {
       const { t } = props

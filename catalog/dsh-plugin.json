@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/Yan-Zero/dsh-std/3df054302468d2091859db4b3bd079042d33f100/packages/manifest/schema/dsh-plugin-0.15.schema.json",
   "manifestVersion": "0.15",
-  "id": "dev.zouyuxuan122.dsh-our-free-model",
+  "id": "dev.Ebony-Vinyl.dsh-our-free-model",
   "name": "dsh-our-free-model",
   "version": "1.4.5",
   "facets": {
@@ -12,7 +12,7 @@
   },
   "license": "MIT",
   "source": {
-    "repository": "https://github.com/zouyuxuan122/dsh-our-free-model",
+    "repository": "https://github.com/Ebony-Vinyl/dsh-our-free-model",
     "revision": "b2ab00fedd5711283e117f6ecb8f4a45d143d1c2"
   },
   "x-ecosystem-packaging": {

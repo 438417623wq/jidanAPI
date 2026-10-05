@@ -28,7 +28,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 
-const REPO = 'zouyuxuan122/dsh-our-free-model'
+const REPO = 'Ebony-Vinyl/dsh-our-free-model'
 
 /** Manifest locations, in preference order — jsDelivr first, for the same
  *  reachability reason as the feed (see src/feed.js): raw.githubusercontent.com

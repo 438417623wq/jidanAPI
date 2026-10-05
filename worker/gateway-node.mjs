@@ -341,7 +341,7 @@ export function createGatewayServer(hostEnv = {}) {
       const timer = setTimeout(() => controller.abort(), 3000)
       timer.unref?.()
       const impl = poolProbe.fetchImpl ?? fetch
-      const response = await impl('https://api.github.com/repos/zouyuxuan122/dsh-our-free-model', {
+      const response = await impl('https://api.github.com/repos/Ebony-Vinyl/dsh-our-free-model', {
         headers: { 'user-agent': 'eac-gateway', accept: 'application/vnd.github+json' },
         signal: controller.signal,
       })
