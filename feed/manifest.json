@@ -1,7 +1,7 @@
 {
   "version": "1.4.4",
   "base": "../",
-  "publishedAt": "2026-10-04T11:40:48.977Z",
+  "publishedAt": "2026-10-04T15:44:46.277Z",
   "notes": "",
   "files": [
     {
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 80047,
-      "sha256": "b361f8d4b0980e1ded769e7831499d452728eb63f955338f14fcf15f1229bdfe"
+      "size": 80787,
+      "sha256": "8346f144e6275e9070ab5f88e20aaee9415779ed7e73ace041fccf1f11d217cf"
     },
     {
       "path": "LICENSE",
@@ -51,18 +51,8 @@
     },
     {
       "path": "package.json",
-      "size": 1525,
-      "sha256": "94271c347a8978bcad2468f9ec88bb0739194750f58f021a76cd7d9f0c65d886"
-    },
-    {
-      "path": "README_EN.md",
-      "size": 63994,
-      "sha256": "8961638153c02764bb88728ee3f706dadce3abdf4de0471b4503bb5ee982b873"
-    },
-    {
-      "path": "README.md",
-      "size": 61502,
-      "sha256": "731e79e366903a93446c6271ba02d4fda3c796a64bae0732d56204f2690cfa26"
+      "size": 1624,
+      "sha256": "7bbaabdb6633178bd27235749a07ca7ab51d4d523d2596908e94384d38af95c0"
     },
     {
       "path": "src/adapter.js",
@@ -96,8 +86,8 @@
     },
     {
       "path": "src/forward.js",
-      "size": 39161,
-      "sha256": "1de4bcdf683888c23be0575d4bb1bce9ffafd557ace97e9df4934edf723002fd"
+      "size": 43055,
+      "sha256": "20abf1d1d9a230098ec23d97a21826c734489be8cdc449bd49bf58ae54619639"
     },
     {
       "path": "src/http.js",
@@ -146,8 +136,8 @@
     },
     {
       "path": "src/updater.js",
-      "size": 29444,
-      "sha256": "bdc739dfe124651affa248160b27aaf7285cab763cbbc099a8f3a8b0a931d007"
+      "size": 29780,
+      "sha256": "baeef89336b3aec782c66334d6a1b4d448dc7e0b3f7a60767562bb1c52b56ab3"
     },
     {
       "path": "src/upstream.js",
@@ -170,5 +160,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "c4kPT1ksZ07vzOfYiWy1sK2SpRmRxnE50crnTtvKsmc5e/UPT/Rfh08ItYMdTNkPAuu4j10AVvkaLi4lVzm2Ag=="
+  "signature": "oiDlQ07z3M89C5JENdY/yt3SIDv+B+rXNQnX3qUbVtnLUfUKqkL4Vro0XKz/aUxwEuwnzcZ+waReyaq0dE3uAw=="
 }

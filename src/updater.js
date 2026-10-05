@@ -358,8 +358,12 @@ export function verifyStaged(stageDir, manifest) {
  * Top-level directories and files that belong to the repository rather than to a
  * release. An installed copy never has them; a git-clone or linked development
  * copy always does, and it is the same directory the upgrader operates on.
+ * `catalog` travels with ecosystem packs rather than with a release, and
+ * `worker`/`vendor` ship for self-hosters — a sweep that treats them as "files
+ * the new release dropped" would delete the pack's readiness records out from
+ * under the harness's bundle validation on the first in-app upgrade.
  */
-const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules']
+const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor']
 
 /**
  * Walk a directory into relative file paths, skipping release scratch files and

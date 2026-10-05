@@ -163,10 +163,11 @@ export function apply(ctx, config) {
   /**
    * The sealed lane is invisible until the host gate passes and the seal opens,
    * both re-checked per use. Its roster persists under `sealIds` in the catalog
-   * store so a desktop restart offline still shows what it served last, but a
-   * host the gate refuses never reads that list: `sealedCatalog` starts and
-   * stays empty, and nothing about the lane — no entry, no request, no error —
-   * is observable from an unapproved host.
+   * store so a desktop restart offline still shows what it served last. A host
+   * the gate refuses never reads that list — `sealedCatalog` starts and stays
+   * empty, and no entry, request, or error of the lane is observable — but the
+   * persisted list survives the refusal, and the refusal itself is logged, so
+   * an empty EAC group has a reason in the log instead of silence.
    */
   const profileNameOf = () => {
     const context = typeof ctx.get === 'function' ? ctx.get('profileContext') : undefined
@@ -347,12 +348,18 @@ export function apply(ctx, config) {
    * persisted ids are dropped — a picker full of models the relay now refuses
    * is worse than an empty group with the failure in the log. Every log line
    * carries the failure class only, never the endpoint or the credential.
+   *
+   * A host the gate refuses is different: the lane was never open here, so
+   * nothing this install did was wrong, and the persisted ids belong to a
+   * machine that may be back on the supported host tomorrow. They stay, and
+   * the refusal is logged — this branch used to wipe the cache in silence,
+   * which made every "the EAC models are gone" report undiscoverable.
    */
   async function refreshSealedRoster() {
     const credential = sealedCredentialOf()
     if (credential === null) {
       sealedCatalog = []
-      catalogStore.update({ sealIds: [] })
+      logger.warn?.('our-free-model: the sealed lane is not available on this host; its models stay hidden')
       return
     }
     try {
