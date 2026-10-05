@@ -1,7 +1,15 @@
-/** 恢复缺终帧的纯推理断流，或正常收尾却只有思考的空停；所有模型共用同一策略。 */
+/** 恢复缺终帧的纯推理断流，或正常收尾却只有思考的空停；所有模型共用同一策略。
+ *
+ * 总时限是「整轮墙钟」的兜底，不是防挂死的唯一手段：传输层对「无字节」另有
+ * 300s 空闲截止（http.js readSse / eac.js postSealedStreamed 的 timeoutMs，
+ * 每个 chunk 都会重置），所以真正被墙钟砍掉的只有「一直在出帧、但整体很慢」
+ * 的回合。2026-10-05 的 issue #69/#70 实测的正是这一类：上游号池饱和（当时
+ * 1923 容量 / 2451 并发），首字 34–220s、深度思考 6 分钟以上，8 分钟的总窗
+ * 会稳定砍掉正常长回合。默认窗因此放宽到 15 分钟、续写段 5 分钟；数值仍只
+ * 允许向下调整，有界语义不变。 */
 export const RECOVERY_DEFAULTS = Object.freeze({
-  maxContinuationMs: 180000,
-  totalTimeoutMs: 480000,
+  maxContinuationMs: 300000,
+  totalTimeoutMs: 900000,
   checkpointLimit: 131072,
   maxOutputTokens: 8192,
 })

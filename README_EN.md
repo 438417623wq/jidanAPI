@@ -399,12 +399,13 @@ token limit, and the model may ignore it. Recovery is a degraded answer: an
 original request for a long or step-by-step analysis may be shortened.
 
 One logical turn makes at most two physical requests: the original and one
-recovery. The default total deadline is 480 seconds; recovery gets at most 180
-seconds, bounded by the remaining total time. Recovery output is capped at 8192
-tokens and still respects the user's and model's ceilings. Known output tokens
-from the first segment are subtracted from the original budget; recovery does
-not start if fewer than 512 tokens remain. The checkpoint is limited to 131072
-characters and must pass a conservative text-byte estimate of context capacity.
+recovery. The default total deadline is 900 seconds (15 minutes); recovery gets
+at most 300 seconds, bounded by the remaining total time. Recovery output is
+capped at 8192 tokens and still respects the user's and model's ceilings. Known
+output tokens from the first segment are subtracted from the original budget;
+recovery does not start if fewer than 512 tokens remain. The checkpoint is
+limited to 131072 characters and must pass a conservative text-byte estimate of
+context capacity.
 That estimate does not count image tokens and is not an exact tokenizer check.
 Exceeding a limit stops recovery. Success requires a normal ending with answer
 text that is not only whitespace. Recovery failure returns `STREAM_CUT`, which

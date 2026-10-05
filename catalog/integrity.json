@@ -1,5 +1,5 @@
 {
-  "version": "1.4.6",
+  "version": "1.4.7",
   "algorithm": "sha256",
   "files": [
     {
@@ -50,7 +50,7 @@
     {
       "path": "package.json",
       "size": 1627,
-      "sha256": "5c96f8b52d35ba2f793d219dcf728123bc540119f038ae8b62e17f416993143c"
+      "sha256": "09f31b2ff38212a673be4f9d82f82d6c60df08dcb4cbd27277021df25bb4d6f4"
     },
     {
       "path": "src/adapter.js",
@@ -114,8 +114,8 @@
     },
     {
       "path": "src/recovery.js",
-      "size": 6236,
-      "sha256": "48dc1b32bb355e30b9bcf8ac448dedc099ed1e0f7c9c65f253d5838794202b06"
+      "size": 6898,
+      "sha256": "95f06429b490f978e923155324ed3d160e826d4b2181de95dbde362f2b27f03e"
     },
     {
       "path": "src/reload.js",
