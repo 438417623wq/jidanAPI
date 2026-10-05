@@ -1252,7 +1252,12 @@ window.__ModuleLoader__.load({
       }, [])
       if (pool === undefined || pool === null) return null
       const pct = pool.pool > 0 ? Math.max(0, Math.min(100, Math.round(100 * pool.active24h / pool.pool))) : 0
-      const level = pool.level === 'over' ? 'over' : pool.level === 'busy' ? 'busy' : 'ok'
+      // A gateway build that predates the level verdict answers without one.
+      // The plugin then applies the same default thresholds locally, so an
+      // upgraded panel never reads a calm color off an unupgraded server —
+      // and once the gateway does send its verdict, that one wins.
+      const level = pool.level === 'over' || (pool.level === undefined && pool.inflight >= 80) ? 'over'
+        : pool.level === 'busy' || (pool.level === undefined && pool.inflight >= 30) ? 'busy' : 'ok'
       const levelText = level === 'over' ? t('pool.levelOver') : level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
       const capacity = pool.poolSource === 'formula'
         ? t('pool.formula').replace('{stars}', String(pool.stars ?? '—'))
