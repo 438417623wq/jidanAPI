@@ -134,8 +134,7 @@ function signedHeaders(method, pathname, body) {
 const chatBody = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: true })
 
 // ── 0. the plugin side of the wire ───────────────────────────────────────────
-{
-  const captured = []
+{  const captured = []
   lane.fetch = async (url, init) => { captured.push({ url, headers: init.headers }); return { ok: true, status: 200, headers: { get: () => null }, body: null, text: async () => '{"data":[]}' } }
   const credential = { mode: 'worker', base: 'https://gw.example/eac/v1', signingSecret: SIGNING }
   laneUser.token = 'user-token-abc'
@@ -157,6 +156,21 @@ const relayHandle = startRelay()
 const relay = { server: relayHandle.server, seen: relayHandle.seen, port: 0 }
 await new Promise(resolve => relay.server.listen(0, '127.0.0.1', resolve))
 relay.port = relay.server.address().port
+
+// ── 0b. the gate's GitHub transport ─────────────────────────────────────────
+// The gate speaks node:https, not the global fetch: measured on the live host,
+// undici cannot open the connection to GitHub at all (UND_ERR_CONNECT_TIMEOUT)
+// while node:https answers in milliseconds. Pinned here against a loopback
+// server so the shape (status/text/json/headers.get) cannot drift.
+{
+  const { nodeFetch } = await import('../worker/auth-github.mjs')
+  const got = await nodeFetch(`http://127.0.0.1:${relay.port}/v1/models`)
+  check('nodeFetch reports status and parses JSON', [got.ok, got.status, (await got.json()).data[0].id], [true, 200, MODEL])
+  const missing = await nodeFetch(`http://127.0.0.1:${relay.port}/nope`)
+  check('and reports a non-2xx without throwing', [missing.ok, missing.status], [false, 404])
+  const aborted = await nodeFetch(`http://127.0.0.1:${relay.port}/v1/models`, { signal: AbortSignal.abort() }).then(() => 'resolved', error => String(error?.message ?? error))
+  check('an aborted signal rejects the call', /abort/i.test(aborted), true)
+}
 
 // ── 1. the OAuth surface ─────────────────────────────────────────────────────
 const github = makeGithubStub()
