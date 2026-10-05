@@ -1627,16 +1627,29 @@ export function apply(ctx, config) {
       // egressFetch, so the outlet must be carrying traffic before they run.
       await syncEgress()
       if (disposed) return
-      await refreshCatalog({ probe: true, force: true })
-      // Every await here is a chance for teardown to have run underneath this
-      // boot: a resumed refresh would start listeners the disposer already
-      // closed and force a probe round against stores it disposed.
-      if (disposed) return
+      // The listeners next, ahead of the round that goes out: they answer local
+      // sockets and nothing in them depends on the gateway. Binding them after
+      // the full listing + probe round meant a lane that stalled held the port
+      // down for the whole round — the settings page still said it was on, and
+      // it only started when the user clicked 应用, whose POST calls
+      // `syncForward()` by itself.
       await syncForward()
       if (disposed) return
       await syncRelay()
       if (disposed) return
       await syncChanRelay()
+      if (disposed) return
+      // Every await here is a chance for teardown to have run underneath this
+      // boot: a resumed refresh would force a probe round against stores it
+      // disposed. The round is boot's only network step, so it is the one held
+      // to a failure of its own — a throw here used to take the watcher, the
+      // topology event and the upgrade marker below down with it, reported as
+      // a single "startup refresh failed" line.
+      try {
+        await refreshCatalog({ probe: true, force: true })
+      } catch (error) {
+        logger.warn?.(`our-free-model: startup refresh failed (${error?.message ?? error})`)
+      }
       if (disposed) return
       syncWatcher()
       emitTopology()
