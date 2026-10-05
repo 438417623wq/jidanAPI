@@ -30,6 +30,12 @@ export const CODE = {
   region: 'REGION_BLOCKED',
   quota: 'RATE_LIMIT',
   credential: 'INVALID_CREDENTIAL',
+  // The co-paid lane's per-user gate (GitHub login + star): the credential
+  // store is fine and the endpoint is reachable — this install just has not
+  // been authorized yet. Its own code keeps it out of INVALID_CREDENTIAL, so
+  // a refusal neither wipes the cached roster nor sends anyone chasing a
+  // re-install; the settings page answers it with a login prompt instead.
+  authorization: 'AUTHORIZATION_REQUIRED',
   transport: 'TRANSPORT',
   timeout: 'TIMEOUT',
   server: 'SERVER',
@@ -80,6 +86,15 @@ export function classifyFailure(status, payload, retryAfterMs) {
     return new UpstreamError(
       'the gateway rejected the request signature — the request body was modified in transit; if a local proxy plugin (e.g. billion-context) is installed, disable it for this lane or enable its passthrough for signed requests',
       CODE.transport, { status, type, signatureRejected: true })
+  }
+  // The co-paid lane's per-user gate speaks before any credential is judged:
+  // the gateway refuses a turn because this install has not completed GitHub
+  // login + star (or the star is gone), not because the lane's own material
+  // is wrong. Reading it as INVALID_CREDENTIAL would wipe the cached roster
+  // and send users chasing a re-install; it is a user-actionable state, so it
+  // gets its own code and the settings page answers with a login prompt.
+  if (type === 'AuthorizationRequired' || /需要 GitHub 授权|GitHub 授权无效/.test(raw)) {
+    return new UpstreamError(message, CODE.authorization, { status, type, reason: typeof error.reason === 'string' ? error.reason : '' })
   }
   // An HTML page at 401/403 is the front proxy speaking, not the credential
   // store: fall through to the 4xx branch so users are not sent re-logging for

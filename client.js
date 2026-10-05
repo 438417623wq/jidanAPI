@@ -90,6 +90,31 @@ window.__ModuleLoader__.load({
         'pool.reasonUnreachable': '网关暂不可达',
         'pool.reasonUnknown': '原因未知',
         'pool.capacityUnknown': 'Star 数据暂不可用',
+        'section.eac': 'EAC 渠道授权',
+        'section.eacHint': 'EAC（协付）模型需要 GitHub 登录并 star 仓库；免费车道的模型不受影响。',
+        'eac.pillOk': '已授权',
+        'eac.pillLocked': '未授权',
+        'eac.pillRequired': '已开启强制',
+        'eac.pillCompat': '兼容期',
+        'eac.pillUnverified': '网关暂不可达',
+        'eac.intro': 'EAC 渠道的对话在服务器侧校验授权：用 GitHub 登录，并给 {repo} 点一个 Star，即可解锁。登录在浏览器里完成，无需复制粘贴；取消 Star 后授权会自动失效。',
+        'eac.login': '使用 GitHub 登录',
+        'eac.starting': '正在打开浏览器…',
+        'eac.starCta': '去 Star',
+        'eac.waiting': '已打开浏览器授权页；若没有自动打开，请手动访问下面的地址完成授权。完成后本页会自动确认。',
+        'eac.copy': '复制链接',
+        'eac.copied': '已复制',
+        'eac.done': '授权成功：@{login}，现在可以使用 EAC 模型了。',
+        'eac.needStar': '已用 @{login} 登录，但还没有 star 仓库；请先 Star，再在授权页点「我已 star，重新检查」。',
+        'eac.expired': '这次登录等待超时了，请重新发起。',
+        'eac.openManually': '浏览器没有自动打开，请手动访问下面的地址完成授权。',
+        'eac.startFailed': '无法发起登录（{reason}）。',
+        'eac.loggedIn': '已授权：@{login} · 上次复查 {when}',
+        'eac.recheck': '重新检查',
+        'eac.logout': '退出登录',
+        'eac.noLane': '当前运行环境未解锁 EAC 协付车道，无法进行 GitHub 授权。',
+        'eac.lockedTitle': '需要 GitHub 授权并 star 仓库后使用',
+        'eac.lockedNote': '未授权：请在上方「EAC 渠道授权」区完成 GitHub 登录并 star 仓库。',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
@@ -358,6 +383,31 @@ window.__ModuleLoader__.load({
         'pool.reasonUnreachable': 'gateway unreachable',
         'pool.reasonUnknown': 'unknown cause',
         'pool.capacityUnknown': 'star data unavailable',
+        'section.eac': 'EAC lane authorization',
+        'section.eacHint': 'EAC (co-paid) models need a GitHub login and a star; the free lane is unaffected.',
+        'eac.pillOk': 'authorized',
+        'eac.pillLocked': 'not authorized',
+        'eac.pillRequired': 'enforced',
+        'eac.pillCompat': 'grace period',
+        'eac.pillUnverified': 'gateway unreachable',
+        'eac.intro': 'EAC turns are checked server-side: sign in with GitHub and star {repo} to unlock them. The browser does the work — nothing to paste — and removing the star revokes access automatically.',
+        'eac.login': 'Sign in with GitHub',
+        'eac.starting': 'Opening the browser…',
+        'eac.starCta': 'Star on GitHub',
+        'eac.waiting': 'The authorization page is open; if the browser did not come up, visit the address below to finish. This page confirms automatically.',
+        'eac.copy': 'Copy link',
+        'eac.copied': 'Copied',
+        'eac.done': 'Authorized as @{login} — EAC models are unlocked.',
+        'eac.needStar': 'Signed in as @{login}, but the repository is not starred yet. Star it, then press "I starred it — check again" on the authorization page.',
+        'eac.expired': 'This login attempt timed out; please start again.',
+        'eac.openManually': 'The browser did not open automatically — visit the address below to finish.',
+        'eac.startFailed': 'Could not start the login ({reason}).',
+        'eac.loggedIn': 'Authorized: @{login} · last checked {when}',
+        'eac.recheck': 'Check again',
+        'eac.logout': 'Sign out',
+        'eac.noLane': 'The EAC co-paid lane is not unlocked in this composition, so GitHub authorization is unavailable.',
+        'eac.lockedTitle': 'Needs GitHub authorization and a star',
+        'eac.lockedNote': 'Not authorized: sign in with GitHub and star the repository in the EAC section above.',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -1220,13 +1270,14 @@ window.__ModuleLoader__.load({
 
     // ── model roster ──────────────────────────────────────────────────────────
     function ModelCard(props) {
-      const { model: m, t, onBench, bench } = props
+      const { model: m, t, onBench, bench, locked } = props
       const stateKey = `state.${m.availability}`
       const dim = m.availability !== 'available'
       const rung = (m.budgets ?? []).find(row => row.isDefault === true)
       return h('article', { className: 'ofm_card' + (dim ? ' dim' : '') },
         h('div', { className: 'ofm_cardhead' },
           m.channel === 'eac' ? h('span', { className: 'ofm_chantag', title: t('tag.eacChannel') }, 'EAC') : null,
+          m.channel === 'eac' && locked === true ? h('span', { className: 'ofm_chantag', title: t('eac.lockedTitle') }, '🔒') : null,
           h('span', { className: 'ofm_cardname', title: m.name }, m.name),
           h('span', { className: 'ofm_badge ' + m.availability }, t(stateKey))),
         h('div', { className: 'ofm_id', title: m.id }, m.id),
@@ -1237,6 +1288,7 @@ window.__ModuleLoader__.load({
           h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(m.maxOutput)}`),
           rung === undefined ? null : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
             `${t('tag.rung')} ${kilo(rung.tokens)}`)),
+        m.channel === 'eac' && locked === true ? h('p', { className: 'ofm_note' }, t('eac.lockedNote')) : null,
         m.availability === 'region-blocked' ? h('p', { className: 'ofm_note' }, t('hint.region'))
           : m.availability === 'unknown' ? h('p', { className: 'ofm_note' }, t('hint.unknown'))
             : m.availability === 'unavailable' ? h('p', { className: 'ofm_note', title: m.detail ?? '' }, t('hint.hidden'))
@@ -1250,16 +1302,20 @@ window.__ModuleLoader__.load({
     }
 
     function Roster(props) {
-      const { summary, t, onBench, benches } = props
+      const { summary, t, onBench, benches, auth } = props
       const available = summary.catalog.filter(m => m.route === 'our-free-model')
       const limited = summary.catalog.filter(m => m.route === 'our-free-model-region')
       const other = summary.catalog.filter(m => m.route === null)
+      // 只有拿到过明确判定（网关答过 /eac/status）且未授权时才上锁：状态未知
+      // 不该显示一把凭空的锁，网关不可达时本地记录仍算已授权。
+      const locked = auth !== undefined && auth.available === true && auth.authorized !== true
       const group = (title, list, hint) => list.length === 0 ? null
         : h('div', { className: 'ofm_sec', style: { gap: 8 } },
           h('div', { className: 'ofm_row' }, h('span', { className: 'ofm_sec_title', style: { fontSize: 12.5 } }, title),
             hint === undefined ? null : h('span', { className: 'ofm_sec_hint' }, hint)),
           h('div', { className: 'ofm_grid' }, list.map(m => h(ModelCard, {
-            key: m.id, model: m, t, onBench, bench: { running: benches[m.id]?.running === true, ...benches[m.id]?.result === undefined ? {} : { result: benches[m.id].result } },
+            key: m.id, model: m, t, onBench, locked: m.channel === 'eac' && locked,
+            bench: { running: benches[m.id]?.running === true, ...benches[m.id]?.result === undefined ? {} : { result: benches[m.id].result } },
           }))))
       // The lane closed at the gate is the one "no EAC models" case the page can
       // explain without a log (issue #60): on a host the kernel gave no profile,
@@ -1358,6 +1414,100 @@ window.__ModuleLoader__.load({
             h('div', { className: 'ofm_poolmeta' },
               pct === null ? null : h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${pct}%`),
               h('span', { className: 'ofm_note' }, `${capacity} · ${t('pool.starLine')}`)))))
+    }
+
+    // ── EAC 渠道授权（GitHub 登录 + Star） ────────────────────────────────────
+    // 闸门在服务器：网关拒绝没有用户令牌的对话，而这个面板是取得令牌的唯一入口。
+    // 三种状态如实呈现——未登录 / 已登录但未 star / 已授权——并且登录全程无需
+    // 复制粘贴：后端把授权页交给系统浏览器，前端轮询网关领取令牌。令牌本身从不
+    // 到达浏览器，这里只显示登录名与判定结果。
+    function EacAuth(props) {
+      const { t, summary, auth, onAuth } = props
+      const [busy, setBusy] = useState(false)
+      const [notice, setNotice] = useState('')
+      const [pending, setPending] = useState(null)
+      const [copied, setCopied] = useState(false)
+
+      // 授权状态由 SettingsPage 持有（模型卡的锁标记与这个面板必须看到同一个
+      // 判定），这里只负责发起动作与把新判定送回去。
+      const refresh = useCallback(() => {
+        api('/eac/status').then(onAuth).catch(() => onAuth({ available: false, authorized: false, login: '' }))
+      }, [onAuth])
+      // 轮询闭包要用的 summary 每帧都是新对象，放进依赖会让定时器每帧重建、
+      // 密集渲染下永远等不到下一次触发——用 ref 取最新值。
+      const latest = useRef(summary)
+      latest.current = summary
+
+      // 登录进行中时轮询网关领取令牌：2.5 秒一次，够快也不至于压网关；整轮
+      // 十分钟放弃，与网关保留待领取链接的窗口一致。
+      useEffect(() => {
+        if (pending === null) return undefined
+        let alive = true
+        const timer = setInterval(async () => {
+          if (Date.now() - pending.startedAt > 10 * 60_000) { setPending(null); setNotice(t('eac.expired')); return }
+          try {
+            const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`)
+            if (!alive) return
+            if (result.status === 'ok') {
+              setPending(null)
+              setNotice(t('eac.done').replace('{login}', result.login ?? ''))
+              refresh()
+              latest.current?.reload?.()
+            } else if (result.status === 'unstarred') {
+              setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
+            }
+          } catch { /* 链接可能还会完成，继续轮询 */ }
+        }, 2500)
+        return () => { alive = false; clearInterval(timer) }
+      }, [pending, refresh])
+
+      const login = async () => {
+        setBusy(true); setNotice('')
+        try {
+          const started = await post('/eac/login/start')
+          if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
+          setPending({ link: started.link, url: started.url, startedAt: Date.now() })
+          if (started.opened !== true) setNotice(t('eac.openManually'))
+        } catch (error) {
+          setNotice(String(error?.message ?? error))
+        } finally { setBusy(false) }
+      }
+      const logout = async () => {
+        setBusy(true)
+        try {
+          await post('/eac/logout')
+          setNotice(''); setPending(null); refresh(); summary?.reload?.()
+        } catch { /* 本地记录已被后端清除，这里不必再报错 */ } finally { setBusy(false) }
+      }
+
+      if (auth === undefined) return h('p', { className: 'ofm_note' }, t('loading'))
+      if (auth.available !== true) return h('p', { className: 'ofm_note' }, t('eac.noLane'))
+      const repo = auth.repo !== undefined && auth.repo !== '' ? auth.repo : 'Ebony-Vinyl/dsh-our-free-model'
+      return h(Fragment, null,
+        h('div', { className: 'ofm_row' },
+          auth.authorized === true
+            ? h(Pill, { strong: true, tone: 'ok' }, t('eac.pillOk'))
+            : h(Pill, { strong: true, tone: 'warn' }, t('eac.pillLocked')),
+          auth.required === true ? h(Pill, { tone: 'err' }, t('eac.pillRequired')) : h(Pill, null, t('eac.pillCompat')),
+          auth.unverified === true ? h(Pill, { tone: 'warn' }, t('eac.pillUnverified')) : null),
+        h('p', { className: 'ofm_note' }, t('eac.intro').replace('{repo}', repo)),
+        auth.authorized === true
+          ? h('div', { className: 'ofm_row' },
+            h('span', { className: 'ofm_note' }, t('eac.loggedIn').replace('{login}', auth.login !== '' && auth.login !== undefined ? auth.login : '—').replace('{when}', ago(auth.lastCheck, t.locale))),
+            h(Button, { disabled: busy, onClick: refresh }, t('eac.recheck')),
+            h(Button, { disabled: busy, onClick: logout }, t('eac.logout')))
+          : h('div', { className: 'ofm_row' },
+            h(Button, { kind: 'primary', disabled: busy, onClick: login }, busy ? t('eac.starting') : t('eac.login')),
+            h('a', { className: 'ofm_starbtn', href: `https://github.com/${repo}`, target: '_blank', rel: 'noreferrer' }, `⭐ ${t('eac.starCta')}`)),
+        pending !== null
+          ? h('div', { className: 'ofm_callout' },
+            h('div', null,
+              h('div', null, t('eac.waiting')),
+              h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
+                h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
+                h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
+          : null,
+        notice !== '' ? h('p', { className: 'ofm_note' }, notice) : null)
     }
 
     function Dashboard(props) {
@@ -1882,6 +2032,18 @@ window.__ModuleLoader__.load({
       const [benches, setBenches] = useState({})
       const summary = useAsync(() => api('/summary'), [])
       const stats = useAsync(() => api('/stats'), [])
+      // GitHub 授权状态由这一层持有：模型卡的锁标记与 EAC 面板必须看到同一个
+      // 判定，登录 / 退出后两边同时更新；60 秒轮询兜住别处（另一台机器）的变动。
+      const [eacAuth, setEacAuth] = useState(undefined)
+      useEffect(() => {
+        let alive = true
+        const load = () => api('/eac/status')
+          .then(data => { if (alive) setEacAuth(data) })
+          .catch(() => { if (alive) setEacAuth({ available: false, authorized: false, login: '' }) })
+        load()
+        const timer = setInterval(load, 60_000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [])
 
       const apply = async patch => {
         setBusy(true)
@@ -1931,7 +2093,8 @@ window.__ModuleLoader__.load({
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/refresh', undefined, 600_000); summary.reload(); stats.reload() } finally { setBusy(false) } } }, summary.status === 'loading' ? t('probing') : t('refresh')),
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/reprobe', undefined, 600_000); summary.reload() } finally { setBusy(false) } } }, t('reprobe')))),
         h(Section, { title: t('pool.title'), hint: t('pool.hint') }, h(PoolPanel, { t: tagged })),
-        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t: tagged, onBench: bench, benches })),
+        h(Section, { title: t('section.eac'), hint: t('section.eacHint') }, h(EacAuth, { t: tagged, summary, auth: eacAuth, onAuth: setEacAuth })),
+        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t: tagged, onBench: bench, benches, auth: eacAuth })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t: tagged })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t: tagged })

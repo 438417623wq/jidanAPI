@@ -2,10 +2,18 @@
   "$schema": "./announcements.schema.md",
   "announcements": [
     {
+      "id": "2026-10-05-v1.5.0-release",
+      "title": "v1.5.0：EAC 渠道接入 GitHub 授权（登录 + Star 后才能使用）；免费车道不受影响",
+      "level": "update",
+      "pinned": true,
+      "createdAt": "2026-10-05T15:30:00Z",
+      "html": "<p><strong>Our Free Model v1.5.0</strong> 给 EAC 协付渠道加上一道按人计的授权闸门：<strong>用 GitHub 登录、并给仓库点一个 Star</strong>，才能使用 EAC 模型。</p><ul><li><strong>为什么</strong>——EAC 是一条协付通道，容量跟着本仓库的 Star 数走（每 1 个 Star，号池 +1.5）。把使用权与 Star 绑定，是让「用的人」与「撑住容量的人」对上。</li><li><strong>怎么用</strong>——设置 → Our Free Model → <strong>EAC 渠道授权</strong> → 「使用 GitHub 登录」：浏览器自动打开授权页，登录并 Star 后回到应用即可，<strong>无需复制粘贴任何东西</strong>，插件自动完成领取；未 Star 时授权页会给出「我已 star，重新检查」，不必重新登录。</li><li><strong>取消 Star 会失效</strong>——服务器每 12 小时复查一次 Star；取消后授权会在复查窗口内失效。GitHub 侧故障或限流时保留既有授权，不会误伤。</li><li><strong>免费车道完全不受影响</strong>——opencode 车道的模型不经过服务器，无需登录、无需 Star，照常使用。</li><li><strong>过渡期</strong>——本版本先处于兼容期（未登录仍可用 EAC），正式强制前会另行公告；建议提前完成登录，避免届时中断。</li><li><strong>隐私</strong>——只申请 <code>read:user</code> 最小权限，仅用于 Star 校验；授权只存在你的机器与服务器上，设置页可随时退出登录（服务器侧立即吊销）。</li></ul><p>全部离线套件（含新增的授权闸门套件）通过，清单逐字节重签。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
+    },
+    {
       "id": "2026-10-05-v1.4.7-release",
       "title": "v1.4.7：长回合时限放宽——号池饱和时不再砍掉正常的长思考回合（#69/#70）",
       "level": "update",
-      "pinned": true,
+      "pinned": false,
       "createdAt": "2026-10-05T12:14:15Z",
       "html": "<p><strong>Our Free Model v1.4.7</strong> 修复 #69/#70 报告的问题：长思考回合在 8 分钟整被 <code>STREAM_CUT</code> 截断。</p><ul><li><strong>整轮时限 480→900 秒，恢复段 180→300 秒</strong>——此前 8 分钟的墙钟上限在号池饱和时（实测 1923 容量 / 2451 并发、首字 34–220 秒、深度思考 6 分钟以上）会稳定砍掉正常的长回合：现场里「深度求索中，用时 6 分 16 秒」后随即报 <code>reached its 480s time limit</code>。放宽后这类回合可以正常跑完。</li><li><strong>防挂死语义不变</strong>——传输层对「完全没有字节」另有 300 秒空闲截止（每个数据块都会重置），墙钟只兜底「持续出帧、整体很慢」的回合；数值仍只允许向下调整，整轮仍最多两次物理请求。</li></ul><p>长回合的实际速度仍取决于上游共享号池的排队情况，低思考档位可以显著缩短等待。请前往 <strong>设置 → 插件升级</strong> 一键升级。</p>"
     },

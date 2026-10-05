@@ -50,7 +50,7 @@
 - **不依赖浏览器界面**——插件仅将 llm 作为硬依赖，在没有 web server 的 composition（如 dsh-tui）中同样完成启动并输出模型；看板模块挂载在独立的 fiber 上，待 webServer 就绪后再注册路由，因此既不会阻塞模型车道，也不会因插件先于 web 服务加载而永久丢失设置页。
 - **用量看板，数据全部留在本机**——Token 热力图、总量曲线（支持总计与单模型视图）、输出速度与首字延迟逐次采样。不上传任何数据。
 - **OpenAI 兼容转发端口**——本机其它工具通过 base URL 与 Key 即可调用这些模型。
-- **EAC 渠道（桌面端专属）**——在 DeepSeek Harness 桌面端与 DSHEAC AIO 桌面端中自动解锁一条协付通道，模型以 EAC 前缀显示（如 EAC DeepSeek V4.1 Flash）；凭据加密密封，由宿主指纹闸门把守；在命令行及其它宿主中该通道完全不存在。详见「EAC 渠道」。
+- **EAC 渠道（桌面端专属）**——在 DeepSeek Harness 桌面端与 DSHEAC AIO 桌面端中自动解锁一条协付通道，模型以 EAC 前缀显示（如 EAC DeepSeek V4.1 Flash）；凭据加密密封，由宿主指纹闸门把守；该渠道在服务器侧校验 GitHub 授权（登录并 star 本仓库）后才放行对话；在命令行及其它宿主中该通道完全不存在。详见「EAC 渠道」。
 - **接口具备鉴权围栏**——插件 HTTP 路由优先级高于内核 `/api`，因此内置与内核一致的信任检查（优先复用 composition 的 connection 服务，缺失时退回结构化围栏）。
 
 ## 你会看到什么
@@ -65,9 +65,10 @@
 被判定为「已声明但不路由」的模型不出现在任何分组中——它们仅在设置页的「不在选择器中」分组保留记录，
 附带拒因与探测时间；后续探测重新通过后自动回到选择器。
 
-**设置页** 设置 → Our Free Model，包含六个分区：
+**设置页** 设置 → Our Free Model，包含七个分区：
 
 - **模型清单**——各模型的可用性、是否支持视觉、上下文窗口、最长输出、各思考档位实际下发的输出上限、实测首字延迟，以及单次调用基准测试按钮。
+- **EAC 渠道授权**——一键发起 GitHub 登录（自动打开浏览器，无需复制粘贴）、显示登录名与 star 校验状态、重新检查、退出登录；未授权时模型卡带锁标记。免费车道的模型不受影响。
 - **公告中心**——仓库维护者推送的公告流：未读计数、紧急徽章、单条/全部标记已读、检查新公告按钮、系统通知开关。公告正文按白名单渲染 HTML。
 - **用量看板**——总览计数、17 周 Token 热力图、总量曲线（Token / 请求数切换，总计与单模型切换）、速度迷你图、按模型汇总表。
 - **本地转发**——开关、监听地址与端口、复制 base URL、显示 / 复制 / 轮换 API Key，并提供可直接执行的 curl 示例。
@@ -102,7 +103,7 @@ PROFILE_UPGRADE_REQUIRED: offline dependency migration is not yet available
 
 1. 将发布文件复制至 node_modules/dsh-our-free-model/
 （index.js、client.js、adapter/、src/、locale/、icon.svg、cordis.patch.yml、package.json——adapter/ 不可遗漏：index.js 首行即 import 该目录）
-2. 在 dependencies 中加入 "dsh-our-free-model": "1.4.4"——该版本号跟随仓库 package.json 的 version（版本变更时同步，当前为 1.4.4），不要沿用旧值，也不要写为 link:
+2. 在 dependencies 中加入 "dsh-our-free-model": "1.5.0"——该版本号跟随仓库 package.json 的 version（版本变更时同步，当前为 1.5.0），不要沿用旧值，也不要写为 link:
 3. 在 dsh.profile.bundles 末尾追加 "dsh-our-free-model"
 
 不要再向 cordis.patch.yml 添加条目。被 dsh.profile.bundles 引用的包，其自带的
@@ -505,6 +506,8 @@ DeepSeek Harness 桌面端（Electron 壳）：内核自身提供的 desktop pro
 凭据不落盘、不出进程：解锁按请求即时发生，明文仅存在于构造请求的那一帧中，不写入文件、不进入日志、不出现在任何 API 响应或错误消息中。
 
 签名网关（推荐形态）：worker/ 目录附带一个 Cloudflare Worker 网关——插件密封的仅有网关地址与 HMAC 签名密钥，请求按 时间戳 + HMAC-SHA256(方法/路径/ body 摘要) 签名，中继的真实 key 仅存放于 Worker 的环境变量中；防重放时间窗、模型白名单、可选按 IP 限速均在网关执行，签名密钥泄露只需在网关侧轮换即可全体吊销。部署与轮换见 worker/README.md。
+
+**GitHub 授权闸门**：自建网关（宝塔 Node 形态）另带一道按人计的授权闸门——对话请求除签名外还需携带一枚**专属令牌**，而令牌只发给「用 GitHub 登录 + 已 star 本仓库」的账号。登录全程在浏览器里完成：设置页「EAC 渠道授权」一键发起，网关回调页确认 star 状态后签发令牌，插件自动领取，无需复制粘贴；未 star 时页面会给出 ⭐ 按钮与「我已 star，重新检查」，不必重新登录。网关默认每 12 小时用保存的授权复查一次 star，取消 star 即在复查窗口内吊销令牌；GitHub 侧不可达时保留既有判定，不会误伤已授权用户。网关只申请 `read:user` 最小权限，授权仅用于 star 复查。免费车道（opencode）不经过网关，完全不受影响。
 
 ## 上游是哪些源
 

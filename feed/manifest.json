@@ -1,7 +1,7 @@
 {
-  "version": "1.4.7",
+  "version": "1.5.0",
   "base": "../",
-  "publishedAt": "2026-10-05T12:14:27.096Z",
+  "publishedAt": "2026-10-05T15:12:38.360Z",
   "notes": "",
   "files": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "client.js",
-      "size": 145775,
-      "sha256": "9b441fa2b08df1a5663dc009b829960b1a5defda7fe67603c1030769adc068de"
+      "size": 156746,
+      "sha256": "7405b4bc21eba529164c34bd6f3dd725d2b360598b863499b692e8ea74c590ff"
     },
     {
       "path": "cordis.patch.yml",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 99264,
-      "sha256": "bb5ad1fb6fcd9cfa7b14aab6de6975e1e87950963f08a5b98258561190b47191"
+      "size": 106940,
+      "sha256": "e965857ebe12d00905b7386df66da8db9e98c4ff76c85acefdd22838a942f672"
     },
     {
       "path": "LICENSE",
@@ -52,7 +52,7 @@
     {
       "path": "package.json",
       "size": 1627,
-      "sha256": "09f31b2ff38212a673be4f9d82f82d6c60df08dcb4cbd27277021df25bb4d6f4"
+      "sha256": "6640e8ceb510ea1dea617ddd63aaa14dd196b2c304fcdf506aa8efc72b8d9d92"
     },
     {
       "path": "src/adapter.js",
@@ -70,9 +70,14 @@
       "sha256": "c1b80fdaac75fa320fd619b5dd09d796a8c4b1c8f58af07b921f548a5604c357"
     },
     {
+      "path": "src/eac-user.js",
+      "size": 2926,
+      "sha256": "3be53ff3a2255e2f6616973fe013f97741c27ecf218c635ff6a51c89241d1a1f"
+    },
+    {
       "path": "src/eac.js",
-      "size": 12253,
-      "sha256": "ba195b4f2bd8e819aa3cb81f60f9afd2e7778c09c14f6413a9b60890af0a236e"
+      "size": 13227,
+      "sha256": "b998a8696517bbadd9cd85c886b2af0b1021eb6a95bb038d08566debd1d914ec"
     },
     {
       "path": "src/effort.js",
@@ -96,8 +101,8 @@
     },
     {
       "path": "src/http.js",
-      "size": 22333,
-      "sha256": "7eb12031235ab3805cb29927e1450d31d8447d092dc4c7fc2c93e77b79378cf4"
+      "size": 23461,
+      "sha256": "bc3d98ee0deeb565b98b4808ed13816a1aadc5471a62cff74dbe419685a4dd8b"
     },
     {
       "path": "src/messages.js",
@@ -165,5 +170,5 @@
       "sha256": "6f9d5dce4af5dc504991af32b46cd3b76dd0c587fcacb35cc6245a518201c021"
     }
   ],
-  "signature": "gNcBAxhB0aeJAEUtG2zUzIFrR1sNg/Yqp6B+URd+KeIXIsx4aH2JDpgkuv1xbcy3VW9JilV31iZLkElr6qUMDg=="
+  "signature": "yq4wDtqODlT/WhN7tN+DuUlgqVhdVMCwJd33S7Cf3f6PLOLixHM6ejO6vfTMchDxNhxiBdqLPRE991pGWXhtBA=="
 }

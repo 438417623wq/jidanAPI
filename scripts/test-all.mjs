@@ -57,6 +57,7 @@ const suites = [
   ['tui', 'tui-test.mjs', []],
   ['catalog', 'catalog-test.mjs', mode === 'contributor' ? ['--contributor'] : []],
   ['vault', 'vault-test.mjs', []],
+  ['eac-auth', 'eac-auth-test.mjs', []],
   ['offline', 'offline-test.mjs', []],
 ].filter(([name]) => (mode === 'contributor' ? !['manifest', 'release'].includes(name)
   : mode === 'release' ? releaseSuites.has(name) : true)

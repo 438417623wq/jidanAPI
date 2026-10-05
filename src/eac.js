@@ -29,6 +29,7 @@ import { Readable } from 'node:stream'
 // node:http response is converted into a proper WHATWG ReadableStream.
 import { ReadableStream } from 'node:stream/web'
 import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody } from './http.js'
+import { readEacUser } from './eac-user.js'
 
 const LISTING_TIMEOUT_MS = 15000
 const TURN_TIMEOUT_MS = 300000
@@ -41,6 +42,19 @@ const TURN_TIMEOUT_MS = 300000
  * the free lane's upstream override.
  */
 export const lane = { fetch: null }
+
+/**
+ * Test seam for the per-user authorization token (src/eac-user.js), same
+ * convention as `lane`: `undefined` reads the file, any other value —
+ * `null` included — is used as-is, so the offline suite never touches a home.
+ */
+export const laneUser = { token: undefined }
+
+/** The GitHub authorization this install holds, or null. Never logged. */
+function laneUserToken() {
+  if (laneUser.token !== undefined) return laneUser.token
+  try { return readEacUser()?.token ?? null } catch { return null }
+}
 
 /**
  * The lane's module-private transport, shared with the pool proxy: plugin
@@ -133,7 +147,13 @@ function headersFor(credential, method, fullUrl, body) {
   }
   if (credential.mode === 'worker') {
     const path = new URL(fullUrl).pathname
-    return { ...headers, ...signSealedRequest(credential.signingSecret, { method, path, body }) }
+    const signed = { ...headers, ...signSealedRequest(credential.signingSecret, { method, path, body }) }
+    // The per-user authorization the gateway's GitHub gate demands on turns.
+    // Absent before login; the gateway then answers 401 AuthorizationRequired,
+    // which the settings page turns into a login prompt. Sent on listings too
+    // so a gated listing needs no second wire shape.
+    const userToken = laneUserToken()
+    return userToken === null ? signed : { ...signed, 'x-ofm-user': userToken }
   }
   return { ...headers, 'authorization': `Bearer ${credential.apiKey}` }
 }

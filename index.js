@@ -26,6 +26,8 @@
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { FreeModelAdapter, ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/adapter.js'
 import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, resolveDshHome } from './src/store.js'
@@ -35,6 +37,7 @@ import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from '.
 import { CODE, UpstreamError, getJson } from './src/http.js'
 import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
 import { directFetch, fetchSealedListing } from './src/eac.js'
+import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
@@ -59,6 +62,27 @@ function readPackageVersion() {
     return String(JSON.parse(fs.readFileSync(path.join(PKG_DIR, 'package.json'), 'utf8')).version ?? '')
   } catch {
     return ''
+  }
+}
+
+/**
+ * Open a URL in the system browser, best effort. The settings page shows the
+ * same URL with a copy button, so a headless host or a refused spawn costs a
+ * paste, never the flow. The URL is always one this plugin built from the
+ * sealed gateway endpoint — never user input.
+ */
+function openExternal(url) {
+  if (!/^https?:\/\//i.test(url)) return false
+  try {
+    const [command, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+      : process.platform === 'darwin' ? ['open', [url]]
+        : ['xdg-open', [url]]
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    child.unref()
+    return true
+  } catch {
+    return false
   }
 }
 
@@ -230,6 +254,119 @@ export function apply(ctx, config) {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  // ── the GitHub authorization gate on the co-paid lane ───────────────────────
+  // One per-user token (src/eac-user.js) is what the gateway's GitHub gate
+  // mints after login + star, and these four hops are the settings page's whole
+  // relationship with that gate. The token never reaches the browser: the page
+  // sees a login name and a verdict, the file and the signed wire keep the
+  // credential. `cached` is the sync bit /summary can carry.
+  const eacAuthCache = { at: 0, data: { available: false, authorized: false, login: '' } }
+  const eacAuthRootOf = credential => credential.base.replace(/\/v1\/?$/, '')
+  async function eacAuthStatus() {
+    const credential = sealedCredentialOf()
+    if (credential === null || credential.mode !== 'worker') {
+      return { available: false, authorized: false, login: '', mode: credential?.mode ?? null }
+    }
+    const local = readEacUser()
+    const base = {
+      available: true,
+      mode: 'worker',
+      local: local !== null,
+      login: local?.login ?? '',
+      avatar: local?.avatar ?? '',
+      savedAt: local?.savedAt ?? 0,
+    }
+    try {
+      const response = await directFetch(`${eacAuthRootOf(credential)}/auth/status`, {
+        headers: { accept: 'application/json', ...(local === null ? {} : { 'x-ofm-user': local.token }) },
+        signal: AbortSignal.timeout(8000),
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || data === null) throw new Error('bad answer')
+      const result = {
+        ...base,
+        configured: data.configured === true,
+        required: data.required === true,
+        authorized: data.authorized === true,
+        login: typeof data.login === 'string' && data.login !== '' ? data.login : base.login,
+        avatar: typeof data.avatar === 'string' && data.avatar !== '' ? data.avatar : base.avatar,
+        starred: data.starred === true,
+        lastCheck: Number.isFinite(data.lastCheck) ? data.lastCheck : 0,
+        reason: typeof data.reason === 'string' ? data.reason : null,
+        repo: typeof data.repo === 'string' ? data.repo : '',
+        checkedAt: Date.now(),
+      }
+      eacAuthCache.at = Date.now()
+      eacAuthCache.data = result
+      return result
+    } catch {
+      // The gateway did not answer: report what this machine holds, marked
+      // unverified, rather than claiming an authorization nobody confirmed.
+      const fallback = { ...base, authorized: local !== null, unverified: true, checkedAt: Date.now() }
+      eacAuthCache.at = Date.now()
+      eacAuthCache.data = fallback
+      return fallback
+    }
+  }
+  const eacAuth = {
+    /** Fresh read; the settings page calls this on mount and after actions. */
+    status: eacAuthStatus,
+    /** The last verdict, for the sync /summary document. */
+    cached: () => eacAuthCache.data,
+    /** Begin a login: mint the link code, hand the URL to the system browser. */
+    async start() {
+      const credential = sealedCredentialOf()
+      if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
+      const link = crypto.randomBytes(24).toString('base64url')
+      const url = `${eacAuthRootOf(credential)}/auth/github/start?link=${link}`
+      return { url, link, opened: openExternal(url) }
+    },
+    /** Collect the token the browser flow just produced. */
+    async poll(link) {
+      const credential = sealedCredentialOf()
+      if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
+      if (typeof link !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(link)) return { error: 'bad-link' }
+      let data
+      try {
+        const response = await directFetch(`${eacAuthRootOf(credential)}/auth/poll?link=${encodeURIComponent(link)}`, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        })
+        data = await response.json().catch(() => null)
+        if (!response.ok || data === null) return { error: 'gateway' }
+      } catch {
+        return { error: 'unreachable' }
+      }
+      if (data.status === 'ok' && typeof data.token === 'string' && data.token !== '') {
+        const saved = writeEacUser({ token: data.token, login: data.login ?? '', avatar: data.avatar ?? '' })
+        if (saved === null) return { error: 'not-writable' }
+        eacAuthCache.data = { ...eacAuthCache.data, available: true, local: true, authorized: true, login: saved.login, avatar: saved.avatar, savedAt: saved.savedAt }
+        return { status: 'ok', login: saved.login }
+      }
+      if (data.status === 'unstarred') return { status: 'unstarred', login: data.login ?? '', repo: data.repo ?? '' }
+      return { status: 'pending' }
+    },
+    /** Revoke server-side, then forget locally. Local removal is the part that
+     * must always happen — a gateway that cannot be reached must not leave the
+     * user logged in on this machine. */
+    async logout() {
+      const credential = sealedCredentialOf()
+      const local = readEacUser()
+      if (local !== null && credential !== null && credential.mode === 'worker') {
+        try {
+          await directFetch(`${eacAuthRootOf(credential)}/auth/logout`, {
+            method: 'POST',
+            headers: { accept: 'application/json', 'x-ofm-user': local.token },
+            signal: AbortSignal.timeout(8000),
+          })
+        } catch { /* local removal below is what the user asked for */ }
+      }
+      const cleared = clearEacUser()
+      eacAuthCache.data = { available: credential !== null && credential.mode === 'worker', authorized: false, login: '', local: false }
+      return { ok: cleared }
+    },
   }
 
   // ── push channel ────────────────────────────────────────────────────────────
@@ -1051,6 +1188,7 @@ export function apply(ctx, config) {
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     pool: fetchPoolSnapshot,
+    eacAuth,
     // Whether the co-paid lane is open on this host at all — the settings page's
     // one-bit answer to "why do I see no EAC group" (issue #60). Reads the gate,
     // not the listing: a closed gate and a dead relay are different sentences.
@@ -1656,6 +1794,21 @@ function createApiRoutes(deps) {
       if (method === 'GET' && routePath === '/meta') {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
       }
+      if (method === 'POST' && routePath === '/eac/login/start') {
+        const started = await deps.eacAuth.start()
+        return send(started.error === undefined ? 200 : 404, started.error === undefined ? started : { error: started.error })
+      }
+      if (method === 'GET' && routePath === '/eac/login/poll') {
+        const polled = await deps.eacAuth.poll(url.searchParams.get('link') ?? '')
+        const status = polled.error === undefined ? 200 : polled.error === 'bad-link' ? 400 : polled.error === 'no-lane' ? 404 : 502
+        return send(status, polled)
+      }
+      if (method === 'GET' && routePath === '/eac/status') {
+        return send(200, await deps.eacAuth.status())
+      }
+      if (method === 'POST' && routePath === '/eac/logout') {
+        return send(200, await deps.eacAuth.logout())
+      }
       if (method === 'GET' && routePath === '/pool') {
         try { return send(200, await deps.pool()) } catch (error) {
           const reason = POOL_REASONS.has(error?.reason) ? error.reason : 'unreachable'
@@ -1947,6 +2100,10 @@ function buildSummary(deps) {
     // gate never opened (a host the kernel gave no profile context), which is a
     // different sentence from "the relay is down" (issue #60).
     laneAvailable: deps.laneAvailable?.() === true,
+    // The last GitHub-authorization verdict (the settings page refreshes it via
+    // /eac/status on mount). `authorized: false` with the lane available is the
+    // one state the model cards badge as locked.
+    eacAuth: deps.eacAuth?.cached?.() ?? null,
     update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying, managed: update.managed === true },
   }
 }
