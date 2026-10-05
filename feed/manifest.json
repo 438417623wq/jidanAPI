@@ -1,7 +1,7 @@
 {
   "version": "1.4.5",
   "base": "../",
-  "publishedAt": "2026-10-05T05:02:22.427Z",
+  "publishedAt": "2026-10-05T07:14:02.328Z",
   "notes": "",
   "files": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "client.js",
-      "size": 145016,
-      "sha256": "d5fd2b92d3ab170901ef8510946f75f381b1e52bde24c31fe789f5b9322c2532"
+      "size": 145015,
+      "sha256": "cdf88717d95d6143f394b593d5f6291df5b8e67ad8de1ec246e788873cf0e735"
     },
     {
       "path": "cordis.patch.yml",
@@ -36,8 +36,8 @@
     },
     {
       "path": "LICENSE",
-      "size": 1069,
-      "sha256": "f767664181b6f4ece8a2164da7c86b59a097eaffc17520f9f0f5e6bc070cd5f6"
+      "size": 1068,
+      "sha256": "4d5f97c83545b2159926df06d3210a266d2b7f900e27f7b3e8e576caf753e828"
     },
     {
       "path": "locale/en.json",
@@ -51,8 +51,8 @@
     },
     {
       "path": "package.json",
-      "size": 1624,
-      "sha256": "3454a66fd4f749f93a88000a02fae56aabd073a926b028adb89ad92d5f85750c"
+      "size": 1627,
+      "sha256": "4b32ee3626c37a31ef25e259aaa3e606807565800d42299b33d107ba98e7c967"
     },
     {
       "path": "src/adapter.js",
@@ -86,8 +86,8 @@
     },
     {
       "path": "src/feed.js",
-      "size": 12497,
-      "sha256": "4199463b48c70d0ebdb6c16608de63a4c27dea2c5de0e34755ab32125171ecd6"
+      "size": 12496,
+      "sha256": "913ef14f718f4125485f69dc38e1a6e6e2ced99c15ec4a88d235dc4b7a9d23fb"
     },
     {
       "path": "src/forward.js",
@@ -141,8 +141,8 @@
     },
     {
       "path": "src/updater.js",
-      "size": 29780,
-      "sha256": "baeef89336b3aec782c66334d6a1b4d448dc7e0b3f7a60767562bb1c52b56ab3"
+      "size": 29779,
+      "sha256": "15e33b14836db36bc1c634f44b3ab0186966a17167ff35dc43546aff4654f23f"
     },
     {
       "path": "src/upstream.js",
@@ -165,5 +165,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "OysBLEK93cs+C7tri+puFwlxCe5+vqKwzsGQSIuWbAaFanQmYTftRZhCjXFY8dKx14o1PG/Ak0AHHhYbcHE1AQ=="
+  "signature": "8/qpC+2u7P79JyBcVHnqDXVbBR/Go9DofDVcuB967pbm65KN+KiH4hC45EdYRB3vYhqjmYAkjCBA3ShXU1BACw=="
 }
