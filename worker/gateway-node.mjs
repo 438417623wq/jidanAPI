@@ -41,6 +41,13 @@
  *   POOL_SIZE            optional. The real provisioned account count for the
  *                        public /pool snapshot; when unset the snapshot derives
  *                        capacity from the repo's stars (× 1.5)
+ *   POOL_PRESSURE_BUSY   optional. In-flight chat turns at which the /pool
+ *                        snapshot reports "busy" (default 30, 0 = off)
+ *   POOL_PRESSURE_OVER   optional. In-flight turns at which it reports
+ *                        "overloaded" (default 80, 0 = off); a saturating
+ *                        event loop forces the same verdicts — mean loop
+ *                        delay ≥100ms reports "busy", ≥300ms "overloaded" —
+ *                        whatever the counters say
  *   GITHUB_STARS_OVERRIDE optional test hook pinning the star count
  *   ADMIN_TOKEN          token for the /stats dashboard; unset = dashboard off
  *   STATS_PATH           stats file, default ./stats.json next to this script
@@ -58,6 +65,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
+import perfHooks from 'node:perf_hooks'
 import gateway from './worker.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -292,8 +300,30 @@ export function createGatewayServer(hostEnv = {}) {
   // unauthenticated quota); a failed fetch keeps the last good value. Stars
   // are never even fetched when a configured POOL_SIZE makes them moot, and
   // GITHUB_STARS_OVERRIDE exists so the offline suite never touches the net.
+  //
+  // The load verdict (`level`) is this process's own truth: in-flight chat
+  // turns against the operator-tunable POOL_PRESSURE_* thresholds, forced to
+  // "busy"/"overloaded" when the event loop itself is saturating — a setting
+  // page showing a calm pool while the box is dying is worse than none.
   const poolSizeOverride = Number.parseInt(env.POOL_SIZE ?? '', 10)
   const starsOverride = Number.parseInt(env.GITHUB_STARS_OVERRIDE ?? '', 10)
+  const pressureBusy = Math.max(0, Number.parseInt(env.POOL_PRESSURE_BUSY ?? '30', 10) || 0)
+  const pressureOver = Math.max(0, Number.parseInt(env.POOL_PRESSURE_OVER ?? '80', 10) || 0)
+  const loopDelay = perfHooks.monitorEventLoopDelay({ resolution: 20 })
+  loopDelay.enable()
+  let loopEma = null
+  let loopWarmup = true
+  const loopSampler = setInterval(() => {
+    // The first window swallows the boot itself (module loading blocks the
+    // loop); it says nothing about steady state, so it is discarded.
+    if (loopWarmup) { loopWarmup = false; loopDelay.reset(); return }
+    if (loopDelay.count > 0) {
+      const meanMs = loopDelay.mean / 1e6
+      loopEma = loopEma === null ? meanMs : loopEma * 0.85 + meanMs * 0.15
+    }
+    loopDelay.reset()
+  }, 5_000)
+  loopSampler.unref?.()
   const starCache = { stars: Number.isFinite(starsOverride) && starsOverride >= 0 ? starsOverride : null, at: Number.isFinite(starsOverride) && starsOverride >= 0 ? Date.now() : 0 }
   const loadStars = async () => {
     if (Number.isFinite(starsOverride) && starsOverride >= 0) return starsOverride
@@ -330,7 +360,11 @@ export function createGatewayServer(hostEnv = {}) {
     for (const row of Object.values(analytics.state.ips)) if ((row.last ?? 0) > cutoff) active24h += 1
     let inFlight = 0
     for (const value of inflight.values()) inFlight += value
-    return { ok: true, stars: starCache.stars, pool, poolSource, active24h, inflight: inFlight, concurrencyPerIp: concLimit, ts: Date.now() }
+    const loopMs = loopEma === null ? null : Math.round(loopEma * 10) / 10
+    const level = (pressureOver > 0 && (inFlight >= pressureOver || (loopMs !== null && loopMs >= 300))) ? 'over'
+      : (pressureBusy > 0 && (inFlight >= pressureBusy || (loopMs !== null && loopMs >= 100))) ? 'busy'
+        : 'ok'
+    return { ok: true, stars: starCache.stars, pool, poolSource, active24h, inflight: inFlight, concurrencyPerIp: concLimit, level, loopDelayMs: loopMs, ts: Date.now() }
   }
 
   analytics.load(statsPath)

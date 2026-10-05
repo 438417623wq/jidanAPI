@@ -69,15 +69,19 @@ window.__ModuleLoader__.load({
         'section.dash': '用量看板',
         'section.dashHint': '数据只写入本机，不会上传。',
         'pool.title': '号池',
-        'pool.load': '负载',
+        'pool.hint': '容量与实时负载 · 判定来自网关进程',
+        'pool.levelOk': '畅通',
+        'pool.levelBusy': '繁忙',
+        'pool.levelOver': '过载',
         'pool.capacity': '号池容量',
+        'pool.reach': '容量占用',
         'pool.formula': 'Star {stars} × 1.5',
         'pool.configured': '按实际配号数',
         'pool.active': '24h 活跃',
         'pool.live': '进行中',
         'pool.starLine': '每 1 个 Star，号池 +1.5',
         'pool.starCta': '去 Star',
-        'pool.ariaTank': '号池水位',
+        'pool.ariaPool': '号池容量占用',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
@@ -324,15 +328,19 @@ window.__ModuleLoader__.load({
         'section.prefs': 'Plugin settings',
         'section.prefsHint': 'Changes take full effect on the next load.',
         'pool.title': 'Account pool',
-        'pool.load': 'load',
+        'pool.hint': 'Capacity & live pressure · verdict from the gateway process',
+        'pool.levelOk': 'Healthy',
+        'pool.levelBusy': 'Busy',
+        'pool.levelOver': 'Overloaded',
         'pool.capacity': 'Pool capacity',
+        'pool.reach': 'Capacity in use',
         'pool.formula': '{stars} stars × 1.5',
         'pool.configured': 'configured count',
         'pool.active': '24h active',
         'pool.live': 'in flight',
         'pool.starLine': 'Every star adds 1.5 accounts',
         'pool.starCta': 'Star on GitHub',
-        'pool.ariaTank': 'Pool water level',
+        'pool.ariaPool': 'Pool capacity in use',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -658,41 +666,29 @@ window.__ModuleLoader__.load({
 .ofm_modalbody p{margin:0 0 6px}
 .ofm_modalfoot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 @media (max-width:720px){.ofm_sec_hint{margin-left:0;width:100%}.ofm_pills{margin-left:0;width:100%}}
-.ofm_tankrow{display:flex;gap:20px;align-items:stretch;flex-wrap:wrap}
-.ofm_tank{position:relative;width:196px;height:132px;border-radius:14px;overflow:hidden;flex:none;background:linear-gradient(180deg,rgba(127,166,255,.10),rgba(127,166,255,.03));box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}
-.ofm_tankwater{position:absolute;left:0;right:0;bottom:0;height:var(--lvl,0%);transition:height 1.6s cubic-bezier(.22,.61,.36,1)}
-.ofm_tank.cool .ofm_tankwater{background:linear-gradient(180deg,#5aa0ff,#2f6fe0)}
-.ofm_tank.warm .ofm_tankwater{background:linear-gradient(180deg,#ffb45a,#e0862f)}
-.ofm_tank.hot .ofm_tankwater{background:linear-gradient(180deg,#ff6b5e,#d83a3a)}
-.ofm_tankdeep{position:absolute;inset:0;overflow:hidden}
-.ofm_wave{position:absolute;left:0;top:-6px;width:200%;height:7px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 8' preserveAspectRatio='none'%3E%3Cpath d='M0 4 Q15 0 30 4 T60 4 T90 4 T120 4 V8 H0Z' fill='rgba(255,255,255,.5)'/%3E%3C/svg%3E") repeat-x;background-size:60px 7px;animation:ofmwave 5.5s linear infinite}
-.ofm_wave.w2{top:-4px;opacity:.45;animation-duration:8.5s;animation-direction:reverse}
-@keyframes ofmwave{to{transform:translateX(60px)}}
-.ofm_bubble{position:absolute;bottom:-8px;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.5);opacity:0;animation:ofmbub 7s ease-in infinite}
-.ofm_bubble.b1{left:14%;animation-delay:0s}
-.ofm_bubble.b2{left:32%;width:3px;height:3px;animation-delay:2.2s;animation-duration:9s}
-.ofm_bubble.b3{left:55%;animation-delay:4.1s}
-.ofm_bubble.b4{left:71%;width:7px;height:7px;animation-delay:1.3s;animation-duration:8s}
-.ofm_bubble.b5{left:86%;width:4px;height:4px;animation-delay:5.4s;animation-duration:10s}
-@keyframes ofmbub{0%{transform:translateY(0);opacity:0}12%{opacity:.75}100%{transform:translateY(-140px);opacity:0}}
-.ofm_fish{position:absolute;left:-34px;width:28px;height:14px;animation:ofmswim 12s linear infinite;will-change:transform}
-.ofm_fish.f1{bottom:16px}
-.ofm_fish.f2{bottom:44px;animation-duration:16s;animation-delay:-7s}
-.ofm_fish.f2 svg{transform:scaleX(-1)}
-.ofm_fish.f3{bottom:66px;width:20px;height:10px;animation-duration:9.5s;animation-delay:-3.5s}
-.ofm_fish svg{display:block;width:100%;height:100%;fill:rgba(255,255,255,.8)}
-@keyframes ofmswim{0%{transform:translateX(0)}100%{transform:translateX(264px)}}
-.ofm_tankglass{position:absolute;inset:0;pointer-events:none;border-radius:14px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.16),inset 0 16px 30px rgba(255,255,255,.05),inset 0 -10px 22px rgba(0,0,0,.06)}
-.ofm_tankmax{position:absolute;left:0;right:0;top:0;height:2px;background:repeating-linear-gradient(90deg,rgba(255,255,255,.35) 0 8px,transparent 8px 16px);opacity:0;transition:opacity .8s}
-.ofm_tank.hot .ofm_tankmax{opacity:1;animation:ofmmax 1.6s ease-in-out infinite}
-@keyframes ofmmax{50%{opacity:.35}}
-.ofm_tankstats{display:flex;flex-direction:column;gap:10px;justify-content:center}
-.ofm_tankstats .ofm_stat b{font-size:17px}
-.ofm_tankstats .ofm_stat.big b{font-size:26px;color:var(--dsw-alias-text-primary)}
-.ofm_tankfoot{flex:1;min-width:210px;display:flex;flex-direction:column;gap:10px;justify-content:center;align-items:flex-start}
-.ofm_starbtn{display:inline-flex;gap:6px;align-items:center;padding:7px 14px;border-radius:10px;background:var(--dsw-alias-state-business-primary,#4C8DFF);color:#fff;text-decoration:none;font-weight:600;font-size:13px;transition:filter .2s,transform .2s}
-.ofm_starbtn:hover{filter:brightness(1.08);transform:translateY(-1px)}
-@media (prefers-reduced-motion:reduce){.ofm_wave,.ofm_bubble,.ofm_fish,.ofm_tank.hot .ofm_tankmax{animation:none}}
+.ofm_pool{display:flex;flex-direction:column;gap:14px}
+.ofm_pooltop{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+.ofm_poolbadge{display:inline-flex;align-items:center;gap:8px;padding:5px 13px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12.5px;font-weight:650;white-space:nowrap}
+.ofm_pooldot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-label-tertiary)}
+.ofm_poolbadge.ok{color:var(--dsw-alias-state-success-primary)}
+.ofm_poolbadge.ok .ofm_pooldot{background:var(--dsw-alias-state-success-primary)}
+.ofm_poolbadge.busy{color:var(--dsw-alias-state-warning-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warning-primary) 40%,transparent)}
+.ofm_poolbadge.busy .ofm_pooldot{background:var(--dsw-alias-state-warning-primary);animation:ofmpulse 1.4s ease-in-out infinite}
+.ofm_poolbadge.over{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}
+.ofm_poolbadge.over .ofm_pooldot{background:var(--dsw-alias-state-error-primary);animation:ofmpulse .8s ease-in-out infinite}
+@keyframes ofmpulse{50%{opacity:.3}}
+.ofm_poolstats{display:flex;gap:26px;flex-wrap:wrap;margin-left:auto}
+.ofm_poolstats .ofm_stat b{font-size:19px}
+.ofm_poolstats .ofm_stat.hot b{color:var(--dsw-alias-state-error-primary)}
+.ofm_poolbar{position:relative;height:10px;border-radius:999px;background:var(--dsw-alias-bg-layer-2);box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1);overflow:hidden}
+.ofm_poolfill{position:absolute;left:0;top:0;bottom:0;width:0;border-radius:999px;transition:width 1.2s cubic-bezier(.22,.61,.36,1)}
+.ofm_poolfill.ok{background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-state-success-primary) 62%,transparent),var(--dsw-alias-state-success-primary))}
+.ofm_poolfill.busy{background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-state-warning-primary) 62%,transparent),var(--dsw-alias-state-warning-primary))}
+.ofm_poolfill.over{background:linear-gradient(90deg,color-mix(in srgb,var(--dsw-alias-state-error-primary) 62%,transparent),var(--dsw-alias-state-error-primary))}
+.ofm_poolmeta{display:flex;gap:8px 18px;align-items:baseline;flex-wrap:wrap;justify-content:space-between}
+.ofm_starbtn{display:inline-flex;gap:6px;align-items:center;padding:6px 13px;border-radius:999px;border:1px solid var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary);text-decoration:none;font-weight:600;font-size:12.5px;transition:background .2s,color .2s;white-space:nowrap}
+.ofm_starbtn:hover{background:var(--dsw-alias-state-business-primary);color:#fff}
+@media (prefers-reduced-motion:reduce){.ofm_pooldot{animation:none}}
 `
 
     // ── helpers ───────────────────────────────────────────────────────────────
@@ -1232,16 +1228,17 @@ window.__ModuleLoader__.load({
     }
 
     // ── dashboard ─────────────────────────────────────────────────────────────
-    // ── pool tank (co-paid lane capacity & load) ──────────────────────────────
+    // ── pool panel (co-paid lane capacity & live pressure) ────────────────────
     // Numbers come from the gateway through the plugin backend (/pool), which
     // is the only place the sealed gateway URL exists. All of them are real:
     // capacity is the operator's actual provisioning rule (stars × 1.5, or a
-    // configured count), load is the gateway's own traffic counters. The widget
-    // renders nothing at all when the host has no lane or the gateway is dark —
-    // an empty fish tank that lies would be worse than no fish tank.
+    // configured count), and the load verdict — 畅通 / 繁忙 / 过载 — is computed
+    // by the gateway process itself from its in-flight streams and event-loop
+    // saturation, so the panel and the server can never disagree about the
+    // color. The panel renders nothing at all when the host has no lane or the
+    // gateway is dark — a gauge that lies would be worse than no gauge.
     const POOL_REPO_URL = 'https://github.com/zouyuxuan122/dsh-our-free-model'
-    const FISH_PATH = 'M1 7c2.5-3.5 7-5 11-3.2L18.5 1v12L12 10.2C8 12 3.5 10.5 1 7zm16.4 0l5.1-3.4v6.8L17.4 7zM8.4 5.6a1 1 0 11-2 0 1 1 0 012 0z'
-    function PoolTank(props) {
+    function PoolPanel(props) {
       const { t } = props
       const [pool, setPool] = useState(undefined)
       useEffect(() => {
@@ -1250,34 +1247,31 @@ window.__ModuleLoader__.load({
           .then(data => { if (alive) setPool(data?.pool != null ? data : null) })
           .catch(() => { if (alive) setPool(null) })
         load()
-        const timer = setInterval(load, 60_000)
+        const timer = setInterval(load, 30_000)
         return () => { alive = false; clearInterval(timer) }
       }, [])
       if (pool === undefined || pool === null) return null
-      const pct = Math.max(0, Math.min(100, Math.round(100 * pool.active24h / pool.pool)))
-      const tone = pct >= 85 ? 'hot' : pct >= 55 ? 'warm' : 'cool'
+      const pct = pool.pool > 0 ? Math.max(0, Math.min(100, Math.round(100 * pool.active24h / pool.pool))) : 0
+      const level = pool.level === 'over' ? 'over' : pool.level === 'busy' ? 'busy' : 'ok'
+      const levelText = level === 'over' ? t('pool.levelOver') : level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
       const capacity = pool.poolSource === 'formula'
         ? t('pool.formula').replace('{stars}', String(pool.stars ?? '—'))
         : t('pool.configured')
-      const fish = ['f1', 'f2', 'f3'].map(name => h('i', { className: `ofm_fish ${name}`, key: name },
-        h('svg', { viewBox: '0 0 24 14' }, h('path', { d: FISH_PATH }))))
-      const bubbles = ['b1', 'b2', 'b3', 'b4', 'b5'].map(name => h('i', { className: `ofm_bubble ${name}`, key: name }))
-      return h(Panel, { title: t('pool.title'), hint: `${t('pool.live')} ${pool.inflight}` },
-        h('div', { className: 'ofm_tankrow' },
-          h('div', { className: `ofm_tank ${tone}`, role: 'img', 'aria-label': `${t('pool.ariaTank')} ${pct}%`, style: { '--lvl': `${pct}%` } },
-            h('div', { className: 'ofm_tankwater' },
-              h('div', { className: 'ofm_tankdeep' }, ...bubbles, ...fish),
-              h('i', { className: 'ofm_wave w1' }),
-              h('i', { className: 'ofm_wave w2' })),
-            h('div', { className: 'ofm_tankmax' }),
-            h('div', { className: 'ofm_tankglass' })),
-          h('div', { className: 'ofm_tankstats' },
-            h('div', { className: 'ofm_stat big' }, h('b', null, `${pct}%`), h('span', null, t('pool.load'))),
-            h('div', { className: 'ofm_stat' }, h('b', null, String(pool.pool)), h('span', null, t('pool.capacity'))),
-            h('div', { className: 'ofm_stat' }, h('b', null, String(pool.active24h)), h('span', null, t('pool.active')))),
-          h('div', { className: 'ofm_tankfoot' },
-            h('span', { className: 'ofm_note' }, `${capacity} · ${t('pool.starLine')}`),
-            h('a', { className: 'ofm_starbtn', href: POOL_REPO_URL, target: '_blank', rel: 'noreferrer' }, `⭐ ${t('pool.starCta')}`))))
+      return h('div', { className: 'ofm_pool' },
+        h('div', { className: 'ofm_pooltop' },
+          h('span', { className: `ofm_poolbadge ${level}` },
+            h('span', { className: 'ofm_pooldot' }),
+            `${levelText} · ${t('pool.live')} ${pool.inflight}`),
+          h('div', { className: 'ofm_poolstats' },
+            h('div', { className: `ofm_stat${level === 'over' ? ' hot' : ''}` }, h('b', null, String(pool.inflight)), h('span', null, t('pool.live'))),
+            h('div', { className: 'ofm_stat' }, h('b', null, String(pool.active24h)), h('span', null, t('pool.active'))),
+            h('div', { className: 'ofm_stat' }, h('b', null, String(pool.pool)), h('span', null, t('pool.capacity')))),
+          h('a', { className: 'ofm_starbtn', href: POOL_REPO_URL, target: '_blank', rel: 'noreferrer' }, `⭐ ${t('pool.starCta')}`)),
+        h('div', { className: 'ofm_poolbar', role: 'img', 'aria-label': `${t('pool.ariaPool')} ${pct}%` },
+          h('div', { className: `ofm_poolfill ${level}`, style: { width: `${pct}%` } })),
+        h('div', { className: 'ofm_poolmeta' },
+          h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${pct}%`),
+          h('span', { className: 'ofm_note' }, `${capacity} · ${t('pool.starLine')}`)))
     }
 
     function Dashboard(props) {
@@ -1410,7 +1404,6 @@ window.__ModuleLoader__.load({
         ? h('p', { className: 'ofm_note' }, t('speed.estimated'))
         : null
       return h(Fragment, null, headline, h('p', { className: 'ofm_note' }, t('speed.scope')), historyNote,
-        h(PoolTank, { t }),
         h('div', { className: 'ofm_two' }, heatmap, curve), speed, table)
     }
 
@@ -1845,6 +1838,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ofm_actions' },
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/refresh', undefined, 600_000); summary.reload(); stats.reload() } finally { setBusy(false) } } }, summary.status === 'loading' ? t('probing') : t('refresh')),
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/reprobe', undefined, 600_000); summary.reload() } finally { setBusy(false) } } }, t('reprobe')))),
+        h(Section, { title: t('pool.title'), hint: t('pool.hint') }, h(PoolPanel, { t: tagged })),
         h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t: tagged, onBench: bench, benches })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t: tagged })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },

@@ -190,14 +190,15 @@ export function apply(ctx, config) {
   // ── the pool snapshot (settings-page gauge) ─────────────────────────────────
   // The co-paid gateway publishes aggregate, non-sensitive numbers (provisioned
   // capacity, live traffic) at `{mount}/pool`; this proxy exists so the browser
-  // never needs the gateway URL — the seal stays server-side. Two minutes of
-  // server-side cache keeps a settings page that re-mounts often from turning
-  // into a request flood. A host without the lane — or a gateway that does not
-  // answer — throws, and the route answers 404, which the client reads as
-  // "hide the widget".
+  // never needs the gateway URL — the seal stays server-side. Thirty seconds
+  // of server-side cache keeps a settings page that re-mounts often from
+  // turning into a request flood, while staying fresh enough for the load
+  // verdict to mean something. A host without the lane — or a gateway that
+  // does not answer — throws, and the route answers 404, which the client
+  // reads as "hide the panel".
   let poolCache = { at: 0, data: null }
   async function fetchPoolSnapshot() {
-    if (poolCache.data !== null && Date.now() - poolCache.at < 120_000) return poolCache.data
+    if (poolCache.data !== null && Date.now() - poolCache.at < 30_000) return poolCache.data
     const credential = sealedCredentialOf()
     if (credential === null || credential.mode !== 'worker') throw new Error('pool: no sealed lane on this host')
     const gatewayRoot = credential.base.replace(/\/v1\/?$/, '')
