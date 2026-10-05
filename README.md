@@ -19,10 +19,10 @@
 <div align="center">
 
 > 你只需在 dsh 里装上这个插件，无需登录、注册、填 API Key 或任何其它操作，
-> 就能用上包括 Muse Spark 1.3、MiMo V2.6 在内的前沿模型——完全免费，不限量。
+> 就能用上包括 DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型——完全免费，不限量。
 >
 > *All you do is install this plugin in dsh: no login, no sign-up, no API key, nothing
-> else. The frontier models are just there — Muse Spark 1.3, MiMo V2.6 and the rest.
+> else. The frontier models are just there — DeepSeek V4.1 Flash, Kimi K3 and the rest.
 > Free, with no usage cap.*
 >
 > 模型清单跟随上游刷新，可用性由**你自己这台机器的网络出口**实测得出，
