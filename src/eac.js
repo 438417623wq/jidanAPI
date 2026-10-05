@@ -90,6 +90,10 @@ function laneFetch(url, { method = 'GET', headers = {}, body = undefined, signal
           for await (const chunk of response) chunks.push(Buffer.from(chunk))
           return Buffer.concat(chunks).toString('utf8')
         },
+        // Response-shaped means Response-complete: the pool proxy is the first
+        // caller that reads JSON off this shim, and a missing method here
+        // surfaces as an opaque 'unreachable' three layers up.
+        async json() { return JSON.parse(await this.text()) },
       })
     })
     request.on('error', reject)

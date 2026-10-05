@@ -69,8 +69,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 11450,
-      "sha256": "52bca6ed0ab3525e6bb6074fc7e81af408c4519e0434fe4aca486f9609a9d960"
+      "size": 11732,
+      "sha256": "50958053be289764dffcdcb5a46b4eb94db71ba693f6e9bdfb7ad72b2e50e471"
     },
     {
       "path": "src/effort.js",
