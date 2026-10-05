@@ -1528,8 +1528,10 @@ function imageResolver(ctx, logger) {
   }
 }
 
-/** OpenAI request messages -> harness messages, for the forward listener. */
-function fromOpenAiMessages(body, isResponses, modelId) {
+/** OpenAI request messages -> harness messages, for the forward listener.
+ *  Exported for the suite, which pins the assistant `source` shape the v4
+ *  session format requires (issue #62). */
+export function fromOpenAiMessages(body, isResponses, modelId) {
   const out = []
   const rows = isResponses
     ? normaliseResponsesInput(body.input)

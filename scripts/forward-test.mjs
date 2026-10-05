@@ -29,6 +29,7 @@ import { startForwardServer, startLanRelay, resolveLoopbackBind, bindForwardPort
 import { toToolDefs } from '../src/messages.js'
 import { readStream } from '../src/stream.js'
 import { applyFingerprint } from '../src/upstream.js'
+import { fromOpenAiMessages } from '../index.js'
 import { until } from './lib/fake-kernel.mjs'
 
 let failures = 0
@@ -431,6 +432,14 @@ await checkAsync('one thought repeated under two names is counted once', async (
 await checkAsync('reasoning_details still reads as thinking', async () => {
   const { state } = await readChat([chatFrame({ reasoning_details: [{ text: 'a' }, { text: 'b' }] })])
   assert.equal(state.reasoningText, 'ab')
+})
+
+await checkAsync('thinking streamed under the Anthropic chat spelling reaches the harness (issue #66)', async () => {
+  const { chunks, state } = await readChat([chatFrame({ thinking: 'weighing the options' }), chatFrame({ content: 'answer' })])
+  assert.equal(reasoningOf(chunks), 'weighing the options')
+  assert.equal(state.sawReasoning, true)
+  assert.equal(state.reasoningText, 'weighing the options')
+  assert.equal(chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join(''), 'answer')
 })
 
 await checkAsync('a frame with no thinking leaves the block empty', async () => {
@@ -995,6 +1004,26 @@ await checkAsync('health and roster polling produce no request diagnostics', asy
   await (await fetch(`${base}/health`)).text()
   await (await fetch(`${base}/v1/models`, { headers: { authorization: 'Bearer k-test' } })).text()
   assert.deepEqual(events, [])
+})
+
+// ── the listener's front door: OpenAI rows -> harness rows (#62) ─────────────
+// The v4 session format restores a `model` source only with its provider and
+// model named — a bare `{ kind: 'model' }` is refused, and a refused source is
+// a refused session. Every synthesized assistant row must therefore carry the
+// route it will stream through.
+await checkAsync('synthesized assistant rows carry a complete model source (issue #62)', async () => {
+  const rows = fromOpenAiMessages({ messages: [
+    { role: 'user', content: 'ask' },
+    { role: 'assistant', content: 'partial answer', tool_calls: [{ id: 'call_1', function: { name: 'read', arguments: '{"f":1}' } }] },
+    { role: 'tool', content: 'data', tool_call_id: 'call_1' },
+  ] }, false, 'deepseek-ai/deepseek-v4.1-flash')
+  const assistant = rows.find(row => row.role === 'assistant')
+  assert.deepEqual(assistant?.source, { kind: 'model', provider: 'our-free-model', model: 'deepseek-ai/deepseek-v4.1-flash' })
+  assert.equal(rows.find(row => row.role === 'user')?.source, undefined, 'a user row carries no source')
+  const tool = rows.find(row => row.role === 'tool')
+  assert.deepEqual(tool?.source, { kind: 'tool', callId: 'call_1' }, 'a tool row keeps its tool source')
+  const call = assistant?.content?.find(block => block.type === 'tool-call')
+  assert.deepEqual(call, { type: 'tool-call', id: 'call_1', name: 'read', arguments: '{"f":1}' })
 })
 
 for (const server of openServers) await server.close()

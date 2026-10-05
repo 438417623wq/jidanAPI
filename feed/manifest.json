@@ -1,7 +1,7 @@
 {
   "version": "1.4.6",
   "base": "../",
-  "publishedAt": "2026-10-05T10:17:56.799Z",
+  "publishedAt": "2026-10-05T11:09:14.833Z",
   "notes": "",
   "files": [
     {
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 99141,
-      "sha256": "f40d5038f0e2ab37152a6fbba3a5e8555b256d4f4031550bf38df8f7bba0208f"
+      "size": 99264,
+      "sha256": "bb5ad1fb6fcd9cfa7b14aab6de6975e1e87950963f08a5b98258561190b47191"
     },
     {
       "path": "LICENSE",
@@ -165,5 +165,5 @@
       "sha256": "6f9d5dce4af5dc504991af32b46cd3b76dd0c587fcacb35cc6245a518201c021"
     }
   ],
-  "signature": "SNJzQsf3py8fth6UUX1upyMAh88eD69irKFMarIHBsJBub4V7fiGbSYnTR1L3iMcgGXMOPXrWHYyDi0DOoR3DA=="
+  "signature": "4KaWHlj5mSoFoK4mZEr/LFGWhds5yDllYGpe8YSswiyYNF6iSZZ+Tr81+oYv2WYCffj3Y/gPVDjmaxSb1C3qCg=="
 }
