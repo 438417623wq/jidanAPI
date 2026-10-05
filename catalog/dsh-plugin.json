@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/Yan-Zero/dsh-std/3df054302468d2091859db4b3bd079042d33f100/packages/manifest/schema/dsh-plugin-0.15.schema.json",
   "manifestVersion": "0.15",
-  "id": "dev.Ebony-Vinyl.dsh-our-free-model",
+  "id": "dev.ebony-vinyl.dsh-our-free-model",
   "name": "dsh-our-free-model",
   "version": "1.4.5",
   "facets": {
