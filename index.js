@@ -34,7 +34,7 @@ import { STATE, detectEgress, probeCatalog } from './src/probe.js'
 import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
 import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
-import { fetchSealedListing } from './src/eac.js'
+import { directFetch, fetchSealedListing } from './src/eac.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
@@ -194,24 +194,29 @@ export function apply(ctx, config) {
   // of server-side cache keeps a settings page that re-mounts often from
   // turning into a request flood, while staying fresh enough for the load
   // verdict to mean something. A host without the lane — or a gateway that
-  // does not answer — throws, and the route answers 404, which the client
-  // reads as "hide the panel".
+  // does not answer — throws a tagged reason, and the route answers 404 with
+  // that reason, which the client shows as a muted diagnostic line. The
+  // outbound hop rides directFetch, the lane's own node:http(s) transport: if
+  // global fetch is wrapped or broken in this composition, the lane still is.
+  const poolError = reason => Object.assign(new Error(`pool: ${reason}`), { code: 'POOL_UNAVAILABLE', reason })
   let poolCache = { at: 0, data: null }
   async function fetchPoolSnapshot() {
     if (poolCache.data !== null && Date.now() - poolCache.at < 30_000) return poolCache.data
     const credential = sealedCredentialOf()
-    if (credential === null || credential.mode !== 'worker') throw new Error('pool: no sealed lane on this host')
+    if (credential === null || credential.mode !== 'worker') throw poolError('no-lane')
     const gatewayRoot = credential.base.replace(/\/v1\/?$/, '')
     const controller = new AbortController()
     const timer = setTimeout(() => controller.abort(), 8000)
     timer.unref?.()
     try {
-      const response = await fetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
-      if (!response.ok) throw new Error(`pool: gateway answered ${response.status}`)
+      const response = await directFetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
+      if (!response.ok) throw poolError('gateway-status')
       const data = await response.json()
-      if (data?.ok !== true || !Number.isFinite(data.pool)) throw new Error('pool: malformed snapshot')
+      if (data?.ok !== true || !Number.isFinite(data.pool)) throw poolError('malformed')
       poolCache = { at: Date.now(), data }
       return data
+    } catch (error) {
+      throw error?.code === 'POOL_UNAVAILABLE' ? error : poolError('unreachable')
     } finally {
       clearTimeout(timer)
     }
@@ -1603,6 +1608,9 @@ function foldForwardOutcome(outcome, chunk) {
  * prefix outranks `/api` in webServer's longest-prefix dispatch, so without
  * this fence these routes would answer callers the app itself would refuse.
  */
+/** The fixed failure classes the pool proxy may surface to the client. */
+const POOL_REASONS = new Set(['no-lane', 'gateway-status', 'malformed', 'unreachable'])
+
 function createApiRoutes(deps) {
   return async function handler(req, res) {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -1631,7 +1639,11 @@ function createApiRoutes(deps) {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
       }
       if (method === 'GET' && routePath === '/pool') {
-        try { return send(200, await deps.pool()) } catch { return send(404, { error: 'pool unavailable' }) }
+        try { return send(200, await deps.pool()) } catch (error) {
+          const reason = POOL_REASONS.has(error?.reason) ? error.reason : 'unreachable'
+          deps.logger?.warn?.(`our-free-model: pool snapshot unavailable (${reason})`)
+          return send(404, { error: `pool unavailable (${reason})` })
+        }
       }
       if (method === 'GET' && routePath === '/announcement') {
         // A managed install also stands down the owner's onboarding copy: the

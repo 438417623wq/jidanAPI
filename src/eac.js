@@ -43,6 +43,14 @@ const TURN_TIMEOUT_MS = 300000
 export const lane = { fetch: null }
 
 /**
+ * The lane's module-private transport, shared with the pool proxy: plugin
+ * backend outbound calls must not ride the swappable global fetch (#50 class
+ * of interference — the signed lane already learned this the hard way), and
+ * the sealed gateway URL should only ever travel over this module's bytes.
+ */
+export { laneFetch as directFetch }
+
+/**
  * The lane's own poster over `node:http`/`node:https`, not the global fetch.
  * The signature covers sha256(body), so the body must reach the gateway
  * byte-for-byte as signed. Local proxy plugins (billion-context et al.) work

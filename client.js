@@ -82,6 +82,12 @@ window.__ModuleLoader__.load({
         'pool.starLine': '每 1 个 Star，号池 +1.5',
         'pool.starCta': '去 Star',
         'pool.ariaPool': '号池容量占用',
+        'pool.unavailable': '号池数据暂不可用 · {reason}',
+        'pool.reasonNoLane': '本机没有解锁协付车道',
+        'pool.reasonGateway': '网关应答异常',
+        'pool.reasonMalformed': '网关数据异常',
+        'pool.reasonUnreachable': '网关暂不可达',
+        'pool.reasonUnknown': '原因未知',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
@@ -341,6 +347,12 @@ window.__ModuleLoader__.load({
         'pool.starLine': 'Every star adds 1.5 accounts',
         'pool.starCta': 'Star on GitHub',
         'pool.ariaPool': 'Pool capacity in use',
+        'pool.unavailable': 'Pool data unavailable · {reason}',
+        'pool.reasonNoLane': 'no co-paid lane unlocked on this host',
+        'pool.reasonGateway': 'gateway answered an error',
+        'pool.reasonMalformed': 'gateway data malformed',
+        'pool.reasonUnreachable': 'gateway unreachable',
+        'pool.reasonUnknown': 'unknown cause',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -1263,16 +1275,33 @@ window.__ModuleLoader__.load({
     function PoolPanel(props) {
       const { t } = props
       const [pool, setPool] = useState(undefined)
+      const [poolError, setPoolError] = useState('')
       useEffect(() => {
         let alive = true
         const load = () => api('/pool')
-          .then(data => { if (alive) setPool(data?.pool != null ? data : null) })
-          .catch(() => { if (alive) setPool(null) })
+          .then(data => {
+            if (!alive) return
+            setPool(data?.pool != null ? data : null)
+            setPoolError('')
+          })
+          .catch(error => {
+            if (!alive) return
+            setPool(null)
+            // The backend tags the failure with a fixed reason code; map it to
+            // readable text instead of hiding the panel in silence.
+            const code = /\(([^)]+)\)\s*$/.exec(String(error?.message ?? ''))?.[1] ?? ''
+            setPoolError(code)
+          })
         load()
         const timer = setInterval(load, 30_000)
         return () => { alive = false; clearInterval(timer) }
       }, [])
-      if (pool === undefined || pool === null) return null
+      if (pool === undefined) return null
+      if (pool === null) {
+        const reasonText = ({ 'no-lane': t('pool.reasonNoLane'), 'gateway-status': t('pool.reasonGateway'), malformed: t('pool.reasonMalformed'), unreachable: t('pool.reasonUnreachable') })[poolError]
+          ?? (poolError !== '' ? poolError : t('pool.reasonUnknown'))
+        return h('p', { className: 'ofm_note' }, t('pool.unavailable').replace('{reason}', reasonText))
+      }
       const pct = pool.pool > 0 ? Math.max(0, Math.min(100, Math.round(100 * pool.active24h / pool.pool))) : 0
       // A gateway build that predates the level verdict answers without one.
       // The plugin then applies the same default thresholds locally, so an

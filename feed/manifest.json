@@ -1,7 +1,7 @@
 {
   "version": "1.4.5",
   "base": "../",
-  "publishedAt": "2026-10-05T02:47:58.045Z",
+  "publishedAt": "2026-10-05T04:17:49.746Z",
   "notes": "",
   "files": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "client.js",
-      "size": 142666,
-      "sha256": "ff89926cdecb2166b62f04b40007a154d9e07caaca17c6f269b78fc4c30abdcf"
+      "size": 144192,
+      "sha256": "a9132b9e3b488ef5c7b38339612ed14c8ce7470f4bcd83ceb59b455c36be5c5e"
     },
     {
       "path": "cordis.patch.yml",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 96499,
-      "sha256": "58c0389baeefab918facf1410d17550ddd58cc2dc588821fc53c3e7c8c40b52c"
+      "size": 97245,
+      "sha256": "dc133f4b82389ea2b7eb05b4f295734b15c3c90bf4f4fde49619a75adad7dd20"
     },
     {
       "path": "LICENSE",
@@ -71,8 +71,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 11097,
-      "sha256": "0bef2910e3030bf578c7946a7a060d1ee8b20870b3f783b9f6d7f304cd138eaa"
+      "size": 11450,
+      "sha256": "52bca6ed0ab3525e6bb6074fc7e81af408c4519e0434fe4aca486f9609a9d960"
     },
     {
       "path": "src/effort.js",
@@ -165,5 +165,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "1T2CyrvpyIgXhXN05dzwfdXl1E6iZdAOGxp4VaeKICP/lEAWduHy30OHWblKC5aY+8VWFMa6bsN+amjy1mdRCw=="
+  "signature": "49uw/1V8NsIBqPF9dIQglYzFza00AkaD+whRnXlx4J0653yHmPhLfIZm3wTYGUHgXdhLVE3qUWelkVfg2mzTDg=="
 }
