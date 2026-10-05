@@ -16,7 +16,8 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { chatFrames, callRoute, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
+import { EventEmitter } from 'node:events'
+import { chatFrames, callRoute, FakeRequest, fakeContext, freePort, stubUpstream, until } from './lib/fake-kernel.mjs'
 
 let failures = 0
 const check = (name, actual, expected) => {
@@ -272,11 +273,55 @@ const hostile = await callRoute(api(), 'GET', '/api/our-free-model/summary', und
   { authorization: 'internal-api', host: 'rebind.example:3000' })
 check('a request naming a host that is not this machine is refused at the route', hostile.status, 403)
 check('while the same route answers the loopback one', (await callRoute(api(), 'GET', '/api/our-free-model/summary')).status, 200)
+check('the refusal log identifies the structural Host fence',
+  ctx.__logs.some(line => line.includes('settings API admission rejected status=403 source=structural reason=host-not-loopback')), true)
+
+// Desktop forwards to HTTP loopback without Origin/Fetch-Metadata and keeps its
+// custom-protocol Referer. Exercise both registered surfaces, not only trust.js.
+const desktopHeaders = { host: '127.0.0.1:3000', referer: 'dsh-app://app/' }
+check('the settings route accepts the desktop relay before connection appears',
+  (await callRoute(api(), 'GET', '/api/our-free-model/summary', undefined, desktopHeaders)).status, 200)
+const events = routes.find(route => route.kind === 'exact' && route.path === '/api/our-free-model/events')?.handler
+if (events === undefined) throw new Error('events route was not registered')
+const eventReq = Object.assign(new EventEmitter(), new FakeRequest('GET', '/api/our-free-model/events', undefined, desktopHeaders))
+let eventStatus = 0
+let eventBody = ''
+const eventRes = Object.assign(new EventEmitter(), {
+  writeHead(status) { eventStatus = status },
+  write(text) { eventBody += text },
+  end() {},
+})
+events(eventReq, eventRes)
+check('the events route accepts the desktop relay', eventStatus, 200)
+check('and sends the initial snapshot', eventBody.includes('event: hello'), true)
+eventRes.emit('close')
 
 ctx.__services.connection.admit = () => ({ rejection: 401 })
 ctx.__mountService('connection')
 check('and once the composition publishes its own admission, that is what decides',
   (await callRoute(api(), 'GET', '/api/our-free-model/summary')).status, 401)
+for (const status of [401, 403]) {
+  ctx.__services.connection.admit = () => ({ rejection: status })
+  check(`desktop JSON requests cannot bypass Host ${status}`,
+    (await callRoute(api(), 'GET', '/api/our-free-model/summary', undefined, desktopHeaders)).status, status)
+  check(`desktop events cannot bypass Host ${status}`,
+    (await callRoute(events, 'GET', '/api/our-free-model/events', undefined, desktopHeaders)).status, status)
+}
+ctx.__services.connection.admit = () => { throw new Error('exception-secret') }
+const sensitiveHeaders = {
+  ...desktopHeaders, cookie: 'cookie-secret', authorization: 'Bearer auth-secret',
+}
+const unavailable = await callRoute(api(), 'GET', '/api/our-free-model/summary?token=query-secret', undefined, sensitiveHeaders)
+check('a failed Host admission returns 503 rather than bypassing authentication', unavailable.status, 503)
+check('the JSON error does not mislabel a Host failure as forbidden', unavailable.json.error, 'admission unavailable')
+check('events report the same Host failure',
+  (await callRoute(events, 'GET', '/api/our-free-model/events?token=query-secret', undefined, sensitiveHeaders)).status, 503)
+check('both route logs identify the Host admission failure',
+  ['settings API', 'events'].every(surface => ctx.__logs.some(line =>
+    line.includes(`${surface} admission rejected status=503 source=connection reason=admission-error`))), true)
+check('admission logs contain no sensitive request or exception strings',
+  ctx.__logs.filter(line => line.includes('admission rejected'))
+    .every(line => !/cookie-secret|auth-secret|query-secret|exception-secret|rebind\.example|dsh-app:/.test(line)), true)
 ctx.__services.connection.admit = () => undefined
 
 // ── one probe round at a time ────────────────────────────────────────────────

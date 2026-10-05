@@ -13,7 +13,8 @@
  *    plus browser-auth cookie), so the plugin is never weaker than the app;
  * 2. a structural replica of that fence for compositions without the service:
  *    loopback host only, no cross-site fetches, and an `Origin`/`Referer` that
- *    matches the `Host` authority whenever the client supplies one.
+ *    matches the `Host` authority whenever the client supplies one, with a
+ *    narrow exception for the desktop's dsh-app://app relay Referer.
  *
  * @module src/trust.js
  */
@@ -38,20 +39,35 @@ export function isLoopbackHost(value) {
  *
  * @param {import('node:http').IncomingMessage} req
  * @param {object|undefined} connection - the harness `connection` service, when the composition mounts one
+ * @param {(decision: {status: number, source: string, reason: string}) => void} [onRejection]
+ *   fixed diagnostic fields only; never request headers or error text
  * @returns {number|undefined}
  */
-export function rejectionFor(req, connection) {
-  if (connection && typeof connection.admit === 'function') {
-    try {
-      const admission = connection.admit(req)
-      if (admission && typeof admission === 'object' && 'rejection' in admission) return admission.rejection
-      return undefined
-    } catch {
-      // A connection service that throws is a composition bug; fall through to
-      // the structural fence rather than answering 500 for every request.
+export function rejectionFor(req, connection, onRejection) {
+  let decision
+  try {
+    const admit = connection?.admit
+    if (typeof admit === 'function') {
+      const admission = admit.call(connection, req)
+      const status = admission && typeof admission === 'object' ? admission.rejection : undefined
+      if (status === undefined) return undefined
+      decision = { status, source: 'connection', reason: 'host-rejected' }
     }
+  } catch {
+    // Never bypass browser authentication when a mounted Host service fails.
+    decision = { status: 503, source: 'connection', reason: 'admission-error' }
   }
-  return structuralRejection(req)
+  if (decision === undefined) {
+    const reason = structuralReason(req)
+    if (reason === undefined) return undefined
+    decision = { status: 403, source: 'structural', reason }
+  }
+  try {
+    onRejection?.(decision)
+  } catch {
+    // Diagnostics are observational; a logger cannot change the HTTP decision.
+  }
+  return decision.status
 }
 
 /**
@@ -60,25 +76,43 @@ export function rejectionFor(req, connection) {
  * Origin/Referer authority match.
  */
 export function structuralRejection(req) {
+  return structuralReason(req) === undefined ? undefined : 403
+}
+
+/** Return a fixed reason without exposing caller-supplied strings. */
+function structuralReason(req) {
   const host = authorityOf(req.headers.host, 'http')
-  if (host === null || !LOOPBACK_NAMES.has(host.hostname)) return 403
+  if (host === null || !LOOPBACK_NAMES.has(host.hostname)) return 'host-not-loopback'
   const site = String(req.headers['sec-fetch-site'] ?? '').toLowerCase()
-  if (site === 'cross-site') return 403
+  if (site === 'cross-site') return 'cross-site'
   for (const header of ['origin', 'referer']) {
     const raw = req.headers[header]
     if (typeof raw !== 'string' || raw.trim() === '') continue
-    let authority
-    try {
-      authority = authorityOf(raw.trim())
-    } catch {
-      return 403
+    if (header === 'referer' && isDesktopRelayReferer(raw)) {
+      // Desktop forwardWebRequest strips both browser markers before relaying
+      // to HTTP loopback, but retains this Referer. It is not an Origin grant
+      // and never overrides a mounted Host's authentication decision.
+      if (req.headers.origin !== undefined || req.headers['sec-fetch-site'] !== undefined) return 'desktop-relay-markers'
+      continue
     }
-    if (authority === null) return 403
+    const authority = authorityOf(raw.trim())
+    if (authority === null) return `${header}-invalid`
     // The web server speaks plain http on a loopback bind, so an Origin that
     // claims https — or any other scheme — is not this page.
-    if (authority.scheme !== host.scheme || authority.hostname !== host.hostname || authority.port !== host.port) return 403
+    if (authority.scheme !== host.scheme || authority.hostname !== host.hostname || authority.port !== host.port) return `${header}-mismatch`
   }
   return undefined
+}
+
+/** Only the owned application page, never arbitrary custom-protocol pages. */
+function isDesktopRelayReferer(value) {
+  try {
+    const url = new URL(value)
+    return url.protocol === 'dsh-app:' && url.hostname === 'app' && url.port === ''
+      && url.username === '' && url.password === ''
+  } catch {
+    return false
+  }
 }
 
 /** Split a Host/Origin/Referer value into {scheme, hostname, port}, defaulting the port. */
