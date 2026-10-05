@@ -10,6 +10,9 @@
   <img alt="无构建步骤" src="https://img.shields.io/badge/build%20step-none-7da1de?style=flat-square">
   <img alt="适配内核" src="https://img.shields.io/badge/dsh-0.1.5--0.1.7--rc.2-2f6f4f?style=flat-square">
   <img alt="状态" src="https://img.shields.io/badge/status-beta-f0a441?style=flat-square">
+  <br>
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #7 JavaScript Repository Of The Day" src="https://trendshift.io/api/badge/trendshift/repositories/261203/daily?language=JavaScript"></a>
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #12 JavaScript Repository Of The Week" src="https://trendshift.io/api/badge/trendshift/repositories/261203/weekly?language=JavaScript"></a>
 
 </div>
 
