@@ -97,7 +97,7 @@ check('the settings API mounts when the service does', ctx.__captured.serverRout
 
 await until(() => fs.existsSync(path.join(scratch, 'our-free-model', 'availability.json')), { what: 'the boot probe to land' })
 
-await until(() => ctx.__logs.some(line => line.includes('sealed lane is not available on this host')), { what: 'the sealed-lane gate refusal to be logged' })
+await until(() => ctx.__logs.some(line => line.includes('the sealed lane is not available in this composition')), { what: 'the sealed-lane gate refusal to be logged' })
 check('the host-gate refusal is logged, not silent', ctx.__logs.some(line => line.startsWith('warn our-free-model: the sealed lane is not available')), true)
 const persisted = JSON.parse(fs.readFileSync(path.join(scratch, 'our-free-model', 'catalog.json'), 'utf8'))
 check('and the refusal keeps the roster a desktop session persisted', persisted.sealIds, ['deepseek-ai/deepseek-v4.1-flash'])

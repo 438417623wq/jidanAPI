@@ -9,11 +9,13 @@
  * reconstructs anything.
  *
  * Derivation alone does not open the seal. Unlock runs only after the host gate
- * accepts the running process as one of the two desktop shells this lane is
- * published for: the Tauri shell (its home path, its bundled node, its profile
- * argument) or the Electron shell (the kernel's own profile context plus the
- * run-as-node marker it stamps on the kernel process). Everywhere else the lane
- * is dark: no request, no listing, no roster entry, and no ciphertext work.
+ * accepts the running process as one of the shells this lane is published for:
+ * the Tauri shell (its home path, its bundled node, its profile argument), the
+ * Electron shell (the kernel's own profile context), or a kernel-declared web
+ * profile (`web` / `web-desktop` — issues #58/#59: the lane rides the plugin
+ * process, so a web host speaks the same wire as a desktop one). Everywhere
+ * else the lane is dark: no request, no listing, no roster entry, and no
+ * ciphertext work.
  *
  * The plaintext lives for the length of one request build and is never written,
  * logged, cached, or echoed: callers receive the credential object, hand it to
@@ -36,12 +38,13 @@ export const TAG_BYTES = 16
 /** Pepper folded into every shard mask; the seeds ride with the shards. */
 const MASK_PEPPER = 'd21f0a5c7be94f13a68d20e4c9b73f58'
 
-/** The two shells this lane is published for. */
+/** The shells this lane is published for. */
 export const FLAVOR_AIO = 'aio'
 export const FLAVOR_HARNESS = 'harness'
+export const FLAVOR_WEB = 'web'
 
 /**
- * Which desktop shell this process is running inside, or null.
+ * Which shell this process is running inside, or null.
  *
  * Tauri (DSHEAC AIO): the kernel is a bundled node.exe under the app's
  * `resources\node\`, launched with the `web-desktop` profile and a DSH_HOME
@@ -57,6 +60,12 @@ export const FLAVOR_HARNESS = 'harness'
  * install — so it exists on the spawn line only and cannot be a gate
  * criterion; the kernel-provided profile name alone is authoritative.
  *
+ * Web hosts (dsh web, the "Deepseek Harness EAC" desktop shell that reports
+ * profile `web-desktop`): the kernel-declared profile context is the signal.
+ * The lane's client is the plugin process itself, so a web composition speaks
+ * the identical wire; what the gate keeps out are processes no DSH kernel is
+ * running in — a profile context no kernel would mint.
+ *
  * `profileName` comes from the kernel's own profile context service, read
  * opportunistically by the caller; older kernel lines may not provide it,
  * which the Tauri branch does not depend on.
@@ -66,6 +75,7 @@ export function detectSealedHost({ env = process.env, execPath = process.execPat
   if (home.includes('com.deepseek.dsh.desktop.aio')
     && /resources[\\/]+node[\\/]+node\.exe$/i.test(String(execPath ?? ''))
     && (Array.isArray(argv) ? argv : []).includes('web-desktop')) return FLAVOR_AIO
+  if (profileName === 'web' || profileName === 'web-desktop') return FLAVOR_WEB
   if (profileName === 'desktop') return FLAVOR_HARNESS
   return null
 }

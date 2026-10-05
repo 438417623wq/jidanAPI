@@ -1,5 +1,5 @@
 {
-  "version": "1.4.5",
+  "version": "1.4.6",
   "algorithm": "sha256",
   "files": [
     {
@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 145015,
-      "sha256": "cdf88717d95d6143f394b593d5f6291df5b8e67ad8de1ec246e788873cf0e735"
+      "size": 145775,
+      "sha256": "9b441fa2b08df1a5663dc009b829960b1a5defda7fe67603c1030769adc068de"
     },
     {
       "path": "cordis.patch.yml",
@@ -29,8 +29,8 @@
     },
     {
       "path": "index.js",
-      "size": 97994,
-      "sha256": "d3fd363bbe9e28f20b0aa30b6c9084f14bbe2b5c98fce2469c8fc3bf3c2d1324"
+      "size": 99141,
+      "sha256": "f40d5038f0e2ab37152a6fbba3a5e8555b256d4f4031550bf38df8f7bba0208f"
     },
     {
       "path": "LICENSE",
@@ -50,7 +50,7 @@
     {
       "path": "package.json",
       "size": 1627,
-      "sha256": "4b32ee3626c37a31ef25e259aaa3e606807565800d42299b33d107ba98e7c967"
+      "sha256": "5c96f8b52d35ba2f793d219dcf728123bc540119f038ae8b62e17f416993143c"
     },
     {
       "path": "src/adapter.js",
@@ -69,8 +69,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 11732,
-      "sha256": "50958053be289764dffcdcb5a46b4eb94db71ba693f6e9bdfb7ad72b2e50e471"
+      "size": 12253,
+      "sha256": "ba195b4f2bd8e819aa3cb81f60f9afd2e7778c09c14f6413a9b60890af0a236e"
     },
     {
       "path": "src/effort.js",
@@ -94,8 +94,8 @@
     },
     {
       "path": "src/http.js",
-      "size": 20742,
-      "sha256": "420d81bb884606191d2dc92ddac59e62196f15192124d6077db5bcf5113c6b41"
+      "size": 22333,
+      "sha256": "7eb12031235ab3805cb29927e1450d31d8447d092dc4c7fc2c93e77b79378cf4"
     },
     {
       "path": "src/messages.js",
@@ -129,8 +129,8 @@
     },
     {
       "path": "src/stream.js",
-      "size": 24150,
-      "sha256": "416f3ff25f3b213b8849f5645c2c73ede969620369934fae18ba5ce374c0342f"
+      "size": 24369,
+      "sha256": "01513f8d76929e0b61a399841b727a597c63b249045f5015632cf7996d67667c"
     },
     {
       "path": "src/trust.js",
@@ -159,8 +159,8 @@
     },
     {
       "path": "src/vault.js",
-      "size": 9372,
-      "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
+      "size": 9942,
+      "sha256": "6f9d5dce4af5dc504991af32b46cd3b76dd0c587fcacb35cc6245a518201c021"
     }
   ]
 }

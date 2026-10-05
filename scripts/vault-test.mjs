@@ -65,6 +65,9 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
 
   const plainWeb = detectSealedHost({ env: {}, execPath: '/usr/bin/node', argv: ['node', 'bin.js', 'web', '--port', '3099'] })
   check('the gate refuses a plain web host', plainWeb, null)
+  check('the gate admits a kernel-declared web profile', detectSealedHost({ env: {}, profileName: 'web' }), 'web')
+  check('and the web-desktop profile name (issues #58/#59: "Deepseek Harness EAC" reports it)', detectSealedHost({ env: {}, profileName: 'web-desktop' }), 'web')
+  check('the gate refuses an unrecognized profile name', detectSealedHost({ env: {}, profileName: 'embedded' }), null)
   const partialAio = detectSealedHost({
     env: { DSH_HOME: '/home/u/AppData/Roaming/com.deepseek.dsh.desktop.aio/releases/6.9.3/dsh-home' },
     execPath: '/usr/local/bin/node',
@@ -355,6 +358,35 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
   check('the same reduction applies to a refused turn',
     [turnFailure?.code, turnFailure?.message],
     ['SERVER', "the gateway's front proxy answered HTTP 502 with an HTML error page"])
+
+  // Issue #63's exact trap: a WAF in front of the gateway answers the request
+  // itself. A 403 page is not a bad credential (re-login advice would be
+  // wrong), and a 200 page is not a retryable server fault (the same oversized
+  // body would draw the same page twice more). Both file as CLIENT_ERROR with
+  // the readable line.
+  const wafProxy = http.createServer((req, res) => {
+    req.on('data', () => {})
+    req.on('end', () => {
+      res.writeHead(req.url.endsWith('/models') ? 403 : 200, { 'content-type': 'text/html; charset=UTF-8' })
+      res.end('<!DOCTYPE html><html><head><title>宝塔免费WAF</title></head><body>Nginx 缓冲区溢出</body></html>')
+    })
+  })
+  await new Promise(resolve => wafProxy.listen(0, '127.0.0.1', resolve))
+  wafProxy.unref()
+  const wafCredential = { mode: 'worker', base: `http://127.0.0.1:${wafProxy.address().port}/v1`, signingSecret: GATEWAY_SECRET }
+  const wafListing = await fetchSealedListing(wafCredential).then(() => null, error => error)
+  check('a WAF 403 HTML page is not filed as a bad credential',
+    [wafListing?.code, wafListing?.message],
+    ['CLIENT_ERROR', "the gateway's front proxy answered HTTP 403 with an HTML error page"])
+  const wafTurn = await postSealedStreamed({
+    credential: wafCredential,
+    body: { model: 'deepseek-ai/deepseek-v4.1-flash', messages: [{ role: 'user', content: 'hi' }], stream: true },
+    onData: () => {},
+  }).then(() => null, error => error)
+  check('a 200 HTML page is a non-retryable front-proxy verdict, not a server fault',
+    [wafTurn?.code, wafTurn?.message],
+    ['CLIENT_ERROR', "the gateway's front proxy answered HTTP 200 with an HTML error page"])
+  await new Promise(resolve => wafProxy.close(resolve))
   await new Promise(resolve => htmlProxy.close(resolve))
 
   // Gateway refusals, each against the real handler.
@@ -699,8 +731,8 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
     throw new TypeError('fetch failed (offline suite)')
   }
 
-  /** Simulate the Tauri shell's signals around one boot. */
-  async function bootWith({ simulateAio }) {
+  /** Simulate the Tauri shell's signals — or a named kernel profile — around one boot. */
+  async function bootWith({ simulateAio, profileName }) {
     const previousArgv = [...process.argv]
     const previousExecPath = process.execPath
     const previousHome = process.env.DSH_HOME
@@ -718,7 +750,7 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
     // stub so this boot block stays network-free.
     lane.fetch = stubbedFetch
     const routes = []
-    const ctx = fakeContext({ inject, mounted: ['llm', 'webServer', 'attachments'], onRegister: route => routes.push(route) })
+    const ctx = fakeContext({ inject, mounted: ['llm', 'webServer', 'attachments'], onRegister: route => routes.push(route), profileContext: profileName === undefined ? undefined : { name: profileName } })
     apply(ctx, configOf())
     const api = () => routes.find(route => route.kind === 'prefix')?.handler
     try {
@@ -781,6 +813,25 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
   }
 
   {
+    const { ctx, api, restore } = await bootWith({ profileName: 'web-desktop' })
+    try {
+      const adapter = ctx.__captured.adapters[0]?.adapter
+      await until(async () => (await adapter.listModels(ROUTE_MAIN)).some(model => model.id === 'deepseek-ai/deepseek-v4.1-flash'), {
+        what: 'the sealed roster on a web-desktop host', timeoutMs: 10000,
+      })
+      const summary = await callRoute(api(), 'GET', '/api/our-free-model/summary')
+      check('a web-desktop boot lists the sealed models and reports the lane open', [
+        (summary.json.catalog ?? []).some(entry => entry.id === 'moonshotai/kimi-k3'),
+        summary.json.laneAvailable,
+      ], [true, true])
+      const poolRow = await callRoute(api(), 'GET', '/api/our-free-model/pool')
+      check('the pool route answers on a web-desktop host too', poolRow.json?.ok, true)
+    } finally {
+      restore()
+    }
+  }
+
+  {
     const { ctx, api, restore } = await bootWith({ simulateAio: false })
     try {
       const adapter = ctx.__captured.adapters[0]?.adapter
@@ -789,6 +840,7 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
       check('an unapproved host lists no sealed models', models.some(model => model.id.includes('/') || model.name.startsWith('EAC ')), false)
       const summary = await callRoute(api(), 'GET', '/api/our-free-model/summary')
       check('and its settings page has no sealed rows at all', (summary.json.catalog ?? []).some(entry => entry.channel === 'eac'), false)
+      check('the summary names the closed lane (issue #60)', summary.json.laneAvailable, false)
       const refusedPool = await callRoute(api(), 'GET', '/api/our-free-model/pool')
       check('an unapproved host gets no pool snapshot either', refusedPool.status, 404)
     } finally {

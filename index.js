@@ -413,7 +413,10 @@ export function apply(ctx, config) {
     const credential = sealedCredentialOf()
     if (credential === null) {
       sealedCatalog = []
-      logger.warn?.('our-free-model: the sealed lane is not available on this host; its models stay hidden')
+      // Web hosts are admitted too (issues #58/#59), so reaching here means the
+      // kernel gave no profile context at all — an embedding this lane is not
+      // published for, not a misconfigured desktop or web install.
+      logger.warn?.('our-free-model: the sealed lane is not available in this composition (no recognized host profile); its models stay hidden')
       return
     }
     try {
@@ -905,7 +908,7 @@ export function apply(ctx, config) {
     // must not become dialable just by naming it in a request body.
     if (entry === undefined || !routableModelIds().has(entry.id)) throw httpError(404, `model "${request.model}" not found`)
     const openAi = request.openAi ?? {}
-    const messages = fromOpenAiMessages(openAi, request.responses === true)
+    const messages = fromOpenAiMessages(openAi, request.responses === true, entry.id)
     // The caller's defs reach the adapter in the harness's own flat spelling,
     // and the adapter re-shapes them for the endpoint it picked. Pre-converting
     // them here fed `{type,function:{…}}` wrappers back into that same
@@ -1052,6 +1055,10 @@ export function apply(ctx, config) {
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     pool: fetchPoolSnapshot,
+    // Whether the co-paid lane is open on this host at all — the settings page's
+    // one-bit answer to "why do I see no EAC group" (issue #60). Reads the gate,
+    // not the listing: a closed gate and a dead relay are different sentences.
+    laneAvailable: () => sealedCredentialOf() !== null,
     forwardInfo: () => ({
       running: forward !== null,
       port: forward?.port ?? 0,
@@ -1522,7 +1529,7 @@ function imageResolver(ctx, logger) {
 }
 
 /** OpenAI request messages -> harness messages, for the forward listener. */
-function fromOpenAiMessages(body, isResponses) {
+function fromOpenAiMessages(body, isResponses, modelId) {
   const out = []
   const rows = isResponses
     ? normaliseResponsesInput(body.input)
@@ -1556,7 +1563,10 @@ function fromOpenAiMessages(body, isResponses) {
     out.push({
       role: role === 'developer' ? 'developer' : role === 'system' ? 'system' : role === 'assistant' ? 'assistant' : 'user',
       content,
-      ...role === 'assistant' ? { source: { kind: 'model' } } : {},
+      // The v4 session format admits a `model` source only with its provider
+      // and model named (dsh-session refuses a bare one on restore), so the
+      // synthesized assistant rows carry the route they will stream through.
+      ...role === 'assistant' ? { source: { kind: 'model', provider: ROUTE_MAIN, model: String(modelId ?? '') } } : {},
     })
   }
   return out
@@ -1935,6 +1945,10 @@ function buildSummary(deps) {
     version: deps.meta().version,
     distribution: deps.meta().distribution,
     announcements: { unread: feedView.unread, fetchedAt: feedView.fetchedAt },
+    // One bit for the settings page: false with an empty EAC group means the
+    // gate never opened (a host the kernel gave no profile context), which is a
+    // different sentence from "the relay is down" (issue #60).
+    laneAvailable: deps.laneAvailable?.() === true,
     update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying, managed: update.managed === true },
   }
 }

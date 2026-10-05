@@ -241,8 +241,11 @@ function number(value) {
  * one of the latter used to reach the harness as a turn with no thinking at
  * all: no reasoning block on screen, an empty `reasoningText` that keeps the
  * recovery path from firing, and a client left to call the answer empty.
+ * `thinking` is the Anthropic chat-wire spelling some relays emit on the chat
+ * endpoint too (issue #66: a lane whose only visible frames were reasoning
+ * ones arriving under a name this reader skipped).
  */
-const REASONING_FIELDS = ['reasoning', 'reasoning_content', 'reasoning_text']
+const REASONING_FIELDS = ['reasoning', 'reasoning_content', 'reasoning_text', 'thinking']
 
 /**
  * The thinking this frame carries, in whichever spelling it used.

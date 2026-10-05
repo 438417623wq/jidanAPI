@@ -126,7 +126,7 @@ export async function stubUpstream({ listing = [], answer = () => ({ body: chatF
  * @param {string[]} [options.mounted] - service names this composition provides
  * @param {(route: object) => void} [options.onRegister]
  */
-export function fakeContext({ inject, mounted = ['llm', 'webServer', 'timer', 'connection', 'attachments'], onRegister } = {}) {
+export function fakeContext({ inject, mounted = ['llm', 'webServer', 'timer', 'connection', 'attachments'], onRegister, profileContext } = {}) {
   const logs = []
   const captured = { adapters: [], routes: [], serverRoutes: [], registrations: [], events: [], configurable: null, discovery: null }
   const disposers = []
@@ -152,6 +152,12 @@ export function fakeContext({ inject, mounted = ['llm', 'webServer', 'timer', 'c
     connection: { admit: () => undefined },
     attachments: { imageHostPath: () => undefined },
     timer: { interval: () => () => {} },
+  }
+  // The kernel's profile context service, when a suite wants the host gate to
+  // see a named profile (`web`, `web-desktop`, `desktop`).
+  if (profileContext !== undefined) {
+    services.profileContext = profileContext
+    mountedSet.add('profileContext')
   }
 
   /** Services this composition has, minus the ones one fiber is allowed to read. */

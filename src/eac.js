@@ -238,6 +238,14 @@ export async function postSealedStreamed({ credential, body, signal, onData, tim
   text += head.decoder.decode()
   let payload
   try { payload = JSON.parse(text) } catch {
+    // A 200 whose body is not JSON is a hop speaking for the relay. Markup
+    // means a front proxy swallowed the stream (a WAF buffer overflow, a CDN
+    // error page — issue #63): the same oversized body would draw the same
+    // page again, so this must not land in retryable SERVER. Anything else
+    // keeps the retryable server verdict.
+    if (/^\s*<(!doctype|html[\s>])/i.test(text)) {
+      throw new UpstreamError(errorPageMessage(text, response.status), CODE.client, { status: response.status })
+    }
     throw new UpstreamError(`unexpected non-stream response: ${text.slice(0, 200)}`, CODE.server, { status: response.status })
   }
   if (payload.error) throw classifyFailure(response.status, payload)

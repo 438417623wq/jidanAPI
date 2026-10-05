@@ -133,8 +133,12 @@ check('with no error attached', single.error?.message ?? 'none', 'none')
 
 scripts.set('ling-3.0-flash-fin-free', { contentType: 'text/html', raw: bytes('<html><body>bad gateway</body></html>') })
 const junk = await ask('ling-3.0-flash-fin-free')
-check('a body that is neither is still an error', junk.error?.code, CODE.server)
+// A 200 whose body is markup is a front proxy speaking for the gateway (issue
+// #63): one readable line, outside the retryable set — the identical request
+// would draw the identical page again.
+check('an HTML page at 200 is a front-proxy verdict, not a retryable server fault', junk.error?.code, CODE.client)
 check('and the status rides along for the probe to read', junk.error?.status, 200)
+check('with the page reduced to one readable line', junk.error?.message, "the gateway's front proxy answered HTTP 200 with an HTML error page — usually a WAF or body-size limit in front of the gateway")
 
 scripts.set('muse-spark-1.3-contributor-free', { contentType: 'application/json', raw: bytes('') })
 check('an empty body reads as empty, not as a parse failure', (await ask('muse-spark-1.3-contributor-free')).error?.code, CODE.empty)

@@ -51,7 +51,18 @@ export class UpstreamError extends Error {
 export function classifyFailure(status, payload, retryAfterMs) {
   const error = payload?.error ?? payload ?? {}
   const type = typeof error.type === 'string' ? error.type : ''
-  const message = typeof error.message === 'string' ? error.message : `upstream HTTP ${status}`
+  const raw = typeof error.message === 'string' ? error.message : `upstream HTTP ${status}`
+  // A front proxy (the free lane's CDN, the co-paid lane's WAF) answers hard
+  // failures with a whole HTML error page. The status alone misfiles it — a
+  // WAF's 403 is not a bad credential, its 413 is not a request the user can
+  // fix by re-sending — and the markup buries the one useful fact. Callers may
+  // hand over the raw page (the free lane's fold) or the one-line reduction
+  // (errorPageMessage); both name the hop instead of the credential (issue #63).
+  const rawHtml = /^\s*<(!doctype|html[\s>])/i.test(raw)
+  const isHtmlPage = rawHtml || raw.includes('with an HTML error page')
+  const message = rawHtml
+    ? `the gateway's front proxy answered HTTP ${status} with an HTML error page — usually a WAF or body-size limit in front of the gateway, not your credentials; if this hit a long conversation, its request size is the likely trigger`
+    : raw
   const flat = message.toLowerCase()
   if (type === 'RegionError' || /not available in your country|region/i.test(flat)) {
     return new UpstreamError(message, CODE.region, { status, type })
@@ -70,7 +81,10 @@ export function classifyFailure(status, payload, retryAfterMs) {
       'the gateway rejected the request signature — the request body was modified in transit; if a local proxy plugin (e.g. billion-context) is installed, disable it for this lane or enable its passthrough for signed requests',
       CODE.transport, { status, type, signatureRejected: true })
   }
-  if (status === 401 || status === 403) return new UpstreamError(message, CODE.credential, { status, type })
+  // An HTML page at 401/403 is the front proxy speaking, not the credential
+  // store: fall through to the 4xx branch so users are not sent re-logging for
+  // a WAF refusal.
+  if (status === 401 || status === 403) return new UpstreamError(message, isHtmlPage ? CODE.client : CODE.credential, { status, type })
   if (type === 'ModelError' || /model is unavailable|not supported/.test(flat)) {
     return new UpstreamError(message, CODE.server, { status, type, unavailable: true })
   }
@@ -331,7 +345,15 @@ export async function postStreamed({ path, body, session, requestId, attribution
   }
 
   const text = head.done ? head.text : await readRemainder(head, signal)
-  if (shape !== 'json') throw new UpstreamError(`our-free-model: unexpected non-SSE response: ${text.slice(0, 200)}`, CODE.server, { status: response.status })
+  if (shape !== 'json') {
+    // Same front-proxy trap as the co-paid lane's poster (issue #63): a 200
+    // body of markup is a WAF/CDN page, and replaying the identical request
+    // draws it again — one readable line, outside the retryable set.
+    if (/^\s*<(!doctype|html[\s>])/i.test(text)) {
+      throw new UpstreamError(`the gateway's front proxy answered HTTP ${response.status} with an HTML error page — usually a WAF or body-size limit in front of the gateway`, CODE.client, { status: response.status })
+    }
+    throw new UpstreamError(`our-free-model: unexpected non-SSE response: ${text.slice(0, 200)}`, CODE.server, { status: response.status })
+  }
   let payload
   try { payload = JSON.parse(text) } catch {
     throw new UpstreamError(`our-free-model: unexpected non-SSE response: ${text.slice(0, 200)}`, CODE.server, { status: response.status })

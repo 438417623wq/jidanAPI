@@ -63,7 +63,8 @@ window.__ModuleLoader__.load({
         'tag.context': '上下文',
         'tag.output': '最长输出',
         'tag.latency': '首字',
-        'tag.eacChannel': 'EAC 渠道 · 仅桌面端',
+        'tag.eacChannel': 'EAC 渠道 · 协付',
+        'roster.noLane': 'EAC 协付模型在当前运行环境不可用：宿主未提供可识别的桌面 / Web 配置，因此不加载该渠道。',
         'section.models': '模型清单',
         'section.modelsHint': '名称与能力来自上游清单与公开能力表，可用性由本机出口实测得出。',
         'section.dash': '用量看板',
@@ -83,7 +84,7 @@ window.__ModuleLoader__.load({
         'pool.starCta': '去 Star',
         'pool.ariaPool': '号池容量占用',
         'pool.unavailable': '号池数据暂不可用 · {reason}',
-        'pool.reasonNoLane': '本机没有解锁协付车道',
+        'pool.reasonNoLane': '当前运行环境未解锁协付车道',
         'pool.reasonGateway': '网关应答异常',
         'pool.reasonMalformed': '网关数据异常',
         'pool.reasonUnreachable': '网关暂不可达',
@@ -304,7 +305,8 @@ window.__ModuleLoader__.load({
         'tag.context': 'Context',
         'tag.output': 'Max output',
         'tag.latency': 'First token',
-        'tag.eacChannel': 'EAC lane · desktop hosts only',
+        'tag.eacChannel': 'EAC lane · co-paid',
+        'roster.noLane': 'The co-paid EAC models are unavailable in this composition: the host did not present a recognized desktop or web profile, so the lane is not loaded.',
         'section.models': 'Model roster',
         'section.modelsHint': 'Names and capacities come from the upstream roster and published capability tables; availability is measured from this machine.',
         'section.dash': 'Usage dashboard',
@@ -349,7 +351,7 @@ window.__ModuleLoader__.load({
         'pool.starCta': 'Star on GitHub',
         'pool.ariaPool': 'Pool capacity in use',
         'pool.unavailable': 'Pool data unavailable · {reason}',
-        'pool.reasonNoLane': 'no co-paid lane unlocked on this host',
+        'pool.reasonNoLane': 'no co-paid lane in this composition',
         'pool.reasonGateway': 'gateway answered an error',
         'pool.reasonMalformed': 'gateway data malformed',
         'pool.reasonUnreachable': 'gateway unreachable',
@@ -1256,7 +1258,13 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ofm_grid' }, list.map(m => h(ModelCard, {
             key: m.id, model: m, t, onBench, bench: { running: benches[m.id]?.running === true, ...benches[m.id]?.result === undefined ? {} : { result: benches[m.id].result } },
           }))))
+      // The lane closed at the gate is the one "no EAC models" case the page can
+      // explain without a log (issue #60): on a host the kernel gave no profile,
+      // the group never renders and nothing else on the page names the reason.
+      const laneNote = summary.laneAvailable === false && !summary.catalog.some(m => m.channel === 'eac')
+        ? h('p', { className: 'ofm_note' }, t('roster.noLane')) : null
       return h(Fragment, null,
+        laneNote,
         group(t('state.available'), available),
         group(t('state.region-blocked'), limited, t('hint.region')),
         group(t('group.notAdvertised'), other, t('hint.hidden')))
