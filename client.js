@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
         'pool.reasonMalformed': '网关数据异常',
         'pool.reasonUnreachable': '网关暂不可达',
         'pool.reasonUnknown': '原因未知',
+        'pool.capacityUnknown': 'Star 数据暂不可用',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
@@ -353,6 +354,7 @@ window.__ModuleLoader__.load({
         'pool.reasonMalformed': 'gateway data malformed',
         'pool.reasonUnreachable': 'gateway unreachable',
         'pool.reasonUnknown': 'unknown cause',
+        'pool.capacityUnknown': 'star data unavailable',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -1302,7 +1304,9 @@ window.__ModuleLoader__.load({
           ?? (poolError !== '' ? poolError : t('pool.reasonUnknown'))
         return h('p', { className: 'ofm_note' }, t('pool.unavailable').replace('{reason}', reasonText))
       }
-      const pct = pool.pool > 0 ? Math.max(0, Math.min(100, Math.round(100 * pool.active24h / pool.pool))) : 0
+      const active = Number.isFinite(pool.active24h) ? pool.active24h : null
+      const capacityKnown = Number.isFinite(pool.pool) && pool.pool > 0
+      const pct = capacityKnown && active !== null ? Math.max(0, Math.min(100, Math.round(100 * active / pool.pool))) : null
       // A gateway build that predates the level verdict answers without one.
       // The plugin then applies the same default thresholds locally, so an
       // upgraded panel never reads a calm color off an unupgraded server —
@@ -1310,20 +1314,24 @@ window.__ModuleLoader__.load({
       const level = pool.level === 'over' || (pool.level === undefined && pool.inflight >= 80) ? 'over'
         : pool.level === 'busy' || (pool.level === undefined && pool.inflight >= 30) ? 'busy' : 'ok'
       const levelText = level === 'over' ? t('pool.levelOver') : level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
+      // Capacity may be unknown (the gateway's own star fetch can be rate
+      // limited): the tank then hides — an empty tank would lie — while the
+      // real in-flight and 24h counters stay on screen.
       const capacity = pool.poolSource === 'formula'
         ? t('pool.formula').replace('{stars}', String(pool.stars ?? '—'))
-        : t('pool.configured')
+        : pool.poolSource === 'configured' ? t('pool.configured') : t('pool.capacityUnknown')
       const fish = ['f1', 'f2', 'f3'].map(name => h('i', { className: `ofm_fish ${name}`, key: name },
         h('svg', { viewBox: '0 0 24 14' }, h('path', { d: FISH_PATH }))))
       const bubbles = ['b1', 'b2', 'b3', 'b4', 'b5'].map(name => h('i', { className: `ofm_bubble ${name}`, key: name }))
+      const tank = pct === null ? null : h('div', { className: `ofm_tank ${level}`, role: 'img', 'aria-label': `${t('pool.ariaPool')} ${pct}%`, style: { '--lvl': `${pct}%` } },
+        h('div', { className: 'ofm_tankwater' },
+          h('div', { className: 'ofm_tankdeep' }, ...bubbles, ...fish),
+          h('i', { className: 'ofm_wave w1' }),
+          h('i', { className: 'ofm_wave w2' })),
+        h('div', { className: 'ofm_tankglass' }))
       return h('div', { className: 'ofm_pool' },
         h('div', { className: 'ofm_poolrow' },
-          h('div', { className: `ofm_tank ${level}`, role: 'img', 'aria-label': `${t('pool.ariaPool')} ${pct}%`, style: { '--lvl': `${pct}%` } },
-            h('div', { className: 'ofm_tankwater' },
-              h('div', { className: 'ofm_tankdeep' }, ...bubbles, ...fish),
-              h('i', { className: 'ofm_wave w1' }),
-              h('i', { className: 'ofm_wave w2' })),
-            h('div', { className: 'ofm_tankglass' })),
+          tank,
           h('div', { className: 'ofm_poolside' },
             h('div', { className: 'ofm_pooltop' },
               h('span', { className: `ofm_poolbadge ${level}` },
@@ -1332,10 +1340,10 @@ window.__ModuleLoader__.load({
               h('a', { className: 'ofm_starbtn', href: POOL_REPO_URL, target: '_blank', rel: 'noreferrer' }, `⭐ ${t('pool.starCta')}`)),
             h('div', { className: 'ofm_poolstats' },
               h('div', { className: `ofm_stat${level === 'over' ? ' hot' : ''}` }, h('b', null, String(pool.inflight)), h('span', null, t('pool.live'))),
-              h('div', { className: 'ofm_stat' }, h('b', null, String(pool.active24h)), h('span', null, t('pool.active'))),
-              h('div', { className: 'ofm_stat' }, h('b', null, String(pool.pool)), h('span', null, t('pool.capacity')))),
+              h('div', { className: 'ofm_stat' }, h('b', null, active === null ? '—' : String(active)), h('span', null, t('pool.active'))),
+              h('div', { className: 'ofm_stat' }, h('b', null, capacityKnown ? String(pool.pool) : '—'), h('span', null, t('pool.capacity')))),
             h('div', { className: 'ofm_poolmeta' },
-              h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${pct}%`),
+              pct === null ? null : h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${pct}%`),
               h('span', { className: 'ofm_note' }, `${capacity} · ${t('pool.starLine')}`)))))
     }
 

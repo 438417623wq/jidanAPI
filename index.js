@@ -212,7 +212,11 @@ export function apply(ctx, config) {
       const response = await directFetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
       if (!response.ok) throw poolError('gateway-status')
       const data = await response.json()
-      if (data?.ok !== true || !Number.isFinite(data.pool)) throw poolError('malformed')
+      // The gateway may answer a degraded snapshot: stars unreachable means
+      // pool/poolSource come back null/'unavailable' while the live counters
+      // stay real. That is still a valid snapshot — only the in-flight core
+      // is required, and the panel renders the rest as it finds it.
+      if (data?.ok !== true || !Number.isFinite(data.inflight)) throw poolError('malformed')
       poolCache = { at: Date.now(), data }
       return data
     } catch (error) {
