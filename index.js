@@ -199,6 +199,9 @@ export function apply(ctx, config) {
   // outbound hop rides directFetch, the lane's own node:http(s) transport: if
   // global fetch is wrapped or broken in this composition, the lane still is.
   const poolError = reason => Object.assign(new Error(`pool: ${reason}`), { code: 'POOL_UNAVAILABLE', reason })
+  // A snapshot this young still describes the same day; under load the panel
+  // shows it rather than blanking while the gateway is slow to answer.
+  const POOL_STALE_MS = 10 * 60_000
   let poolCache = { at: 0, data: null }
   async function fetchPoolSnapshot() {
     if (poolCache.data !== null && Date.now() - poolCache.at < 30_000) return poolCache.data
@@ -206,7 +209,9 @@ export function apply(ctx, config) {
     if (credential === null || credential.mode !== 'worker') throw poolError('no-lane')
     const gatewayRoot = credential.base.replace(/\/v1\/?$/, '')
     const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 8000)
+    // The gateway may be genuinely slow when it is saturated (that is what the
+    // verdict is about); twenty seconds is the patience this hop gets.
+    const timer = setTimeout(() => controller.abort(), 20_000)
     timer.unref?.()
     try {
       const response = await directFetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
@@ -220,6 +225,7 @@ export function apply(ctx, config) {
       poolCache = { at: Date.now(), data }
       return data
     } catch (error) {
+      if (poolCache.data !== null && Date.now() - poolCache.at < POOL_STALE_MS) return poolCache.data
       throw error?.code === 'POOL_UNAVAILABLE' ? error : poolError('unreachable')
     } finally {
       clearTimeout(timer)

@@ -1,7 +1,7 @@
 {
   "version": "1.4.5",
   "base": "../",
-  "publishedAt": "2026-10-05T04:22:48.479Z",
+  "publishedAt": "2026-10-05T04:25:54.339Z",
   "notes": "",
   "files": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "client.js",
-      "size": 144837,
-      "sha256": "ea027107897dbf19e0bf2dc6b1496701c68978cb3313b1c6825f36e50c76eca1"
+      "size": 145016,
+      "sha256": "d5fd2b92d3ab170901ef8510946f75f381b1e52bde24c31fe789f5b9322c2532"
     },
     {
       "path": "cordis.patch.yml",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 97552,
-      "sha256": "b055a2cb44dfc49669474e96316e6aeaf90e28f15bfc3a0b48dd0cecc4116d2e"
+      "size": 97994,
+      "sha256": "d3fd363bbe9e28f20b0aa30b6c9084f14bbe2b5c98fce2469c8fc3bf3c2d1324"
     },
     {
       "path": "LICENSE",
@@ -165,5 +165,5 @@
       "sha256": "9850f41313b3ee4489cef05f1c33ccd203677276508a28d5786cbbcfb7edb26d"
     }
   ],
-  "signature": "hO30tHja797uL9dTADO0pbTKnjuS3m5Lx0QBflhorIo8wuBHdl2yBnSBa7BA9sHrt9JOcfO2REyRqX7LZ+LzDQ=="
+  "signature": "qgf8dgdBSPCM/TrycGE8pR8l3nca10QVt2AFaZs5dteHGSP12mwmBDLDwfmQAPgV8qH4NY5yQJMXcU/WsdzEDg=="
 }

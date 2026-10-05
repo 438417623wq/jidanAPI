@@ -325,13 +325,20 @@ export function createGatewayServer(hostEnv = {}) {
   }, 5_000)
   loopSampler.unref?.()
   const starCache = { stars: Number.isFinite(starsOverride) && starsOverride >= 0 ? starsOverride : null, at: Number.isFinite(starsOverride) && starsOverride >= 0 ? Date.now() : 0 }
+  /** Earliest time the next GitHub attempt may happen after a failure. */
+  let starRetryAt = 0
   const loadStars = async () => {
     if (Number.isFinite(starsOverride) && starsOverride >= 0) return starsOverride
     if (poolSizeOverride > 0) return starCache.stars
     if (starCache.stars !== null && Date.now() - starCache.at < 30 * 60_000) return starCache.stars
+    // A failed attempt used to be retried by EVERY /pool call, which put a
+    // 5-second GitHub round trip on the snapshot each time the API was rate
+    // limiting this host — the snapshot must never wait on GitHub more than
+    // once per backoff window.
+    if (Date.now() < starRetryAt) return starCache.stars
     try {
       const controller = new AbortController()
-      const timer = setTimeout(() => controller.abort(), 5000)
+      const timer = setTimeout(() => controller.abort(), 3000)
       timer.unref?.()
       const impl = poolProbe.fetchImpl ?? fetch
       const response = await impl('https://api.github.com/repos/zouyuxuan122/dsh-our-free-model', {
@@ -343,8 +350,15 @@ export function createGatewayServer(hostEnv = {}) {
         const body = await response.json()
         if (Number.isFinite(body?.stargazers_count)) starCache.stars = body.stargazers_count
         starCache.at = Date.now()
+      } else {
+        starRetryAt = Date.now() + 120_000
       }
-    } catch { /* keep the last good count; null only until one fetch lands */ }
+    } catch {
+      // Keep the last good count (null only until one fetch lands) and back
+      // off two minutes so a rate-limited or unreachable GitHub does not add
+      // latency to every snapshot call.
+      starRetryAt = Date.now() + 120_000
+    }
     return starCache.stars
   }
   const poolSnapshot = async () => {

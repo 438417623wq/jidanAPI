@@ -1280,7 +1280,9 @@ window.__ModuleLoader__.load({
       const [poolError, setPoolError] = useState('')
       useEffect(() => {
         let alive = true
-        const load = () => api('/pool')
+        // The gateway can be slow under exactly the load this panel reports;
+        // the 8s api() default would abort while the backend is still waiting.
+        const load = () => api('/pool', { timeout: 25_000 })
           .then(data => {
             if (!alive) return
             setPool(data?.pool != null ? data : null)
