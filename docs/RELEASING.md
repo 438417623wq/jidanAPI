@@ -129,6 +129,15 @@ CDN 上 `…@main/index.js` 仍返回 v1.3.0 的 56 999 字节——清单声明
 名到 commit 的解析**，文件层跟着它一起旧；而且 purge 返回 `"status":"finished"` 之后文件
 层仍滞后了数分钟。
 
+2026-10-05 的 1.4.5 重签复核又量到一个更坏的分裂态：整树 purge 之后（`finished`，CF/FY
+两个 provider 均报 true），`…@main/feed/manifest.json` 与 `client.js`、`package.json`、
+`src/feed.js`、`src/updater.js` 四个文件仍是旧提交的字节，其余文件却是新的——正是「新清单
+配旧文件」会拦下升级的那半边；随后**按文件路径逐个 purge**（`…@main/<path>`），清单与四
+个文件立刻转新，升级路当场全绿。所以整树 purge 是第一步而不是保证：purge 完必须跑
+`live-audit.mjs`，它失败时会指名道姓列出坏在哪些文件上，对每个路径再 purge 一次再复跑。
+`live-audit.mjs` 现在把「可达源全部通过、其余源不可达」报成成功（raw 在 CN 网络本来就不
+通），只有真的坏发布才返回非零。
+
 所以第 6 步是：以已安装用户的身份把整条升级路跑一遍，而不是 curl 一下清单看版本号。
 `scripts/live-audit.mjs` 调的就是插件自己的 `downloadManifest` → `stageRelease` →
 `verifyStaged`，它打印 OK 等价于旧版本用户点「一键升级」会成功。清单的 `base` 是 `"../"`、
@@ -292,6 +301,19 @@ network). In the same measurement `…@v1.3.1/index.js` and the commit-sha ref b
 returned the correct 60 224, so what jsDelivr caches is the `@main` branch-name →
 commit resolution, and the file layer ages with it; a purge reporting
 `"status":"finished"` still lagged by minutes.
+
+The 1.4.5 re-sign audit on 2026-10-05 measured a worse split state: after the
+whole-tree purge (`finished`, both CF and FY reported true),
+`…@main/feed/manifest.json` and four files — `client.js`, `package.json`,
+`src/feed.js`, `src/updater.js` — still served the previous commit's bytes while
+the rest were fresh: exactly the new-manifest-over-old-files half that blocks an
+upgrade. Purging **each named path** (`…@main/<path>`) turned the manifest and the
+four files fresh at once, and the upgrade path went green on the spot. So the
+tree purge is the first move, not the guarantee: run `live-audit.mjs` after it —
+on failure it names the stale files, purge each of those paths, and re-run.
+`live-audit.mjs` now reports success when every reachable source verifies and the
+rest are unreachable (raw is simply down on CN networks); only a genuinely bad
+publication returns non-zero.
 
 Which is why step 6 walks the whole upgrade path as an installed user rather than
 curling a manifest for its version string. `scripts/live-audit.mjs` calls the
