@@ -248,6 +248,7 @@ window.__ModuleLoader__.load({
         'upgrade.checkedAt': '上次检查',
         'upgrade.never': '从未检查',
         'upgrade.check': '检查更新',
+        'upgrade.star': '去 GitHub 点 Star',
         'upgrade.checking': '检查中…',
         'upgrade.upToDate': '已是最新版本',
         'upgrade.available': '可升级到 {version}',
@@ -490,6 +491,7 @@ window.__ModuleLoader__.load({
         'upgrade.checkedAt': 'Last check',
         'upgrade.never': 'never',
         'upgrade.check': 'Check for updates',
+        'upgrade.star': 'Star on GitHub',
         'upgrade.checking': 'Checking…',
         'upgrade.upToDate': 'Up to date',
         'upgrade.available': 'Upgrade to {version} available',
@@ -587,6 +589,7 @@ window.__ModuleLoader__.load({
 .ofm_btn:disabled{opacity:.5;cursor:default}
 .ofm_btn.primary{background:var(--dsw-alias-state-business-primary);border-color:var(--dsw-alias-state-business-primary);color:var(--dsw-alias-label-on-accent)}
 .ofm_btn.ghost{background:transparent}
+.ofm_starlink{display:inline-flex;align-items:center;gap:6px;text-decoration:none}
 .ofm_field{display:flex;flex-direction:column;gap:4px;min-width:120px}
 .ofm_field>span{font-size:11px;color:var(--dsw-alias-label-tertiary)}
 .ofm_input{font:inherit;font-size:12px;padding:5px 9px;border-radius:9px;border:1px solid var(--dsw-alias-border-l2);background:var(--dsw-alias-bg-layer-1);color:var(--dsw-alias-label-primary);min-width:0;width:100%}
@@ -1846,7 +1849,13 @@ window.__ModuleLoader__.load({
           h('span', { className: 'ofm_pill' }, `${t('upgrade.checkedAt')}: ${data?.checkedAt ? ago(data.checkedAt, t.locale) : t('upgrade.never')}`)),
         h('div', { className: 'ofm_row' },
           h(Button, { disabled: phase !== '' || status.status !== 'ready', onClick: check }, phase === 'checking' ? t('upgrade.checking') : t('upgrade.check')),
-          data?.available === true ? h(Button, { kind: 'primary', disabled: phase !== '' || data.applying === true, onClick: applyUpgrade }, phase === 'applying' ? t('upgrade.applying') : t('upgrade.apply')) : null),
+          data?.available === true ? h(Button, { kind: 'primary', disabled: phase !== '' || data.applying === true, onClick: applyUpgrade }, phase === 'applying' ? t('upgrade.applying') : t('upgrade.apply')) : null,
+          h('a', {
+            className: 'ofm_btn ofm_starlink',
+            href: 'https://github.com/Ebony-Vinyl/dsh-our-free-model',
+            target: '_blank',
+            rel: 'noopener noreferrer',
+          }, h('span', { 'aria-hidden': 'true' }, '\u2606'), t('upgrade.star'))),
         phase === 'applying' ? h('div', { className: 'ofm_prog' }, h('i')) : null,
         message !== '' ? h('p', { className: 'ofm_note' }, message) : null,
         error !== '' ? h('div', { className: 'ofm_callout ofm_error' }, t('upgrade.failed').replace('{message}', error)) : null,
