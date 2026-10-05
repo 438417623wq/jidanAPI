@@ -1,9 +1,9 @@
 {
   "$schema": "https://raw.githubusercontent.com/Yan-Zero/dsh-std/3df054302468d2091859db4b3bd079042d33f100/packages/manifest/schema/dsh-plugin-0.15.schema.json",
   "manifestVersion": "0.15",
-  "id": "dev.zouyuxuan122.dsh-our-free-model",
+  "id": "dev.ebony-vinyl.dsh-our-free-model",
   "name": "dsh-our-free-model",
-  "version": "1.4.4",
+  "version": "1.4.5",
   "facets": {
     "host": {
       "entry": "index.js",
@@ -12,8 +12,8 @@
   },
   "license": "MIT",
   "source": {
-    "repository": "https://github.com/zouyuxuan122/dsh-our-free-model",
-    "revision": "1ef96e415eede335e73efb65e0c2e6f794db3e43"
+    "repository": "https://github.com/Ebony-Vinyl/dsh-our-free-model",
+    "revision": "eac6f9f29ff45c5e58aadcb49c6f6a95931659f6"
   },
   "x-ecosystem-packaging": {
     "adapterIsolation": "adapter/kernel.js is the only module that may import @deepseek-ai/*; enforced by scripts/catalog-test.mjs",

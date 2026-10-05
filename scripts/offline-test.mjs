@@ -16,6 +16,11 @@
  * closes — update routes, hot reload, feed polls — without touching the model
  * lane, which is the feature the pack installed.
  *
+ * The outlet is the one place a user pastes in a secret of their own — a
+ * subscription link, whose path *is* its token — so a third block pins that it
+ * is held to the forward keys' standard: stored as given, absent from every
+ * routine payload, served only when the settings page asks for it.
+ *
  * Local network only: the "offline" gateway is a real server that was closed, so
  * every connection is refused immediately. No free-lane quota is spent.
  *
@@ -133,6 +138,37 @@ const dataDir = home => path.join(home, 'our-free-model')
   }).catch(() => null)
   check('a model the roster does not carry answers 404 model-shaped', unknown?.status, 404)
   await callRoute(api(), 'POST', '/api/our-free-model/settings', { forward: { enabled: false, host: '127.0.0.1', port: forwardPort } })
+
+  dispose(ctx)
+  fs.rmSync(home, { recursive: true, force: true })
+}
+
+// ── the outlet address is a credential, not a setting ────────────────────────
+// The one secret a user of this plugin does paste in is a subscription link,
+// whose path *is* its token. So it is held to the forward keys' standard: stored
+// as given, absent from every routine payload, and served only when the settings
+// page itself asks for it (`GET /egress/url`).
+{
+  const token = 'ofm-subscription-token-0123456789abcdef'
+  const address = `https://outlet.example.com/s/${token}`
+  const { ctx, api, home } = await boot({ settings: { egress: { enabled: false, mode: 'subscription', url: address, mihomoPath: '' } } })
+
+  const summary = await callRoute(api(), 'GET', '/api/our-free-model/summary')
+  const egress = summary.json.settings.egress
+  check('the subscription URL never rides along in a payload', 'url' in egress, false)
+  check('and the whole summary carries none of the token it holds', JSON.stringify(summary.json).includes(token), false)
+  check('the panel is told a URL exists, and gets the masked host only', [egress.hasUrl, egress.urlLabel], [true, 'https://outlet.example.com'])
+
+  const revealed = await callRoute(api(), 'GET', '/api/our-free-model/egress/url')
+  check("the value is served on the settings page's own ask", revealed.json.url, address)
+
+  const kept = await callRoute(api(), 'POST', '/api/our-free-model/settings', { egress: { mode: 'client', mihomoPath: '' } })
+  check('a patch that carries no URL keeps the stored one', kept.status, 200)
+  check('— in the file', JSON.parse(fs.readFileSync(path.join(dataDir(home), 'settings.json'), 'utf8')).egress.url, address)
+  check('— and still not in the answer', 'url' in (kept.json.settings.egress ?? {}), false)
+
+  const cleared = await callRoute(api(), 'POST', '/api/our-free-model/settings', { egress: { enabled: false, url: '' } })
+  check('clearing it is still possible, and says so in the payload', [cleared.status, cleared.json.settings.egress.hasUrl], [200, false])
 
   dispose(ctx)
   fs.rmSync(home, { recursive: true, force: true })

@@ -24,7 +24,7 @@ import { postSealedStreamed } from './eac.js'
 import { finishReason, readStream, windowTokens } from './stream.js'
 import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
-import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
+import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, continuationMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
 import { isEacEntry } from './catalog.js'
 
 export const ROUTE_MAIN = 'our-free-model'
@@ -371,21 +371,32 @@ export class FreeModelAdapter {
         // finishReason 是兜底映射，failed/cancelled 也会落成 stop：正常收尾的判定必须显式查原 token。
         const elapsed = Date.now() - started
         const interrupted = canRecover(outcome, policy, elapsed)
-        const silentStop = !interrupted && reason.kind === 'stop'
+        // 正文撞输出上限被截断（finish=length）：把已出正文回灌成 assistant 轮、
+        // 用剩余预算自动续写一次，替代宿主提示的「发送继续」手动接力（#28）。
+        // 只在首段触发（recovering 段自己也撞墙就如实报 max-tokens，不无限续），
+        // 且不与断流/空停续写共用 attempt 名额以外的路径。
+        const maxTokensCut = policy.enabled && !recovering && reason.kind === 'max-tokens' && outcome.brokenToolCall !== true
+          && outcome.sawText === true && outcome.sawToolCall !== true
+          && typeof outcome.answerText === 'string' && outcome.answerText.trim() !== ''
+        const silentStop = !interrupted && !maxTokensCut && reason.kind === 'stop'
           // 无 token 的正常收尾（message_stop / response.done 不带 status）也算停收；failed、length 这类有 token 的收尾仍被挡在外面。
           && (outcome.finish === undefined || ['stop', 'end_turn', 'stop_sequence'].includes(outcome.finish))
           && canRecoverSilentStop(outcome, policy, elapsed)
-        if (!recovering && (interrupted || silentStop)) {
+        if (!recovering && (interrupted || silentStop || maxTokensCut)) {
           const remainingTokens = budget - (outcome.sawUsage ? outcome.usage.outputTokens ?? 0 : 0)
           const continuationBudget = Math.min(remainingTokens, policy.maxOutputTokens)
-          const continuationMessages = recoveryMessages(messages, outcome.reasoningText)
+          const nextMessages = maxTokensCut
+            ? continuationMessages(messages, outcome.answerText)
+            : recoveryMessages(messages, outcome.reasoningText)
           if (continuationBudget >= MIN_BUDGET
-            && checkpointFits(payloadFor(continuationMessages, continuationBudget, true, []), entry, outcome.reasoningText, continuationBudget)) {
+            && checkpointFits(payloadFor(nextMessages, continuationBudget, true, []), entry, maxTokensCut ? outcome.answerText : outcome.reasoningText, continuationBudget)) {
             record(false, outcome, { truncated: true, recoveryScheduled: true })
-            this.deps.warn?.(silentStop
-              ? 'our-free-model: a stopped turn held only its reasoning; continuing once from its checkpoint'
-              : 'our-free-model: interrupted reasoning; continuing once from its checkpoint')
-            attemptMessages = continuationMessages
+            this.deps.warn?.(maxTokensCut
+              ? 'our-free-model: the answer hit the output token ceiling; continuing once from where it stopped'
+              : silentStop
+                ? 'our-free-model: a stopped turn held only its reasoning; continuing once from its checkpoint'
+                : 'our-free-model: interrupted reasoning; continuing once from its checkpoint')
+            attemptMessages = nextMessages
             attemptBudget = continuationBudget
             continuationScheduled = true
             continue

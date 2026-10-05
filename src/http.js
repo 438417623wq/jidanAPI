@@ -23,6 +23,7 @@
  */
 
 import { CLIENT_UA, UPSTREAM_BASE, gatewayHeaders, truncateSession } from './upstream.js'
+import { egressFetch } from './egress.js'
 
 /** Harness-neutral failure codes (packages/llm/llm/src/error.ts vocabulary; CLIENT_ERROR extends it like CONFIG_DISABLED does). */
 export const CODE = {
@@ -57,6 +58,17 @@ export function classifyFailure(status, payload, retryAfterMs) {
   }
   if (status === 429 || type === 'FreeUsageLimitError' || /usage limit|rate limit/i.test(flat)) {
     return new UpstreamError(message, CODE.quota, { status, type, providerRetryAfterMs: retryAfterMs })
+  }
+  // The gateway rejects a signature only when the bytes it received differ from
+  // the bytes that were signed — the credential itself is fine. On this lane
+  // the usual cause is a local proxy plugin rewriting the body after signing
+  // (issue #50), so it is neither INVALID_CREDENTIAL (users chase re-login and
+  // re-installs for nothing) nor retryable-4xx territory: same body, same
+  // rewrite, same refusal. TRANSPORT names the hop that mangled the request.
+  if ((status === 401 || status === 403) && /signature rejected|signature mismatch/i.test(flat)) {
+    return new UpstreamError(
+      'the gateway rejected the request signature — the request body was modified in transit; if a local proxy plugin (e.g. billion-context) is installed, disable it for this lane or enable its passthrough for signed requests',
+      CODE.transport, { status, type, signatureRejected: true })
   }
   if (status === 401 || status === 403) return new UpstreamError(message, CODE.credential, { status, type })
   if (type === 'ModelError' || /model is unavailable|not supported/.test(flat)) {
@@ -289,7 +301,7 @@ export async function postStreamed({ path, body, session, requestId, attribution
   headers['user-agent'] = userAgentWith(attributionUserAgent)
   let response
   try {
-    response = await fetch(`${UPSTREAM_BASE}${path}`, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal })
+    response = await egressFetch(`${UPSTREAM_BASE}${path}`, { method: 'POST', headers, body: JSON.stringify(body), redirect: 'error', signal })
   } catch (error) {
     // The signal's own reason is what fetch rejects with, and Node's is a
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
@@ -428,7 +440,7 @@ export async function getJson(path, { session, requestId, attributionUserAgent, 
   const onCallerAbort = () => { callerAborted = true; controller.abort() }
   signal?.addEventListener('abort', onCallerAbort, { once: true })
   try {
-    const response = await fetch(`${UPSTREAM_BASE}${path}`, { headers, redirect: 'error', signal: controller.signal })
+    const response = await egressFetch(`${UPSTREAM_BASE}${path}`, { headers, redirect: 'error', signal: controller.signal })
     const text = await response.text()
     let payload
     try { payload = JSON.parse(text) } catch { payload = { error: { message: text.slice(0, 200) } } }

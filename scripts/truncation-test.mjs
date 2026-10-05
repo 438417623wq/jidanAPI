@@ -233,6 +233,64 @@ const RETRYABLE = ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPO
   check('message_stop does not overwrite the stop_reason it followed', ceilingClaude.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'max-tokens' })
 }
 
+// ─── issue #28: an answer cut by the output ceiling continues itself ────────
+// Recovery is enabled for these cases only — the auto-continue piggybacks on
+// the same one-shot continuation slot the interrupted-reasoning recovery uses.
+const CONTINUE_STATE = () => ({
+  catalog: CATALOG,
+  membership: { [ROUTE_MAIN]: CATALOG.map(entry => entry.id), [ROUTE_REGION]: [] },
+  settings: { enabled: true, defaultMaxTokens: 4096, streamRecovery: true },
+  attributionUserAgent: 'test/1.0',
+})
+async function driveContinue(firstBody, secondBody, model = 'test-model-free') {
+  SCRIPT.push(firstBody, secondBody)
+  const before = served
+  const adapter = new FreeModelAdapter({ state: CONTINUE_STATE, recordUsage: () => {}, warn: () => {} })
+  const chunks = []
+  for await (const chunk of adapter.stream({
+    model,
+    messages: [{ role: 'user', content: [{ type: 'text', text: '写一篇长文' }] }],
+  })) chunks.push(chunk)
+  return { chunks, requests: served - before }
+}
+{
+  // First attempt: answer text then finish=length. Second scripted answer: the
+  // completion plus a normal stop. The harness must hand the user one merged
+  // stream and end with a stop, not a max-tokens the user has to resume.
+  const first = frame({ content: '长文的开头' }) + finishFrame('length')
+  const second = frame({ content: '，这里是续写的结尾。' }) + finishFrame('stop') + 'data: [DONE]\n\n'
+  const out = await driveContinue(first, second)
+  const textDeltas = out.chunks.filter(chunk => chunk.type === 'text-delta').map(chunk => chunk.text).join('')
+  check('a length-cut answer auto-continues from its own text', textDeltas, '长文的开头，这里是续写的结尾。')
+  check('the turn ends with a normal stop, not max-tokens', out.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'stop' })
+  check('exactly two requests were spent', out.requests, 2)
+}
+{
+  // A broken tool call (arguments cut mid-JSON) stays max-tokens with ONE
+  // request — the v1.2.1 anti-loop decision is untouched.
+  const first = toolFrame('write_file', '{"path": "/tmp/x", "content": "# 截') + finishFrame('length')
+  const second = frame({ content: 'x' }) + finishFrame('stop') + 'data: [DONE]\n\n'
+  const out = await driveContinue(first, second)
+  check('a cut tool call does not auto-continue', out.chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'max-tokens' })
+}
+{
+  // Recovery off: the length cut is reported as max-tokens, one request, the
+  // pre-#28 behaviour users can still opt into. UPSTREAM_BASE is captured at
+  // module import (top of this file), so this stays on the shared server: trim
+  // SCRIPT back to the serving cursor (the tool-call block above pushed two
+  // bodies but served one) and append the length-finish body for this drive.
+  const lengthBody = frame({ content: '长文的开头' }) + finishFrame('length') + 'data: [DONE]\n\n'
+  SCRIPT.length = served
+  SCRIPT.push(lengthBody)
+  const adapter = new FreeModelAdapter({ state: () => ({
+    catalog: CATALOG, membership: { [ROUTE_MAIN]: CATALOG.map(e => e.id), [ROUTE_REGION]: [] },
+    settings: { enabled: true, defaultMaxTokens: 4096, streamRecovery: false }, attributionUserAgent: 'test/1.0',
+  }), recordUsage: () => {}, warn: () => {} })
+  const chunks = []
+  for await (const chunk of adapter.stream({ model: 'test-model-free', messages: [{ role: 'user', content: [{ type: 'text', text: '写一篇长文' }] }] })) chunks.push(chunk)
+  check('with recovery off the cut stays max-tokens', chunks.find(chunk => chunk.type === 'finish')?.reason, { kind: 'max-tokens' })
+}
+
 // The listener is unref'd at creation; the exit below must not race a close()
 // on Windows (libuv asserts on handles mid-close), so just let the process end.
 console.log(failures === 0 ? '\nall truncation checks passed' : `\n${failures} check(s) failed`)

@@ -1,5 +1,5 @@
 {
-  "version": "1.4.4",
+  "version": "1.4.5",
   "algorithm": "sha256",
   "files": [
     {
@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 117697,
-      "sha256": "fb276f3d486f6815dd9fa3b8b3956d0c1ac045577010a75a6e19f963fb1e61dd"
+      "size": 145015,
+      "sha256": "cdf88717d95d6143f394b593d5f6291df5b8e67ad8de1ec246e788873cf0e735"
     },
     {
       "path": "cordis.patch.yml",
@@ -29,13 +29,13 @@
     },
     {
       "path": "index.js",
-      "size": 80787,
-      "sha256": "8346f144e6275e9070ab5f88e20aaee9415779ed7e73ace041fccf1f11d217cf"
+      "size": 97994,
+      "sha256": "d3fd363bbe9e28f20b0aa30b6c9084f14bbe2b5c98fce2469c8fc3bf3c2d1324"
     },
     {
       "path": "LICENSE",
-      "size": 1069,
-      "sha256": "f767664181b6f4ece8a2164da7c86b59a097eaffc17520f9f0f5e6bc070cd5f6"
+      "size": 1068,
+      "sha256": "4d5f97c83545b2159926df06d3210a266d2b7f900e27f7b3e8e576caf753e828"
     },
     {
       "path": "locale/en.json",
@@ -49,13 +49,13 @@
     },
     {
       "path": "package.json",
-      "size": 1624,
-      "sha256": "7bbaabdb6633178bd27235749a07ca7ab51d4d523d2596908e94384d38af95c0"
+      "size": 1627,
+      "sha256": "4b32ee3626c37a31ef25e259aaa3e606807565800d42299b33d107ba98e7c967"
     },
     {
       "path": "src/adapter.js",
-      "size": 27230,
-      "sha256": "9622920b5355ea70442925e46b39c6f653672910a54c8273fd6e497fc05ab0c9"
+      "size": 28220,
+      "sha256": "41125aea4337a0175c044678d0fe998d64a1d34398803ac178b2172042b4b697"
     },
     {
       "path": "src/catalog.js",
@@ -69,8 +69,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 7861,
-      "sha256": "0841b082dae9af8f2898ad777b3580908d421aee5b9201aeb3ec20d362fbafa2"
+      "size": 11732,
+      "sha256": "50958053be289764dffcdcb5a46b4eb94db71ba693f6e9bdfb7ad72b2e50e471"
     },
     {
       "path": "src/effort.js",
@@ -78,9 +78,14 @@
       "sha256": "e816fbb00e5d8411ebaadf7fedf003fdebc8851ccbf9aeab62ef96096025589d"
     },
     {
+      "path": "src/egress.js",
+      "size": 35243,
+      "sha256": "4811a0a1e1d42907932488ab4b480acdfbc8244a130d273d34e87530c29552f8"
+    },
+    {
       "path": "src/feed.js",
-      "size": 12497,
-      "sha256": "4199463b48c70d0ebdb6c16608de63a4c27dea2c5de0e34755ab32125171ecd6"
+      "size": 12496,
+      "sha256": "913ef14f718f4125485f69dc38e1a6e6e2ced99c15ec4a88d235dc4b7a9d23fb"
     },
     {
       "path": "src/forward.js",
@@ -89,8 +94,8 @@
     },
     {
       "path": "src/http.js",
-      "size": 19788,
-      "sha256": "d7f1e5f320262c8a6930f72c4d20504be51ebbd63f87b956df04d120a9023db4"
+      "size": 20742,
+      "sha256": "420d81bb884606191d2dc92ddac59e62196f15192124d6077db5bcf5113c6b41"
     },
     {
       "path": "src/messages.js",
@@ -99,8 +104,8 @@
     },
     {
       "path": "src/probe.js",
-      "size": 9727,
-      "sha256": "63ff127a952b4584728b35ab3702f73e9d6329512a088cf16bb2700cb1401c49"
+      "size": 9775,
+      "sha256": "b3a65d3c2be6d8e5e3c9b305a4df64cce699915dc8c6e44273809bef689b2642"
     },
     {
       "path": "src/push.js",
@@ -109,8 +114,8 @@
     },
     {
       "path": "src/recovery.js",
-      "size": 5038,
-      "sha256": "46f95c9afb6d24e3328b6f46f8af5382fe126f4c283fb9dfeef94f9b4c473273"
+      "size": 6236,
+      "sha256": "48dc1b32bb355e30b9bcf8ac448dedc099ed1e0f7c9c65f253d5838794202b06"
     },
     {
       "path": "src/reload.js",
@@ -119,23 +124,23 @@
     },
     {
       "path": "src/store.js",
-      "size": 17449,
-      "sha256": "fa34109e598d4582022e20299d276b0def8f9388e7c279da47a9d1df4e8c0204"
+      "size": 17824,
+      "sha256": "2237045970093c0ed240d5d4d7351df2bafd08c34ebc874f8a7dff076d130dc0"
     },
     {
       "path": "src/stream.js",
-      "size": 23655,
-      "sha256": "3eaca8a1699431c014009e086865981b61a7df365c61e4c05d359a987f99e813"
+      "size": 24150,
+      "sha256": "416f3ff25f3b213b8849f5645c2c73ede969620369934fae18ba5ce374c0342f"
     },
     {
       "path": "src/trust.js",
-      "size": 4042,
-      "sha256": "aadee43204043c18486ac8b0d9f6ffff8f4648a0499711611b061cc30e67e0af"
+      "size": 5660,
+      "sha256": "a28cc97ba46b99e0ed6f14b8021453e70196f4f09c29a47a245a9992e5df11aa"
     },
     {
       "path": "src/updater.js",
-      "size": 29780,
-      "sha256": "baeef89336b3aec782c66334d6a1b4d448dc7e0b3f7a60767562bb1c52b56ab3"
+      "size": 29779,
+      "sha256": "15e33b14836db36bc1c634f44b3ab0186966a17167ff35dc43546aff4654f23f"
     },
     {
       "path": "src/upstream.js",

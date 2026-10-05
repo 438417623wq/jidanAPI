@@ -1,15 +1,15 @@
 {
   "subject": {
-    "id": "dev.zouyuxuan122.dsh-our-free-model",
+    "id": "dev.ebony-vinyl.dsh-our-free-model",
     "name": "dsh-our-free-model",
-    "version": "1.4.4",
-    "sourceRepository": "https://github.com/zouyuxuan122/dsh-our-free-model",
-    "sourceRevision": "1ef96e415eede335e73efb65e0c2e6f794db3e43"
+    "version": "1.4.5",
+    "sourceRepository": "https://github.com/Ebony-Vinyl/dsh-our-free-model",
+    "sourceRevision": "eac6f9f29ff45c5e58aadcb49c6f6a95931659f6"
   },
   "license": {
     "spdx": "MIT",
     "file": "LICENSE",
-    "copyright": "Copyright (c) 2026 zouyuxuan122",
+    "copyright": "Copyright (c) 2026 Ebony-Vinyl",
     "notes": "MIT preserved unchanged from the upstream repository; no code was relicensed in standardization."
   },
   "upstreamRuntime": {

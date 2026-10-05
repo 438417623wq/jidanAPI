@@ -71,6 +71,10 @@ class BlockSink {
     this.sawReasoning = false
     this.sawToolCall = false
     this.reasoningText = ''
+    /** Concatenated answer text, capped like the reasoning checkpoint — feeds
+     * the max-tokens continuation without buffering more than one cap's worth. */
+    this.answerText = ''
+    this.answerLimit = checkpointLimit
     this.checkpointLimit = checkpointLimit
     this.checkpointTruncated = false
     this.brokenToolCall = false
@@ -122,6 +126,11 @@ class BlockSink {
     const scrubbed = this.dsml.push(delta)
     if (scrubbed === '') return
     this.sawText = true
+    if (this.answerText.length < this.answerLimit) {
+      this.answerText += this.answerText.length + scrubbed.length > this.answerLimit
+        ? scrubbed.slice(0, this.answerLimit - this.answerText.length)
+        : scrubbed
+    }
     const block = this.slot(key, 'text')
     block.text += scrubbed
     this.emit({ type: 'text-delta', index: block.index, text: scrubbed })
@@ -422,6 +431,7 @@ export async function * readStream(lines, wire, renameMap, now = () => Date.now(
     ...state,
     nextIndex: sink.next,
     reasoningText: sink.reasoningText,
+    answerText: sink.answerText,
     checkpointTruncated: sink.checkpointTruncated,
     usage: state.usage ?? { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
   })

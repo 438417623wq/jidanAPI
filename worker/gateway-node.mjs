@@ -37,7 +37,18 @@
  *   PORT                 default 17788
  *   RATE_LIMIT_PER_MINUTE  per-IP fixed-window limit, default 60, 0 = off
  *   RATE_LIMIT_PER_DAY   per-IP per-day cap, default 1000, 0 = off
- *   CONCURRENCY_PER_IP   per-IP in-flight chat turns, default 20, 0 = off
+ *   CONCURRENCY_PER_IP   per-IP in-flight chat turns, default 5, 0 = off
+ *   POOL_SIZE            optional. The real provisioned account count for the
+ *                        public /pool snapshot; when unset the snapshot derives
+ *                        capacity from the repo's stars (× 1.5)
+ *   POOL_PRESSURE_BUSY   optional. In-flight chat turns at which the /pool
+ *                        snapshot reports "busy" (default 30, 0 = off)
+ *   POOL_PRESSURE_OVER   optional. In-flight turns at which it reports
+ *                        "overloaded" (default 80, 0 = off); a saturating
+ *                        event loop forces the same verdicts — mean loop
+ *                        delay ≥100ms reports "busy", ≥300ms "overloaded" —
+ *                        whatever the counters say
+ *   GITHUB_STARS_OVERRIDE optional test hook pinning the star count
  *   ADMIN_TOKEN          token for the /stats dashboard; unset = dashboard off
  *   STATS_PATH           stats file, default ./stats.json next to this script
  *   MOUNT_PREFIX         optional sub-path mount (e.g. "/eac" serving the lane
@@ -54,6 +65,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
+import perfHooks from 'node:perf_hooks'
 import gateway from './worker.js'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
@@ -242,6 +254,10 @@ function buildRateLimiter(perWindow, windowMs) {
 /** Test seam: clear the process-wide analytics singleton between suites. */
 export function resetAnalytics() { analytics.reset() }
 
+/** Test seam: the /pool endpoint's GitHub fetch, so the offline suite never
+ * touches the network. Production leaves it null and uses the global fetch. */
+export const poolProbe = { fetchImpl: null }
+
 const DASHBOARD_HTML = () => {
   try { return fs.readFileSync(path.join(here, 'dashboard.html'), 'utf8') } catch { return '<!doctype html><meta charset="utf-8"><title>EAC 网关</title><p>dashboard.html 缺失。</p>' }
 }
@@ -264,7 +280,7 @@ export function createGatewayServer(hostEnv = {}) {
   const maxBody = Number.parseInt(env.MAX_BODY_BYTES ?? '8388608', 10) || 8388608
   const perMinute = Number.parseInt(env.RATE_LIMIT_PER_MINUTE ?? '60', 10)
   const perDay = Number.parseInt(env.RATE_LIMIT_PER_DAY ?? '1000', 10)
-  const concLimit = Number.parseInt(env.CONCURRENCY_PER_IP ?? '20', 10)
+  const concLimit = Number.parseInt(env.CONCURRENCY_PER_IP ?? '5', 10)
   const adminToken = String(env.ADMIN_TOKEN ?? '')
   const preludeSeconds = (() => { const n = Number.parseInt(env.SSE_PRELUDE_SECONDS ?? '15', 10); return Number.isFinite(n) ? n : 15 })()
   const prefix = String(env.MOUNT_PREFIX ?? '').replace(/\/+$/, '')
@@ -276,6 +292,94 @@ export function createGatewayServer(hostEnv = {}) {
     DAILY_LIMITER: buildRateLimiter(perDay, DAY_MS),
   }
   const inflight = new Map()
+
+  // ── the co-paid pool snapshot ───────────────────────────────────────────────
+  // Capacity follows the operator's provisioning rule — one star funds 1.5
+  // accounts — unless POOL_SIZE pins the real provisioned count. The star
+  // count comes from the GitHub API, cached 30 minutes (well inside the
+  // unauthenticated quota); a failed fetch keeps the last good value. Stars
+  // are never even fetched when a configured POOL_SIZE makes them moot, and
+  // GITHUB_STARS_OVERRIDE exists so the offline suite never touches the net.
+  //
+  // The load verdict (`level`) is this process's own truth: in-flight chat
+  // turns against the operator-tunable POOL_PRESSURE_* thresholds, forced to
+  // "busy"/"overloaded" when the event loop itself is saturating — a setting
+  // page showing a calm pool while the box is dying is worse than none.
+  const poolSizeOverride = Number.parseInt(env.POOL_SIZE ?? '', 10)
+  const starsOverride = Number.parseInt(env.GITHUB_STARS_OVERRIDE ?? '', 10)
+  const pressureBusy = Math.max(0, Number.parseInt(env.POOL_PRESSURE_BUSY ?? '30', 10) || 0)
+  const pressureOver = Math.max(0, Number.parseInt(env.POOL_PRESSURE_OVER ?? '80', 10) || 0)
+  const loopDelay = perfHooks.monitorEventLoopDelay({ resolution: 20 })
+  loopDelay.enable()
+  let loopEma = null
+  let loopWarmup = true
+  const loopSampler = setInterval(() => {
+    // The first window swallows the boot itself (module loading blocks the
+    // loop); it says nothing about steady state, so it is discarded.
+    if (loopWarmup) { loopWarmup = false; loopDelay.reset(); return }
+    if (loopDelay.count > 0) {
+      const meanMs = loopDelay.mean / 1e6
+      loopEma = loopEma === null ? meanMs : loopEma * 0.85 + meanMs * 0.15
+    }
+    loopDelay.reset()
+  }, 5_000)
+  loopSampler.unref?.()
+  const starCache = { stars: Number.isFinite(starsOverride) && starsOverride >= 0 ? starsOverride : null, at: Number.isFinite(starsOverride) && starsOverride >= 0 ? Date.now() : 0 }
+  /** Earliest time the next GitHub attempt may happen after a failure. */
+  let starRetryAt = 0
+  const loadStars = async () => {
+    if (Number.isFinite(starsOverride) && starsOverride >= 0) return starsOverride
+    if (poolSizeOverride > 0) return starCache.stars
+    if (starCache.stars !== null && Date.now() - starCache.at < 30 * 60_000) return starCache.stars
+    // A failed attempt used to be retried by EVERY /pool call, which put a
+    // 5-second GitHub round trip on the snapshot each time the API was rate
+    // limiting this host — the snapshot must never wait on GitHub more than
+    // once per backoff window.
+    if (Date.now() < starRetryAt) return starCache.stars
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 3000)
+      timer.unref?.()
+      const impl = poolProbe.fetchImpl ?? fetch
+      const response = await impl('https://api.github.com/repos/Ebony-Vinyl/dsh-our-free-model', {
+        headers: { 'user-agent': 'eac-gateway', accept: 'application/vnd.github+json' },
+        signal: controller.signal,
+      })
+      clearTimeout(timer)
+      if (response.ok) {
+        const body = await response.json()
+        if (Number.isFinite(body?.stargazers_count)) starCache.stars = body.stargazers_count
+        starCache.at = Date.now()
+      } else {
+        starRetryAt = Date.now() + 120_000
+      }
+    } catch {
+      // Keep the last good count (null only until one fetch lands) and back
+      // off two minutes so a rate-limited or unreachable GitHub does not add
+      // latency to every snapshot call.
+      starRetryAt = Date.now() + 120_000
+    }
+    return starCache.stars
+  }
+  const poolSnapshot = async () => {
+    let pool = null
+    let poolSource = 'unavailable'
+    if (poolSizeOverride > 0) { pool = poolSizeOverride; poolSource = 'configured' }
+    else {
+      const stars = await loadStars()
+      if (Number.isFinite(stars)) { pool = Math.round(stars * 1.5); poolSource = 'formula' }
+    }
+    const cutoff = Date.now() - DAY_MS
+    let active24h = 0
+    for (const row of Object.values(analytics.state.ips)) if ((row.last ?? 0) > cutoff) active24h += 1
+    let inFlight = 0
+    for (const value of inflight.values()) inFlight += value
+    const loopMs = loopEma === null ? null : Math.round(loopEma * 10) / 10
+    const level = (pressureOver > 0 && (inFlight >= pressureOver || (loopMs !== null && loopMs >= 300))) ? 'over'
+      : (pressureBusy > 0 && (inFlight >= pressureBusy || (loopMs !== null && loopMs >= 100))) ? 'busy'
+        : 'ok'
+    return { ok: true, stars: starCache.stars, pool, poolSource, active24h, inflight: inFlight, concurrencyPerIp: concLimit, level, loopDelayMs: loopMs, ts: Date.now() }
+  }
 
   analytics.load(statsPath)
 
@@ -337,6 +441,15 @@ export function createGatewayServer(hostEnv = {}) {
         // for data, which is where the real check lives.
         res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
         return res.end(DASHBOARD_HTML())
+      }
+
+      // ── public pool snapshot (aggregate numbers only) ─────────────────────
+      // Feeds the plugin settings page's capacity gauge: the pool the operator
+      // provisions grows with the repo's stars (POOL_SIZE pins it to an exact
+      // count instead), and the load side is this process's own real traffic.
+      // No secrets, no per-IP rows — the dashboard keeps those behind the token.
+      if (url.pathname === prefix + '/pool') {
+        return json(res, 200, await poolSnapshot())
       }
 
       if (overflow) {

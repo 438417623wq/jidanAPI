@@ -33,7 +33,8 @@ import { buildCatalog, buildEacCatalog, isEacEntry, parseListing } from './src/c
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
 import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
-import { fetchSealedListing } from './src/eac.js'
+import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
+import { directFetch, fetchSealedListing } from './src/eac.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
@@ -158,6 +159,14 @@ export function apply(ctx, config) {
   /** The optional LAN relay: a second door, with a key of its own. */
   let relay = null
   let relayError = ''
+  /** The optional egress outlet (subscription or single client), off by
+   *  default. Named `outlet*` so the `egress` IP/country snapshot stays clear. */
+  let outletRelay = null
+  let outletError = ''
+  /** Last reading of the outlet's own view of itself, cached for `/summary`. */
+  let outletNode = { node: '', delayMs: 0, at: 0 }
+  /** How long the last successful listing round took over the current path. */
+  let gatewayLatency = { ms: 0, at: 0 }
 
   // ── the co-paid lane ────────────────────────────────────────────────────────
   /**
@@ -177,6 +186,51 @@ export function apply(ctx, config) {
   let sealedCatalog = sealedCredentialOf() === null ? [] : buildEacCatalog(catalogStore.get().sealIds ?? [])
   const mergeCatalogs = () => { catalog = [...catalog, ...sealedCatalog.filter(row => !catalog.some(entry => entry.id === row.id))] }
   mergeCatalogs()
+
+  // ── the pool snapshot (settings-page gauge) ─────────────────────────────────
+  // The co-paid gateway publishes aggregate, non-sensitive numbers (provisioned
+  // capacity, live traffic) at `{mount}/pool`; this proxy exists so the browser
+  // never needs the gateway URL — the seal stays server-side. Thirty seconds
+  // of server-side cache keeps a settings page that re-mounts often from
+  // turning into a request flood, while staying fresh enough for the load
+  // verdict to mean something. A host without the lane — or a gateway that
+  // does not answer — throws a tagged reason, and the route answers 404 with
+  // that reason, which the client shows as a muted diagnostic line. The
+  // outbound hop rides directFetch, the lane's own node:http(s) transport: if
+  // global fetch is wrapped or broken in this composition, the lane still is.
+  const poolError = reason => Object.assign(new Error(`pool: ${reason}`), { code: 'POOL_UNAVAILABLE', reason })
+  // A snapshot this young still describes the same day; under load the panel
+  // shows it rather than blanking while the gateway is slow to answer.
+  const POOL_STALE_MS = 10 * 60_000
+  let poolCache = { at: 0, data: null }
+  async function fetchPoolSnapshot() {
+    if (poolCache.data !== null && Date.now() - poolCache.at < 30_000) return poolCache.data
+    const credential = sealedCredentialOf()
+    if (credential === null || credential.mode !== 'worker') throw poolError('no-lane')
+    const gatewayRoot = credential.base.replace(/\/v1\/?$/, '')
+    const controller = new AbortController()
+    // The gateway may be genuinely slow when it is saturated (that is what the
+    // verdict is about); twenty seconds is the patience this hop gets.
+    const timer = setTimeout(() => controller.abort(), 20_000)
+    timer.unref?.()
+    try {
+      const response = await directFetch(`${gatewayRoot}/pool`, { headers: { accept: 'application/json' }, signal: controller.signal })
+      if (!response.ok) throw poolError('gateway-status')
+      const data = await response.json()
+      // The gateway may answer a degraded snapshot: stars unreachable means
+      // pool/poolSource come back null/'unavailable' while the live counters
+      // stay real. That is still a valid snapshot — only the in-flight core
+      // is required, and the panel renders the rest as it finds it.
+      if (data?.ok !== true || !Number.isFinite(data.inflight)) throw poolError('malformed')
+      poolCache = { at: Date.now(), data }
+      return data
+    } catch (error) {
+      if (poolCache.data !== null && Date.now() - poolCache.at < POOL_STALE_MS) return poolCache.data
+      throw error?.code === 'POOL_UNAVAILABLE' ? error : poolError('unreachable')
+    } finally {
+      clearTimeout(timer)
+    }
+  }
 
   // ── push channel ────────────────────────────────────────────────────────────
   const push = createPushHub({ logger })
@@ -383,11 +437,17 @@ export function apply(ctx, config) {
     // Read straight from the listing path rather than the probe helper: a listing
     // needs no session identity, and a failure should be a plain throw. Through
     // `getJson` so the base URL stays the one override every other request uses.
-    return await getJson('/zen/v1/models', {
+    const started = Date.now()
+    const listing = await getJson('/zen/v1/models', {
       session: sessionForConversation('catalog:our-free-model'),
       requestId: mintRequestId(),
       attributionUserAgent,
     })
+    // The one number that answers "how far away is opencode right now": the
+    // listing is the cheapest call that proves the whole path, and it goes
+    // through `egressFetch` like every other gateway request.
+    gatewayLatency = { ms: Date.now() - started, at: Date.now() }
+    return listing
   }
 
   async function runProbeRound() {
@@ -457,9 +517,10 @@ export function apply(ctx, config) {
   }
 
 
+  /** Returns whether the exit could actually be read, not just whether it moved. */
   async function watchEgress() {
     const seen = await detectEgress()
-    if (seen === undefined) return
+    if (seen === undefined) return false
     const previous = availability.get().egress
     const changed = previous === null || previous === undefined
       || previous.ip !== seen.ip || (seen.country !== undefined && previous.country !== seen.country)
@@ -470,6 +531,40 @@ export function apply(ctx, config) {
       logger.info?.(`our-free-model: egress changed to ${seen.ip}${seen.country ? ` (${seen.country})` : ''}; re-probing availability`)
       await refreshAvailability(true)
     }
+    return true
+  }
+
+  /**
+   * A freshly started outlet needs a moment before its nodes carry traffic: the
+   * first read comes back empty, and a re-probe fired on that cold path would
+   * record "unavailable" for models the new exit would have unlocked. Retry a
+   * few times and let the re-probe run only once the exit answers.
+   */
+  async function settleOutletWatch() {
+    let lastError
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, attempt === 0 ? 2500 : 5000))
+      if (disposed) return
+      try {
+        if (await watchEgress()) {
+          // The exit answers, but url-test may not have ranked a node yet: read
+          // the selection now, and once more a beat later so the settings page
+          // does not sit on an empty node until the next periodic tick.
+          await readOutletStatus().catch(() => {})
+          const later = setTimeout(() => {
+            if (!disposed) void readOutletStatus().catch(() => {})
+          }, 5000)
+          later.unref?.()
+          return
+        }
+      } catch (error) {
+        lastError = error
+      }
+    }
+    logger.warn?.(
+      `our-free-model: egress changed but the new exit never answered; leaving verdicts alone`
+      + (lastError ? ` (${lastError?.message ?? lastError})` : ''),
+    )
   }
 
   // ── forward listener ────────────────────────────────────────────────────────
@@ -656,6 +751,144 @@ export function apply(ctx, config) {
     }
   }
 
+  // ── egress outlet ───────────────────────────────────────────────────────────
+  /** One gateway round trip at a time; the panel polls, the throttle decides. */
+  let latencyMeasureInFlight = null
+  /**
+   * Which node the outlet is carrying traffic on, and what it costs to reach the
+   * gateway through it. Purely informational: every failure is a missing reading,
+   * never an error, because the outlet itself may be perfectly healthy while the
+   * controller call that describes it is not.
+   */
+  /**
+   * The settings page asks "how long does opencode take to answer right now", and
+   * the honest answer is a real round trip through the outlet — not the age of the
+   * last catalog refresh. Re-reading the listing is the cheapest call that proves
+   * the whole path (it is the same request the catalog uses, and free), so it is
+   * reused here, throttled so a panel left open cannot turn into a loop.
+   */
+  async function measureGatewayLatency() {
+    if (gatewayLatency.at !== 0 && Date.now() - gatewayLatency.at < 60_000) return
+    if (latencyMeasureInFlight !== null) return await latencyMeasureInFlight.catch(() => {})
+    const run = fetchListing()
+      .then(() => {})
+      .catch(error => {
+        logger.debug?.(`our-free-model: gateway latency reading failed (${error?.message ?? error})`)
+      })
+    latencyMeasureInFlight = run
+    try { await run } finally { if (latencyMeasureInFlight === run) latencyMeasureInFlight = null }
+  }
+
+  async function readOutletStatus() {
+    const relay = outletRelay
+    if (relay === null) {
+      outletNode = { node: '', delayMs: 0, at: 0 }
+      return { node: '', nodeDelayMs: 0, nodeAt: 0, latencyMs: 0, latencyAt: 0 }
+    }
+    await measureGatewayLatency().catch(() => {})
+    const selection = await readOutletSelection(relay).catch(() => null)
+    // A settled read is cached for `/summary`, which cannot await a round trip.
+    if (outletRelay === relay) {
+      outletNode = { node: selection?.node ?? '', delayMs: selection?.delayMs ?? 0, at: Date.now() }
+    }
+    return {
+      node: selection?.node ?? '',
+      nodeDelayMs: selection?.delayMs ?? 0,
+      nodeAt: Date.now(),
+      latencyMs: gatewayLatency.ms,
+      latencyAt: gatewayLatency.at,
+    }
+  }
+  // Same serialisation gate as the two listeners above: the boot chain and every
+  // settings POST call this, and overlapping runs would leak a spawned mihomo
+  // (the loser overwrites `outletRelay` while the winner's child still runs).
+  let outletSyncInFlight = null
+  /** What the currently running outlet was started with — restart on change. */
+  let outletFingerprint = ''
+  async function syncEgress() {
+    while (outletSyncInFlight !== null) await outletSyncInFlight.catch(() => {})
+    const run = syncEgressOnce()
+    outletSyncInFlight = run
+    try { await run } finally { if (outletSyncInFlight === run) outletSyncInFlight = null }
+  }
+  async function syncEgressOnce() {
+    const desired = settings.get().egress ?? {}
+    const wanted = desired.enabled === true
+    const mode = desired.mode === 'client' ? 'client' : 'subscription'
+    const url = String(desired.url ?? '').trim()
+    const mihomoPath = String(desired.mihomoPath ?? '').trim()
+    const fingerprint = `${mode}\n${url}\n${mihomoPath}`
+    if (outletRelay !== null && wanted && outletFingerprint === fingerprint && !outletRelay.dead) return
+    if (outletRelay === null && !wanted) return
+    if (outletRelay !== null) {
+      const closing = outletRelay
+      outletRelay = null
+      outletFingerprint = ''
+      await closing.close().catch(() => {})
+      // The way out changed under every fetch: re-detect the exit so the pill and
+      // the model verdicts describe the path the next request actually takes.
+      void settleOutletWatch()
+    }
+    if (!wanted) {
+      outletError = ''
+      return
+    }
+    if (url === '') {
+      outletError = 'the outlet needs a subscription or proxy URL'
+      logger.warn?.(`our-free-model: egress outlet not started (${outletError})`)
+      return
+    }
+    try {
+      outletRelay = await startEgressRelay({
+        config: () => {
+          const current = settings.get().egress ?? {}
+          return {
+            mode: current.mode === 'client' ? 'client' : 'subscription',
+            url: String(current.url ?? '').trim(),
+            mihomoPath: String(current.mihomoPath ?? '').trim(),
+          }
+        },
+        dataDir,
+        log: message => logger.info?.(`our-free-model egress: ${message}`),
+        onDead: scheduleOutletRestart,
+      })
+      outletFingerprint = fingerprint
+      outletError = ''
+      outletUpSince = Date.now()
+      logger.info?.(`our-free-model: egress outlet up (${outletLabel(url)} via ${mode})`)
+      // Same as the close path: the exit IP, its country and the region-gated
+      // verdicts all moved with the outlet, so settle them now instead of at the
+      // next periodic watch.
+      void settleOutletWatch()
+    } catch (error) {
+      outletError = String(error?.message ?? error)
+      logger.warn?.(`our-free-model: egress outlet could not start (${outletError})`)
+    }
+  }
+
+  // A managed mihomo that dies mid-run used to leave the outlet bricked until
+  // the user touched the settings page: the relay stays up but its dial port is
+  // gone, so every upstream turn fails. syncEgressOnce already restarts a dead
+  // relay with an unchanged fingerprint — this only calls it, with a backoff so
+  // a mihomo that dies at boot cannot spin into a start/exit loop. A run that
+  // lasted two minutes counts as healthy and resets the ladder.
+  const OUTLET_STABLE_MS = 120_000
+  let outletUpSince = 0
+  let outletRestartAttempts = 0
+  let outletRestartTimer = null
+  function scheduleOutletRestart() {
+    if (outletRestartTimer !== null) return
+    if (Date.now() - outletUpSince >= OUTLET_STABLE_MS) outletRestartAttempts = 0
+    const delay = Math.min(15_000 * 2 ** outletRestartAttempts, 600_000)
+    outletRestartAttempts += 1
+    logger.warn?.(`our-free-model: egress outlet went down; restarting in ${Math.round(delay / 1000)}s (attempt ${outletRestartAttempts})`)
+    outletRestartTimer = setTimeout(() => {
+      outletRestartTimer = null
+      void syncEgress().catch(() => {})
+    }, delay)
+    outletRestartTimer.unref?.()
+  }
+
   /**
    * Run one forwarded OpenAI request through the adapter.
    *
@@ -817,7 +1050,8 @@ export function apply(ctx, config) {
   }
   const api = createApiRoutes({
     settings, stats, availability, catalog: () => catalog, state,
-    refreshCatalog, refreshAvailability, syncForward, syncRelay,
+    refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
+    pool: fetchPoolSnapshot,
     forwardInfo: () => ({
       running: forward !== null,
       port: forward?.port ?? 0,
@@ -832,6 +1066,29 @@ export function apply(ctx, config) {
         addresses: lanAddresses(),
       },
     }),
+    // The subscription URL is a credential: only its masked label ever leaves
+    // this process. `active` mirrors what egressFetch is actually doing right
+    // now (direct until the relay finishes starting, direct again once closed).
+    egressInfo: () => ({
+      running: outletRelay !== null,
+      active: outletRelay !== null,
+      mode: outletRelay?.mode ?? '',
+      outlet: outletRelay === null ? '' : outletLabel(outletRelay.url ?? ''),
+      // Cached readings: `/summary` is synchronous, so the live controller call
+      // lives in `outletStatus` below and only the last answer is echoed here.
+      node: outletNode.node,
+      nodeDelayMs: outletNode.delayMs,
+      nodeAt: outletNode.at,
+      latencyMs: gatewayLatency.ms,
+      latencyAt: gatewayLatency.at,
+      // `dead` is the managed mihomo dying after startup — surfaced through the
+      // same field so the settings page shows why traffic fell back to direct.
+      error: outletError !== '' ? outletError : (outletRelay?.dead ?? ''),
+    }),
+    // The settings page polls this while the outlet is on: which node url-test is
+    // carrying traffic on is mihomo's own state, and it changes without anything
+    // else in this process moving.
+    outletStatus: () => readOutletStatus(),
     rotateKey: () => {
       const minted = generateKey()
       settings.update({ forwardKey: minted })
@@ -977,6 +1234,7 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     void forward?.close().catch(() => {})
     void relay?.close().catch(() => {})
+    void outletRelay?.close().catch(() => {})
   }, 'our-free-model: forward listener')
 
   ctx.effect(() => () => { registration() }, 'our-free-model: adapter routes')
@@ -994,6 +1252,10 @@ export function apply(ctx, config) {
   ctx.effect(() => {
     void (async () => {
       attributionUserAgent = await resolveAttributionUserAgent(logger)
+      if (disposed) return
+      // First: the catalog refresh and its probe round below go through
+      // egressFetch, so the outlet must be carrying traffic before they run.
+      await syncEgress()
       if (disposed) return
       await refreshCatalog({ probe: true, force: true })
       // Every await here is a chance for teardown to have run underneath this
@@ -1080,7 +1342,12 @@ export function apply(ctx, config) {
   let egressWarned = false
   every(() => {
     void watchEgress()
-      .then(() => { egressWarned = false })
+      .then(() => {
+        egressWarned = false
+        // url-test re-ranks on its own 5-minute cycle; the node shown on the
+        // settings page follows the same cadence as the exit reading.
+        void readOutletStatus().catch(() => {})
+      })
       .catch(error => {
         if (!egressWarned) logger.warn?.(`our-free-model: egress watch failed (${error?.message ?? error})`)
         egressWarned = true
@@ -1351,6 +1618,9 @@ function foldForwardOutcome(outcome, chunk) {
  * prefix outranks `/api` in webServer's longest-prefix dispatch, so without
  * this fence these routes would answer callers the app itself would refuse.
  */
+/** The fixed failure classes the pool proxy may surface to the client. */
+const POOL_REASONS = new Set(['no-lane', 'gateway-status', 'malformed', 'unreachable'])
+
 function createApiRoutes(deps) {
   return async function handler(req, res) {
     const url = new URL(req.url ?? '/', 'http://localhost')
@@ -1372,8 +1642,18 @@ function createApiRoutes(deps) {
       if (method === 'GET' && routePath === '/stats') {
         return send(200, buildStats(deps.stats.get(), deps.catalog()))
       }
+      if (method === 'GET' && routePath === '/outlet') {
+        return send(200, await deps.outletStatus())
+      }
       if (method === 'GET' && routePath === '/meta') {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
+      }
+      if (method === 'GET' && routePath === '/pool') {
+        try { return send(200, await deps.pool()) } catch (error) {
+          const reason = POOL_REASONS.has(error?.reason) ? error.reason : 'unreachable'
+          deps.logger?.warn?.(`our-free-model: pool snapshot unavailable (${reason})`)
+          return send(404, { error: `pool unavailable (${reason})` })
+        }
       }
       if (method === 'GET' && routePath === '/announcement') {
         // A managed install also stands down the owner's onboarding copy: the
@@ -1469,11 +1749,30 @@ function createApiRoutes(deps) {
           }
           next.forward = forward
         }
+        if (patch.egress !== undefined) {
+          const egressPatch = pick(patch.egress, ['enabled', 'mode', 'url', 'mihomoPath'])
+          if (egressPatch.mode !== undefined && egressPatch.mode !== 'subscription' && egressPatch.mode !== 'client') {
+            return send(400, { error: 'the egress mode is "subscription" or "client"' })
+          }
+          for (const key of ['url', 'mihomoPath']) {
+            if (egressPatch[key] !== undefined) {
+              const value = String(egressPatch[key]).trim()
+              if (value.length > 2048) return send(400, { error: `the egress ${key} is too long` })
+              egressPatch[key] = value
+            }
+          }
+          const egress = { ...(current.egress ?? {}), ...egressPatch }
+          if (egress.enabled === true && String(egress.url ?? '') === '') {
+            return send(400, { error: 'the outlet needs a subscription or proxy URL' })
+          }
+          next.egress = egress
+        }
         deps.settings.update(next)
         deps.settings.flush()
         await deps.syncForward()
         await deps.syncRelay()
-        return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo()) })
+        await deps.syncEgress()
+        return send(200, { ok: true, settings: publicSettings(deps.settings.get(), deps.forwardInfo(), deps.egressInfo()) })
       }
       if (method === 'POST' && routePath === '/refresh') {
         await deps.refreshCatalog({ probe: true, force: true })
@@ -1494,6 +1793,12 @@ function createApiRoutes(deps) {
       }
       if (method === 'POST' && routePath === '/forward/lan/rotate') {
         return send(200, { key: deps.rotateLanKey() })
+      }
+      // The subscription/proxy URL is a credential, so it lives outside every
+      // routine payload and leaves the process only when the settings page asks
+      // for it — the same shape as the forward keys above.
+      if (method === 'GET' && routePath === '/egress/url') {
+        return send(200, { url: deps.settings.get().egress?.url ?? '' })
       }
       if (method === 'POST' && routePath === '/bench') {
         const body = await readJson(req)
@@ -1543,7 +1848,7 @@ async function readJson(req) {
   }
 }
 
-function publicSettings(settings, forwardInfo) {
+function publicSettings(settings, forwardInfo, egressInfo) {
   return {
     enabled: settings.enabled !== false,
     exposeRegionModels: settings.exposeRegionModels !== false,
@@ -1571,6 +1876,27 @@ function publicSettings(settings, forwardInfo) {
         error: forwardInfo.lan?.error ?? '',
         addresses: forwardInfo.lan?.addresses ?? [],
       },
+    },
+    // A subscription link is not an endpoint, it is a bearer credential: the
+    // path of the URL *is* the token, which is why it is handled like the
+    // forward keys and not like `feedUrl`. Stored as given, but never echoed —
+    // `urlLabel` is the masked host for the panel, `hasUrl` says whether one is
+    // set at all, and the value itself is served only by `GET /egress/url`, on
+    // the settings page's own ask (see src/egress.js `outletLabel`).
+    egress: {
+      ...pick(settings.egress ?? {}, ['enabled', 'mode', 'mihomoPath']),
+      hasUrl: String(settings.egress?.url ?? '') !== '',
+      urlLabel: outletLabel(settings.egress?.url ?? ''),
+      outlet: egressInfo?.outlet ?? '',
+      running: egressInfo?.running === true,
+      active: egressInfo?.active === true,
+      // The node url-test is carrying traffic on, its last measured delay, and
+      // how long reaching the gateway took. All three are readings, not state.
+      node: egressInfo?.node ?? '',
+      nodeDelayMs: egressInfo?.nodeDelayMs ?? 0,
+      latencyMs: egressInfo?.latencyMs ?? 0,
+      latencyAt: egressInfo?.latencyAt ?? 0,
+      error: egressInfo?.error ?? '',
     },
   }
 }
@@ -1601,8 +1927,9 @@ function buildSummary(deps) {
       route: (state.membership[ROUTE_MAIN] ?? []).includes(entry.id) ? ROUTE_MAIN
         : (state.membership[ROUTE_REGION] ?? []).includes(entry.id) ? ROUTE_REGION : null,
     })),
-    settings: publicSettings(deps.settings.get(), forwardInfo),
+    settings: publicSettings(deps.settings.get(), forwardInfo, deps.egressInfo()),
     egress: forwardInfo.egress ?? snapshot.egress ?? null,
+    outlet: deps.egressInfo(),
     probedAt: snapshot.at ?? 0,
     announcementVersion: ANNOUNCEMENT_VERSION,
     version: deps.meta().version,

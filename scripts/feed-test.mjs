@@ -167,7 +167,7 @@ check('owner override is consulted first, {repo} expands', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-feed-'))
   const store = new AnnouncementFeed({ settings: () => ({ feedUrl: 'https://my.example/{repo}/feed.json' }), cacheFile: path.join(dir, 'f.json'), onArrival: () => {} })
   const sources = store.sources()
-  assert.equal(sources[0], 'https://my.example/zouyuxuan122/dsh-our-free-model/feed.json')
+  assert.equal(sources[0], 'https://my.example/Ebony-Vinyl/dsh-our-free-model/feed.json')
   assert.ok(DEFAULT_FEED_SOURCES.every(source => sources.includes(source)), 'defaults stay as fallback')
   fs.rmSync(dir, { recursive: true, force: true })
 })

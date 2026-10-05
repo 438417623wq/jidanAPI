@@ -16,6 +16,7 @@
 
 import { applyFingerprint, endpointFor, mintRequestId, sessionForConversation, wireFor } from './upstream.js'
 import { CODE, postStreamed } from './http.js'
+import { egressFetch } from './egress.js'
 
 /** Public-echo sources, tried in order; any one answering is enough. */
 const ECHO_SOURCES = [
@@ -180,7 +181,7 @@ export async function detectEgress({ signal, timeoutMs = 8000 } = {}) {
     const relayAbort = () => controller.abort()
     signal?.addEventListener('abort', relayAbort, { once: true })
     try {
-      const response = await fetch(source.url, { signal: controller.signal, redirect: 'error', headers: { accept: 'application/json' } })
+      const response = await egressFetch(source.url, { signal: controller.signal, redirect: 'error', headers: { accept: 'application/json' } })
       if (!response.ok) continue
       const payload = await response.json()
       const ip = source.pick(payload)

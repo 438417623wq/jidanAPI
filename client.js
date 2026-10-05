@@ -68,8 +68,50 @@ window.__ModuleLoader__.load({
         'section.modelsHint': '名称与能力来自上游清单与公开能力表，可用性由本机出口实测得出。',
         'section.dash': '用量看板',
         'section.dashHint': '数据只写入本机，不会上传。',
+        'pool.title': '号池',
+        'pool.hint': '容量与实时负载 · 判定来自网关进程',
+        'pool.levelOk': '畅通',
+        'pool.levelBusy': '繁忙',
+        'pool.levelOver': '过载',
+        'pool.capacity': '号池容量',
+        'pool.reach': '容量占用',
+        'pool.formula': 'Star {stars} × 1.5',
+        'pool.configured': '按实际配号数',
+        'pool.active': '24h 活跃',
+        'pool.live': '进行中',
+        'pool.starLine': '每 1 个 Star，号池 +1.5',
+        'pool.starCta': '去 Star',
+        'pool.ariaPool': '号池容量占用',
+        'pool.unavailable': '号池数据暂不可用 · {reason}',
+        'pool.reasonNoLane': '本机没有解锁协付车道',
+        'pool.reasonGateway': '网关应答异常',
+        'pool.reasonMalformed': '网关数据异常',
+        'pool.reasonUnreachable': '网关暂不可达',
+        'pool.reasonUnknown': '原因未知',
+        'pool.capacityUnknown': 'Star 数据暂不可用',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
+        'section.egress': '出口代理（订阅分流）',
+        'section.egressHint': '把推理与探测请求从代理出口发出，缓解按 IP 的频率限制。',
+        'egress.enabled': '启用出口',
+        'egress.modeSubscription': '订阅模式（本地 mihomo 自动测速分流）',
+        'egress.url': '订阅 / 代理 URL',
+        'egress.urlNew': '替换订阅地址',
+        'egress.urlPlaceholder': '粘贴新的订阅 / 代理地址（留空则保持当前不变）',
+        'egress.urlNone': '未设置',
+        'egress.urlClear': '清除',
+        'egress.urlClearWarn': '清除本机保存的订阅 / 代理地址，并关闭出口',
+        'egress.mihomoPath': 'mihomo 路径',
+        'egress.mihomoHint': '订阅模式留空则自动查找本机 mihomo（如 Clash Verge）。',
+        'egress.apply': '应用',
+        'egress.active': '出口生效中',
+        'egress.inactive': '未启用',
+        'egress.outlet': '当前出口',
+        'egress.node': '当前最佳节点',
+        'egress.latency': '访问 opencode',
+        'egress.measuring': '测量中…',
+        'egress.direct': '关闭时请求直连发出；订阅地址按密钥对待——只存在本机设置里，不随常规接口数据下发，仅点「显示」时读取，面板默认打码。',
+        'egress.error': '出口启动失败：{message}',
         'section.prefs': '插件设置',
         'section.prefsHint': '改动在下一次加载完全生效。',
         'heat.title': 'Token 热力图',
@@ -84,6 +126,16 @@ window.__ModuleLoader__.load({
         'stat.reasoning': '推理 Token',
         'col.reason': '推理',
         'col.output': '输出',
+        'last.title': '最近一回合',
+        'last.justNow': '刚刚',
+        'last.minAgo': '{n} 分钟前',
+        'last.hourAgo': '{n} 小时前',
+        'last.dayAgo': '{n} 天前',
+        'last.input': '输入',
+        'last.originChat': '对话',
+        'last.originHarness': '桌面',
+        'last.originForward': '转发',
+        'last.originBench': '测速',
         'speed.title': '速度',
         'speed.tps': '输出速度',
         'speed.ttft': '首帧延迟',
@@ -259,8 +311,50 @@ window.__ModuleLoader__.load({
         'section.dashHint': 'Written to this machine only; nothing is uploaded.',
         'section.forward': 'Local forward (OpenAI compatible)',
         'section.forwardHint': 'Let other local tools reach these models through one base URL.',
+        'section.egress': 'Egress outlet (subscription routing)',
+        'section.egressHint': 'Send inference and probe traffic through a proxy outlet to ease per-IP rate limits.',
+        'egress.enabled': 'Enable outlet',
+        'egress.modeSubscription': 'Subscription mode (local mihomo picks the fastest node)',
+        'egress.url': 'Subscription / proxy URL',
+        'egress.urlNew': 'Replace the address',
+        'egress.urlPlaceholder': 'Paste a new subscription / proxy URL (leave empty to keep the current one)',
+        'egress.urlNone': 'not set',
+        'egress.urlClear': 'Clear',
+        'egress.urlClearWarn': 'Clear the stored subscription / proxy address and turn the outlet off',
+        'egress.mihomoPath': 'mihomo path',
+        'egress.mihomoHint': 'Leave empty in subscription mode to auto-locate a local mihomo (e.g. Clash Verge).',
+        'egress.apply': 'Apply',
+        'egress.active': 'Outlet active',
+        'egress.inactive': 'Not enabled',
+        'egress.outlet': 'Current outlet',
+        'egress.node': 'Best node',
+        'egress.latency': 'opencode access',
+        'egress.measuring': 'measuring…',
+        'egress.direct': 'While off, requests go direct; the address is treated as a credential — kept in this machine\'s settings only, never sent down with the regular API payloads, readable only through the reveal button, masked here by default.',
+        'egress.error': 'The outlet failed to start: {message}',
         'section.prefs': 'Plugin settings',
         'section.prefsHint': 'Changes take full effect on the next load.',
+        'pool.title': 'Account pool',
+        'pool.hint': 'Capacity & live pressure · verdict from the gateway process',
+        'pool.levelOk': 'Healthy',
+        'pool.levelBusy': 'Busy',
+        'pool.levelOver': 'Overloaded',
+        'pool.capacity': 'Pool capacity',
+        'pool.reach': 'Capacity in use',
+        'pool.formula': '{stars} stars × 1.5',
+        'pool.configured': 'configured count',
+        'pool.active': '24h active',
+        'pool.live': 'in flight',
+        'pool.starLine': 'Every star adds 1.5 accounts',
+        'pool.starCta': 'Star on GitHub',
+        'pool.ariaPool': 'Pool capacity in use',
+        'pool.unavailable': 'Pool data unavailable · {reason}',
+        'pool.reasonNoLane': 'no co-paid lane unlocked on this host',
+        'pool.reasonGateway': 'gateway answered an error',
+        'pool.reasonMalformed': 'gateway data malformed',
+        'pool.reasonUnreachable': 'gateway unreachable',
+        'pool.reasonUnknown': 'unknown cause',
+        'pool.capacityUnknown': 'star data unavailable',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -273,6 +367,16 @@ window.__ModuleLoader__.load({
         'stat.reasoning': 'Reasoning tokens',
         'col.reason': 'reason',
         'col.output': 'output',
+        'last.title': 'Last turn',
+        'last.justNow': 'just now',
+        'last.minAgo': '{n} min ago',
+        'last.hourAgo': '{n} h ago',
+        'last.dayAgo': '{n} d ago',
+        'last.input': 'input',
+        'last.originChat': 'chat',
+        'last.originHarness': 'desktop',
+        'last.originForward': 'forward',
+        'last.originBench': 'bench',
         'speed.title': 'Speed',
         'speed.tps': 'Output speed',
         'speed.ttft': 'First frame',
@@ -576,10 +680,61 @@ window.__ModuleLoader__.load({
 .ofm_modalbody p{margin:0 0 6px}
 .ofm_modalfoot{display:flex;justify-content:flex-end;gap:8px;padding:12px 20px;border-top:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-1)}
 @media (max-width:720px){.ofm_sec_hint{margin-left:0;width:100%}.ofm_pills{margin-left:0;width:100%}}
+.ofm_pool{display:flex;flex-direction:column;gap:14px}
+.ofm_poolrow{display:flex;gap:22px;align-items:stretch;flex-wrap:wrap}
+.ofm_poolside{flex:1;min-width:300px;display:flex;flex-direction:column;gap:12px;justify-content:center}
+.ofm_pooltop{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.ofm_poolbadge{display:inline-flex;align-items:center;gap:8px;padding:5px 13px;border-radius:999px;border:1px solid var(--dsw-alias-border-l1);background:var(--dsw-alias-bg-layer-2);font-size:12.5px;font-weight:650;white-space:nowrap}
+.ofm_pooldot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--dsw-alias-label-tertiary)}
+.ofm_poolbadge.ok{color:var(--dsw-alias-state-success-primary)}
+.ofm_poolbadge.ok .ofm_pooldot{background:var(--dsw-alias-state-success-primary)}
+.ofm_poolbadge.busy{color:var(--dsw-alias-state-warning-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-warning-primary) 40%,transparent)}
+.ofm_poolbadge.busy .ofm_pooldot{background:var(--dsw-alias-state-warning-primary);animation:ofmpulse 1.4s ease-in-out infinite}
+.ofm_poolbadge.over{color:var(--dsw-alias-state-error-primary);border-color:color-mix(in srgb,var(--dsw-alias-state-error-primary) 45%,transparent)}
+.ofm_poolbadge.over .ofm_pooldot{background:var(--dsw-alias-state-error-primary);animation:ofmpulse .8s ease-in-out infinite}
+@keyframes ofmpulse{50%{opacity:.3}}
+.ofm_poolstats{display:flex;gap:26px;flex-wrap:wrap}
+.ofm_poolstats .ofm_stat b{font-size:19px}
+.ofm_poolstats .ofm_stat.hot b{color:var(--dsw-alias-state-error-primary)}
+.ofm_poolmeta{display:flex;gap:8px 18px;align-items:baseline;flex-wrap:wrap;justify-content:space-between}
+.ofm_starbtn{display:inline-flex;gap:6px;align-items:center;padding:6px 13px;border-radius:999px;border:1px solid var(--dsw-alias-state-business-primary);color:var(--dsw-alias-state-business-primary);text-decoration:none;font-weight:600;font-size:12.5px;transition:background .2s,color .2s;white-space:nowrap}
+.ofm_starbtn:hover{background:var(--dsw-alias-state-business-primary);color:#fff}
+.ofm_tank{position:relative;width:206px;height:128px;border-radius:16px;overflow:hidden;flex:none;background:linear-gradient(180deg,rgba(127,166,255,.10),rgba(127,166,255,.03));box-shadow:inset 0 0 0 1px var(--dsw-alias-border-l1)}
+.ofm_tankwater{position:absolute;left:0;right:0;bottom:0;height:var(--lvl,0%);transition:height 1.4s cubic-bezier(.22,.61,.36,1)}
+.ofm_tank.ok .ofm_tankwater{background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-state-business-primary) 72%,transparent),var(--dsw-alias-state-business-primary))}
+.ofm_tank.busy .ofm_tankwater{background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-state-warning-primary) 72%,transparent),var(--dsw-alias-state-warning-primary))}
+.ofm_tank.over .ofm_tankwater{background:linear-gradient(180deg,color-mix(in srgb,var(--dsw-alias-state-error-primary) 72%,transparent),var(--dsw-alias-state-error-primary))}
+.ofm_tankdeep{position:absolute;inset:0;overflow:hidden}
+.ofm_wave{position:absolute;left:0;top:-6px;width:200%;height:7px;background:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 8' preserveAspectRatio='none'%3E%3Cpath d='M0 4 Q15 0 30 4 T60 4 T90 4 T120 4 V8 H0Z' fill='rgba(255,255,255,.45)'/%3E%3C/svg%3E") repeat-x;background-size:60px 7px;animation:ofmwave 5.5s linear infinite}
+.ofm_wave.w2{top:-4px;opacity:.45;animation-duration:8.5s;animation-direction:reverse}
+@keyframes ofmwave{to{transform:translateX(60px)}}
+.ofm_bubble{position:absolute;bottom:-8px;width:5px;height:5px;border-radius:50%;background:rgba(255,255,255,.5);opacity:0;animation:ofmbub 7s ease-in infinite}
+.ofm_bubble.b1{left:14%;animation-delay:0s}
+.ofm_bubble.b2{left:32%;width:3px;height:3px;animation-delay:2.2s;animation-duration:9s}
+.ofm_bubble.b3{left:55%;animation-delay:4.1s}
+.ofm_bubble.b4{left:71%;width:7px;height:7px;animation-delay:1.3s;animation-duration:8s}
+.ofm_bubble.b5{left:86%;width:4px;height:4px;animation-delay:5.4s;animation-duration:10s}
+@keyframes ofmbub{0%{transform:translateY(0);opacity:0}12%{opacity:.75}100%{transform:translateY(-136px);opacity:0}}
+.ofm_fish{position:absolute;left:-34px;width:26px;height:13px;animation:ofmswim 12s linear infinite;will-change:transform}
+.ofm_fish.f1{bottom:14px}
+.ofm_fish.f2{bottom:44px;animation-duration:16s;animation-delay:-7s}
+.ofm_fish.f2 svg{transform:scaleX(-1)}
+.ofm_fish.f3{bottom:68px;width:19px;height:10px;animation-duration:9.5s;animation-delay:-3.5s}
+.ofm_fish svg{display:block;width:100%;height:100%;fill:rgba(255,255,255,.82)}
+@keyframes ofmswim{0%{transform:translateX(0)}100%{transform:translateX(270px)}}
+.ofm_tankglass{position:absolute;inset:0;pointer-events:none;border-radius:16px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14),inset 0 16px 30px rgba(255,255,255,.05),inset 0 -10px 22px rgba(0,0,0,.07)}
+@media (prefers-reduced-motion:reduce){.ofm_pooldot,.ofm_wave,.ofm_bubble,.ofm_fish{animation:none}}
 `
 
     // ── helpers ───────────────────────────────────────────────────────────────
-    const API = '/api/our-free-model'
+    // 用页面 base 解析，而不是 origin-absolute 的「/api/...」：DSH 挂在反向代理
+    // 子路径下（https://<host>/<prefix>/）时，前导斜杠会把 <prefix> 丢掉，请求
+    // 直接打到站点根被前置网关 404，设置面板报「无法连接插件后端」（#54）。
+    // 相对路径随页面 base 走，根路径部署下与原值完全一致。解析不了（无 document
+    // 的宿主、非常规 base）就退回根路径原值——行为不比修复前差。
+    const API = (() => {
+      try { return new URL('api/our-free-model', document.baseURI).pathname } catch { return '/api/our-free-model' }
+    })()
     const SEASON = ['#4C8DFF', '#3ECFA0', '#F2A65A', '#E36AA6', '#8B7BF0', '#39B8C4', '#D9743E', '#7BB24A']
 
     async function api(path, options) {
@@ -1108,10 +1263,106 @@ window.__ModuleLoader__.load({
     }
 
     // ── dashboard ─────────────────────────────────────────────────────────────
+    // ── pool panel (co-paid lane capacity & live pressure) ────────────────────
+    // Numbers come from the gateway through the plugin backend (/pool), which
+    // is the only place the sealed gateway URL exists. All of them are real:
+    // capacity is the operator's actual provisioning rule (stars × 1.5, or a
+    // configured count), and the load verdict — 畅通 / 繁忙 / 过载 — is computed
+    // by the gateway process itself from its in-flight streams and event-loop
+    // saturation, so the panel and the server can never disagree about the
+    // color. The panel renders nothing at all when the host has no lane or the
+    // gateway is dark — a gauge that lies would be worse than no gauge.
+    const POOL_REPO_URL = 'https://github.com/Ebony-Vinyl/dsh-our-free-model'
+    const FISH_PATH = 'M1 7c2.5-3.5 7-5 11-3.2L18.5 1v12L12 10.2C8 12 3.5 10.5 1 7zm16.4 0l5.1-3.4v6.8L17.4 7zM8.4 5.6a1 1 0 11-2 0 1 1 0 012 0z'
+    function PoolPanel(props) {
+      const { t } = props
+      const [pool, setPool] = useState(undefined)
+      const [poolError, setPoolError] = useState('')
+      useEffect(() => {
+        let alive = true
+        // The gateway can be slow under exactly the load this panel reports;
+        // the 8s api() default would abort while the backend is still waiting.
+        const load = () => api('/pool', { timeout: 25_000 })
+          .then(data => {
+            if (!alive) return
+            setPool(data?.pool != null ? data : null)
+            setPoolError('')
+          })
+          .catch(error => {
+            if (!alive) return
+            setPool(null)
+            // The backend tags the failure with a fixed reason code; map it to
+            // readable text instead of hiding the panel in silence.
+            const code = /\(([^)]+)\)\s*$/.exec(String(error?.message ?? ''))?.[1] ?? ''
+            setPoolError(code)
+          })
+        load()
+        const timer = setInterval(load, 30_000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [])
+      if (pool === undefined) return null
+      if (pool === null) {
+        const reasonText = ({ 'no-lane': t('pool.reasonNoLane'), 'gateway-status': t('pool.reasonGateway'), malformed: t('pool.reasonMalformed'), unreachable: t('pool.reasonUnreachable') })[poolError]
+          ?? (poolError !== '' ? poolError : t('pool.reasonUnknown'))
+        return h('p', { className: 'ofm_note' }, t('pool.unavailable').replace('{reason}', reasonText))
+      }
+      const active = Number.isFinite(pool.active24h) ? pool.active24h : null
+      const capacityKnown = Number.isFinite(pool.pool) && pool.pool > 0
+      const pct = capacityKnown && active !== null ? Math.max(0, Math.min(100, Math.round(100 * active / pool.pool))) : null
+      // A gateway build that predates the level verdict answers without one.
+      // The plugin then applies the same default thresholds locally, so an
+      // upgraded panel never reads a calm color off an unupgraded server —
+      // and once the gateway does send its verdict, that one wins.
+      const level = pool.level === 'over' || (pool.level === undefined && pool.inflight >= 80) ? 'over'
+        : pool.level === 'busy' || (pool.level === undefined && pool.inflight >= 30) ? 'busy' : 'ok'
+      const levelText = level === 'over' ? t('pool.levelOver') : level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
+      // Capacity may be unknown (the gateway's own star fetch can be rate
+      // limited): the tank then hides — an empty tank would lie — while the
+      // real in-flight and 24h counters stay on screen.
+      const capacity = pool.poolSource === 'formula'
+        ? t('pool.formula').replace('{stars}', String(pool.stars ?? '—'))
+        : pool.poolSource === 'configured' ? t('pool.configured') : t('pool.capacityUnknown')
+      const fish = ['f1', 'f2', 'f3'].map(name => h('i', { className: `ofm_fish ${name}`, key: name },
+        h('svg', { viewBox: '0 0 24 14' }, h('path', { d: FISH_PATH }))))
+      const bubbles = ['b1', 'b2', 'b3', 'b4', 'b5'].map(name => h('i', { className: `ofm_bubble ${name}`, key: name }))
+      const tank = pct === null ? null : h('div', { className: `ofm_tank ${level}`, role: 'img', 'aria-label': `${t('pool.ariaPool')} ${pct}%`, style: { '--lvl': `${pct}%` } },
+        h('div', { className: 'ofm_tankwater' },
+          h('div', { className: 'ofm_tankdeep' }, ...bubbles, ...fish),
+          h('i', { className: 'ofm_wave w1' }),
+          h('i', { className: 'ofm_wave w2' })),
+        h('div', { className: 'ofm_tankglass' }))
+      return h('div', { className: 'ofm_pool' },
+        h('div', { className: 'ofm_poolrow' },
+          tank,
+          h('div', { className: 'ofm_poolside' },
+            h('div', { className: 'ofm_pooltop' },
+              h('span', { className: `ofm_poolbadge ${level}` },
+                h('span', { className: 'ofm_pooldot' }),
+                `${levelText} · ${t('pool.live')} ${pool.inflight}`),
+              h('a', { className: 'ofm_starbtn', href: POOL_REPO_URL, target: '_blank', rel: 'noreferrer' }, `⭐ ${t('pool.starCta')}`)),
+            h('div', { className: 'ofm_poolstats' },
+              h('div', { className: `ofm_stat${level === 'over' ? ' hot' : ''}` }, h('b', null, String(pool.inflight)), h('span', null, t('pool.live'))),
+              h('div', { className: 'ofm_stat' }, h('b', null, active === null ? '—' : String(active)), h('span', null, t('pool.active'))),
+              h('div', { className: 'ofm_stat' }, h('b', null, capacityKnown ? String(pool.pool) : '—'), h('span', null, t('pool.capacity')))),
+            h('div', { className: 'ofm_poolmeta' },
+              pct === null ? null : h('span', { className: 'ofm_note' }, `${t('pool.reach')} ${pct}%`),
+              h('span', { className: 'ofm_note' }, `${capacity} · ${t('pool.starLine')}`)))))
+    }
+
     function Dashboard(props) {
       const { stats, t } = props
       const days = useMemo(() => [...stats.days].sort((a, b) => a.day.localeCompare(b.day)), [stats.days])
       const recent = [...(stats.samples ?? [])].slice(-40)
+      // 「最近一回合」跟着一个轻量轮询走（#26）：看板其余部分仍是页面加载时的
+      // 快照，这一行单独刷新，让「刚发完一条消息」的用户不用整页重载就能看到
+      // 这一回合的 token 去向。聊天窗属于宿主内核，插件无法在对话流里注入，
+      // 这是插件表面能做到的最接近实时的位置。
+      const [fresh, setFresh] = useState(null)
+      useEffect(() => {
+        let alive = true
+        const timer = setInterval(() => api('/stats').then(data => { if (alive) setFresh(data) }).catch(() => {}), 60_000)
+        return () => { alive = false; clearInterval(timer) }
+      }, [])
       // The host already dropped the windows it could not measure and took out of
       // the numerator the tokens it never streamed. Averaging per-call rates
       // instead let one 1 ms window publish 63 000 tok/s and carry the whole card
@@ -1169,10 +1420,34 @@ window.__ModuleLoader__.load({
           active.tps === null || active.tps === undefined ? null : ' · ',
           active.tps === null || active.tps === undefined ? null : `${active.tps} ${t('unit.tokPerSec')}`))
 
+      // 最近一回合（#26）：取最新一条调用样本，输入/输出 token、首帧、速度，
+      // 失败的调用也如实标出。数据源优先用轮询到的新快照，退回页面加载时的。
+      const lastSample = (fresh?.samples ?? stats.samples ?? []).slice(-1)[0] ?? null
+      const nameOfModel = id => models.find(m => m.model === id)?.name ?? id
+      const agoOf = at => {
+        const seconds = Math.max(0, Math.round((Date.now() - at) / 1000))
+        if (seconds < 60) return t('last.justNow')
+        if (seconds < 3600) return t('last.minAgo').replace('{n}', String(Math.floor(seconds / 60)))
+        if (seconds < 86400) return t('last.hourAgo').replace('{n}', String(Math.floor(seconds / 3600)))
+        return t('last.dayAgo').replace('{n}', String(Math.floor(seconds / 86400)))
+      }
+      const originOf = value => ({ chat: t('last.originChat'), harness: t('last.originHarness'), forward: t('last.originForward'), bench: t('last.originBench') })[value] ?? String(value ?? '')
+      const lastTurnStrip = lastSample === null ? null : h('div',
+        { className: 'ofm_row', style: { flexWrap: 'wrap', gap: 14, alignItems: 'baseline', paddingBottom: 10, marginBottom: 12, borderBottom: '1px solid var(--dsw-alias-border-l1)' } },
+        h('b', { style: { fontSize: 13 } }, t('last.title')),
+        h('b', { style: { fontSize: 13 } }, nameOfModel(lastSample.model)),
+        h('span', { className: 'ofm_note' },
+          `${originOf(lastSample.origin)} · ${t('last.input')} ${kilo(lastSample.input)} · ${t('col.output')} ${kilo(lastSample.output)} tok`
+          + (lastSample.ttftMs != null ? ` · ${t('speed.ttft')} ${Math.round(lastSample.ttftMs)} ${t('unit.ms')}` : '')
+          + (lastSample.tps != null ? ` · ${t('speed.tps')} ${Math.round(lastSample.tps)} ${t('unit.tokPerSec')}` : '')
+          + (lastSample.ok === false ? ` · ${t('speed.failed')}` : '')),
+        h('span', { className: 'ofm_note', style: { marginLeft: 'auto' } }, agoOf(lastSample.at)))
+
       const speed = h(Panel, { title: t('speed.title'), hint: recent.length + ' ' + t('speed.calls') },
         recent.length === 0
           ? h('p', { className: 'ofm_note' }, t('speed.none'))
           : h(Fragment, null,
+            lastTurnStrip,
             h('div', { className: 'ofm_row', style: { gap: 24 } },
               sparkCell(t('speed.tps'), streamed.map(s => s.tps), SEASON[0], value => Math.round(value) + ' ' + t('unit.tokPerSec'), t, weightedTps),
               sparkCell(t('speed.ttft'), latencies.map(s => s.ttftMs), SEASON[2], value => Math.round(value) + ' ' + t('unit.ms'), t),
@@ -1309,6 +1584,105 @@ window.__ModuleLoader__.load({
               h(Button, { kind: 'ghost', onClick: () => setLanShown(value => !value) }, lanShown ? t('forward.hide') : t('forward.show')),
               h(Button, { kind: 'ghost', onClick: () => doCopy('lanKey', lanKey) }, copied === 'lanKey' ? t('forward.copied') : t('forward.copy')),
               h(Button, { kind: 'ghost', title: t('forward.lanRotateWarn'), onClick: async () => { const payload = await post('/forward/lan/rotate'); setLanKey(payload.key ?? ''); setLanShown(true) } }, t('forward.rotate')))) : null))
+    }
+
+    // ── egress outlet ─────────────────────────────────────────────────────────
+    // Two ways out: a Clash subscription load-balanced by a spawned mihomo, or
+    // one hand-written http/https/socks5 URL. Until this is on AND started,
+    // egressFetch sends every request direct — nothing here is load-bearing for
+    // plain use. The address is a credential, so it never rides along in the
+    // settings payload: this panel shows the masked host and pulls the value
+    // itself (`/egress/url`) only when the owner asks to see or copy it.
+    function Egress(props) {
+      const { settings, t, onApply, busy } = props
+      const [draft, setDraft] = useState(settings.egress ?? {})
+      useEffect(() => setDraft(settings.egress ?? {}), [settings.egress?.enabled, settings.egress?.mode, settings.egress?.urlLabel, settings.egress?.hasUrl, settings.egress?.active, settings.egress?.error])
+      const [urlShown, setUrlShown] = useState(false)
+      const [urlValue, setUrlValue] = useState('')
+      const [copied, setCopied] = useState('')
+      const readUrl = () => api('/egress/url').then(payload => String(payload?.url ?? '')).catch(() => '')
+      // Which node url-test is carrying traffic on, and what the last gateway
+      // round trip cost. mihomo re-ranks on its own schedule, so while the outlet
+      // is on this polls instead of trusting the snapshot that shipped with the
+      // settings. `/outlet` reads the controller, so it is only worth calling
+      // when an outlet is actually running.
+      const live = useAsync(() => api('/outlet'), [settings.egress?.enabled, settings.egress?.active])
+      const reloadOutlet = live.reload
+      const running = settings.egress?.active === true
+      useEffect(() => {
+        if (!running) return undefined
+        const timer = setInterval(() => reloadOutlet(), 15_000)
+        return () => clearInterval(timer)
+      }, [running, reloadOutlet])
+      const status = running && live.data ? live.data : draft
+      const node = typeof status?.node === 'string' ? status.node : ''
+      const nodeDelayMs = Number(status?.nodeDelayMs ?? 0)
+      const latencyMs = Number(status?.latencyMs ?? 0)
+      const subscription = draft?.mode !== 'client'
+      const statusLine = text => h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, text)
+      // The stored address is never in the payload this panel was rendered
+      // from, so "see it" and "copy it" both cost one on-demand fetch, and the
+      // masked form is all this page holds the rest of the time.
+      const revealUrl = async () => {
+        if (urlShown) { setUrlShown(false); return }
+        setUrlValue(await readUrl())
+        setUrlShown(true)
+      }
+      const copyUrl = async () => {
+        const value = await readUrl()
+        if (value === '') return
+        copy(value, ok => {
+          if (!ok) return
+          setCopied('egressUrl')
+          setTimeout(() => setCopied(''), 1600)
+        })
+      }
+      const urlMask = draft?.hasUrl === true ? `${draft?.urlLabel ?? ''}/…` : t('egress.urlNone')
+      const apply = () => {
+        const patch = { enabled: draft?.enabled === true, mode: subscription ? 'subscription' : 'client', mihomoPath: String(draft?.mihomoPath ?? '') }
+        // Empty means "keep the stored address": this panel never received it,
+        // so it has nothing to send back, and an empty string would read as
+        // "clear it" on the receiving end.
+        if (String(draft?.url ?? '') !== '') patch.url = String(draft.url)
+        onApply({ egress: patch })
+      }
+      return h(Panel, null,
+        h('div', { className: 'ofm_row' },
+          h(Switch, { checked: draft?.enabled === true, label: t('egress.enabled'), onChange: () => setDraft(c => ({ ...c, enabled: !(c?.enabled === true) })) }),
+          h('span', { className: 'ofm_pill' }, h('span', { className: `ofm_dot ${draft?.active === true ? 'ok' : draft?.error ? 'err' : ''}` }), draft?.active === true ? t('egress.active') : t('egress.inactive'))),
+        h('div', { className: 'ofm_row' },
+          h(Switch, { checked: subscription, label: t('egress.modeSubscription'), onChange: () => setDraft(c => ({ ...c, mode: subscription ? 'client' : 'subscription' })) })),
+        h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.url')),
+          h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, letterSpacing: urlShown ? 0 : 1 } },
+            urlShown ? (urlValue === '' ? t('egress.urlNone') : urlValue) : urlMask),
+          h(Button, { kind: 'ghost', onClick: revealUrl }, urlShown ? t('forward.hide') : t('forward.show')),
+          h(Button, { kind: 'ghost', onClick: copyUrl }, copied === 'egressUrl' ? t('forward.copied') : t('forward.copy')),
+          // Deleting the address is still a thing the owner may want, and the
+          // panel cannot express it by sending back a field it never held — so
+          // it says so outright, and the outlet goes down with the credential.
+          h(Button, { kind: 'ghost', title: t('egress.urlClearWarn'), disabled: draft?.hasUrl !== true || busy, onClick: () => {
+            setUrlShown(false)
+            setUrlValue('')
+            onApply({ egress: { enabled: false, mode: subscription ? 'subscription' : 'client', mihomoPath: String(draft?.mihomoPath ?? ''), url: '' } })
+          } }, t('egress.urlClear'))),
+        h('div', { className: 'ofm_row' },
+          field(t('egress.urlNew'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.url ?? '', placeholder: t('egress.urlPlaceholder'), onChange: e => setDraft(c => ({ ...c, url: e.target.value })) })),
+          h(Button, { kind: 'primary', disabled: busy, onClick: apply }, t('egress.apply'))),
+        subscription ? h('div', { className: 'ofm_row' },
+          field(t('egress.mihomoPath'), h('input', { className: 'ofm_input', style: { flex: 1, minWidth: 260 }, value: draft?.mihomoPath ?? '', placeholder: 'auto', onChange: e => setDraft(c => ({ ...c, mihomoPath: e.target.value })) })),
+          h('span', { className: 'ofm_note' }, t('egress.mihomoHint'))) : null,
+        draft?.error ? h('div', { className: 'ofm_callout ofm_error' }, t('egress.error').replace('{message}', draft.error)) : null,
+        h('div', { className: 'ofm_note' }, t('egress.direct')),
+        running ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.outlet')),
+          statusLine(`${draft.outlet ?? ''} · ${draft.mode ?? ''}`)) : null,
+        running ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.node')),
+          statusLine(node === '' ? t('egress.measuring') : nodeDelayMs > 0 ? `${node} · ${nodeDelayMs}ms` : node)) : null,
+        running ? h('div', { className: 'ofm_row' },
+          h('span', { className: 'ofm_note' }, t('egress.latency')),
+          statusLine(latencyMs > 0 ? `${(latencyMs / 1000).toFixed(2)}s` : t('egress.measuring'))) : null)
     }
 
     const field = (label, control) => h('label', { className: 'ofm_field' }, h('span', null, label), control)
@@ -1539,12 +1913,14 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ofm_actions' },
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/refresh', undefined, 600_000); summary.reload(); stats.reload() } finally { setBusy(false) } } }, summary.status === 'loading' ? t('probing') : t('refresh')),
             h(Button, { disabled: busy, onClick: async () => { setBusy(true); try { await post('/reprobe', undefined, 600_000); summary.reload() } finally { setBusy(false) } } }, t('reprobe')))),
+        h(Section, { title: t('pool.title'), hint: t('pool.hint') }, h(PoolPanel, { t: tagged })),
         h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t: tagged, onBench: bench, benches })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t: tagged })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t: tagged })
             : h('p', { className: 'ofm_note' }, t('loading'))),
         h(Section, { title: t('section.forward'), hint: t('section.forwardHint') }, h(Forward, { settings: data.settings, t: tagged, onApply: apply, busy })),
+        h(Section, { title: t('section.egress'), hint: t('section.egressHint') }, h(Egress, { settings: data.settings, t: tagged, onApply: apply, busy })),
         h(Section, { title: t('section.prefs'), hint: t('section.prefsHint') }, h(Preferences, { summary: data, t: tagged, onApply: apply, busy })),
         h(Section, { title: t('section.upgrade'), hint: t('section.upgradeHint') }, h(UpgradePanel, { t: tagged, settings: data.settings, onApply: apply, busy })))
     }

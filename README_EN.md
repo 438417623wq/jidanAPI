@@ -10,17 +10,20 @@
   <img alt="build step" src="https://img.shields.io/badge/build%20step-none-7da1de?style=flat-square">
   <img alt="dsh kernels" src="https://img.shields.io/badge/dsh-0.1.5--0.1.7--rc.2-2f6f4f?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-f0a441?style=flat-square">
+  <br>
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #7 JavaScript Repository Of The Day" src="https://trendshift.io/api/badge/trendshift/repositories/261203/daily?language=JavaScript"></a>
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #12 JavaScript Repository Of The Week" src="https://trendshift.io/api/badge/trendshift/repositories/261203/weekly?language=JavaScript"></a>
 
 </div>
 
 <div align="center">
 
 > All you do is install this plugin in dsh — no login, no sign-up, no API key, no other
-> step of any kind. The frontier models are simply there, Muse Spark 1.3 and MiMo V2.6
-> among them. Completely free, with no usage cap.
+> step of any kind. The frontier models are simply there, DeepSeek V4.1 Flash and
+> Kimi K3 among them. Completely free, with no usage cap.
 >
 > 你只需在 dsh 里装上这个插件，无需登录、注册、填 API Key 或任何其它操作，就能用上包括
-> Muse Spark 1.3、MiMo V2.6 在内的前沿模型——完全免费，不限量。
+> DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型——完全免费，不限量。
 >
 > The roster follows upstream, availability is measured from **your own** network
 > egress, the thinking-effort control sends a real budget instead of a prompt hint, and
@@ -209,6 +212,56 @@ already taken on a machine that runs something else); the panel then shows the
 port and the network address it settled on. While it is on, anyone who can reach
 this machine can spend its free quota with that key — enable it only on a
 network you trust, and narrow the sources with a firewall if you can.
+
+**Send requests through a proxy outlet.** `Settings → Our Free Model → Egress
+proxy`. Optional and off by default — with it off, requests go direct. Two modes:
+
+- **Subscription mode**: paste a Clash/V2Ray subscription URL; the plugin spawns
+  mihomo locally (auto-detected — e.g. Clash Verge's `verge-mihomo.exe` — or set
+  the path yourself) with a built-in url-test group that re-measures every five
+  minutes and sends traffic to the fastest node, health-checking dead nodes out.
+  **The subscription URL is treated as a credential** — the path of a
+  subscription link *is* its token — so it lives at the same standard as the two
+  forward keys: kept in the local settings file, never sent with a request, and
+  never echoed in a settings payload. The panel shows the masked host only
+  (`https://host/…`); "Show" and "Copy" fetch the value from the settings page
+  itself (`GET /egress/url`), an empty input means "keep the stored address", and
+  "Clear" removes it and takes the outlet down with it.
+- **Single-proxy mode**: type an `http://` / `https://` / `socks5://` /
+  `socks5h://` proxy address and every handled request dials through it.
+
+**At rest.** mihomo has to read that address out of a config file (the plugin
+writes a throwaway `mihomo.yaml` into its data directory and spawns mihomo from
+there), so the on-disk copy stays plain text. What this treatment removes is the
+payload echo, the log line and the shoulder — not another process on the same
+machine.
+
+Only three kinds of traffic are taken over: model inference, the model listing
+fetch, and the egress IP probe; announcements, upgrades, and the EAC lane stay
+direct so the subscription identity never mixes into the release channel.
+
+**Scope.** The outlet serves this plugin's opencode traffic and nothing else on
+this machine. The mihomo it spawns runs from a throwaway config of the plugin's
+own: `bind-address: 127.0.0.1` with `allow-lan: false`, no `tun:` section, no
+system proxy, no system-level proxy registration and no virtual adapter — the
+listener is a temporary free loopback port. Your browser, shell tools and other
+IDE extensions never go through it; only requests this plugin sends to the
+opencode gateway are rerouted. Single-proxy mode works the same way: the rewrite
+happens inside the plugin.
+
+**Live status.** While the outlet is on, the settings page adds three lines below
+it: the current outlet (masked host · mode), the **best node** (the node url-test
+picked, with the delay that won it the rank), and **opencode access** (the last
+model-listing round trip, in seconds). Node and latency are readings, refreshed
+every 15 seconds by asking mihomo's own controller; when a reading is missing the
+line says "measuring…" and outbound traffic is unaffected.
+
+**What it can and cannot buy you**: per-IP rate limits and region gates move
+with the outlet; per-session rate limits and fingerprint gates do not care
+which outlet you use. Toggling the outlet re-probes on its own — a cold outlet
+needs a few seconds before it carries traffic, and the plugin waits for the new
+exit to answer before regrouping, so region-gated models follow the new exit.
+Reprobe (below) does the same on demand.
 
 **Re-check geography.** `重新探测可用性` (Reprobe) re-runs availability against
 your current exit. Toggling a VPN and re-probing moves region-gated models
