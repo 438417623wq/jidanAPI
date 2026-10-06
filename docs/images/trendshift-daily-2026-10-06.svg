@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="118" viewBox="0 0 300 118" role="img" aria-labelledby="title desc">
+  <title id="title">OFM · Trendshift JavaScript 日榜第 4 名</title>
+  <desc id="desc">自制榜单记录卡片。2026 年 10 月 6 日记录，静态历史名次。</desc>
+  <rect x="0.5" y="0.5" width="299" height="117" rx="16" fill="#ffffff" stroke="#dce2ec"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif">
+    <circle cx="24" cy="31" r="4" fill="#7950d8"/>
+    <text x="36" y="36" fill="#1f2937" font-size="16" font-weight="600">Trendshift</text>
+    <text x="20" y="65" fill="#1f2937" font-size="14">JavaScript</text>
+    <text x="20" y="87" fill="#606b7b" font-size="12">Daily Trending</text>
+    <text x="20" y="105" fill="#606b7b" font-size="11">Recorded · 2026-10-06</text>
+    <text x="231" y="73" fill="#7950d8" font-size="26" font-weight="600">#</text>
+    <text x="251" y="80" fill="#7950d8" font-size="48" font-weight="600">4</text>
+  </g>
+</svg>
