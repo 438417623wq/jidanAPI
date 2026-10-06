@@ -64,6 +64,28 @@ New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 
 - **GitHub 出网走 `node:https`，不是全局 fetch**——实测本机部署的服务器上 undici（全局 fetch）对 GitHub 一律 `UND_ERR_CONNECT_TIMEOUT`，而同一台机器 `node:https` 毫秒级拿到应答（403/404 都是 GitHub 的真实回复）。`auth-github.mjs` 里的 `nodeFetch` 就是为此存在，换服务器也不需要改配置；离线套件用注入的桩，不受影响。
 - 看板 `/stats-data` 的 `auth` 字段报告已授权 / 已知 / 待领取数量与强制开关状态。
 
+## ⚠️ 只能单实例运行（cluster / instances>1 会直接坏）
+
+网关是**单进程有状态**服务：签发的用户令牌索引、按 IP/按账号的限流与并发计数、
+看板统计、待领取的登录链接，全部活在进程内存里（`users.json` 只落用户表）。
+若以 **PM2 cluster 模式或多实例**（`instances: 2`）拉起，连接被轮询分发到多个
+各自持有一份内存的进程，症状是：
+
+- `/eac/auth/status` 的 `authorized` 在 true/false 之间来回跳——用户明明登录成功；
+- 新登录的令牌时灵时不灵；限流与并发上限实际翻倍；看板数字对不上。
+
+**正确姿势**（`pm2_configs/eac-gateway.config.js` 的出厂值即是）：
+`exec_mode: "fork"`、`instances: "1"`，并且 **`watch: false`**——网关每 30 秒把
+`stats.json` 写进自己的目录，开着 watch 等于让它不停重启自己。
+
+单进程足够：一条 SSE 流只是几个空闲 socket，几千并发也在一个事件循环的能力内。
+要提容量，调 `POOL_SIZE` / `RATE_LIMIT_*` / `CONCURRENCY_PER_IP`，不要加实例；
+将来若真要多进程，必须先把用户表与限流状态挪进共享存储，而不是改 PM2 配置了事。
+
+> 2026-10-06 实测教训：该项目曾被以 cluster×2 + watch:true 拉起，用户登录成功
+> 但状态在「已授权/未授权」间跳变（两个进程的用户表各自独立，令牌只发到了
+> 其中一个）。改回 fork×1 并 `pm2 delete + pm2 start` 后立即恢复。
+
 ## 部署
 
 三种方式任选其一（Cloudflare 与自建二选一即可，核心验签逻辑是同一份 `worker.js`）。
