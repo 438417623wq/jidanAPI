@@ -158,6 +158,23 @@ del "%DSH_HOME%\profiles\web\pnpm-lock.yaml"
 
 同时出现的 Ignoring broken lockfile 警告会随重建一同消失。
 
+**安装失败：`git ls-remote "git+ssh://git@github.com/..."`（插件市场自动安装）**
+
+插件市场（dsh-plugin-hub）对 git 源的自动安装会把 GitHub 地址交给 pnpm 解析，pnpm 再调用本机
+git 执行 `git ls-remote`。若本机 git 配置了 `insteadOf` 重写（常见于把 https 改写为 ssh 的
+`url."git+ssh://git@github.com/".insteadOf` 规则），或 SSH 密钥未配置，这一步会在下载任何插件
+文件之前失败。处理方式二选一：
+
+- 修正本机 git 配置（`git config --global --get-regexp insteadof` 查看重写规则），保证终端里
+  `git ls-remote https://github.com/Ebony-Vinyl/dsh-our-free-model.git` 能成功；
+- 改用本地安装：从 Releases 下载发布包解压后 `dsh plugin add <解压目录>`，绕开 git 解析。
+
+**安装失败：`profile "desktop" is managed exclusively by the Electron application`**
+
+这是宿主自身的保护，不是插件问题：桌面端（Electron）的 profile 只允许桌面应用自己管理，
+命令行 `dsh plugin add` 无法写入。请在桌面端的插件管理器（设置 → 插件）里完成安装或升级；
+命令行安装仅适用于纯 web profile（`dsh web`）。
+
 ## 使用说明
 
 **选择模型**：打开输入框的模型选择器，选择 Our Free Model 分组下的任意模型。选择结果按会话持久化。
