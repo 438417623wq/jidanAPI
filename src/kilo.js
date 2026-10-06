@@ -19,7 +19,7 @@
  * @module src/kilo.js
  */
 
-import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody } from './http.js'
+import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody, transportCause } from './http.js'
 import { egressFetch } from './egress.js'
 
 const LISTING_TIMEOUT_MS = 15000
@@ -60,7 +60,7 @@ export async function fetchKiloListing({ signal, timeoutMs = LISTING_TIMEOUT_MS 
     if (error instanceof UpstreamError) throw error
     if (callerAborted || signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
     if (error?.name === 'AbortError') throw new UpstreamError('model listing timed out', CODE.timeout)
-    throw new UpstreamError(`model listing failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`model listing failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)
@@ -90,7 +90,7 @@ export async function postKiloStreamed({ body, signal, onData, timeoutMs = TURN_
     })
   } catch (error) {
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
-    throw new UpstreamError(`model request failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`model request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
   // `Retry-After` is seconds on the wire and milliseconds in the classified

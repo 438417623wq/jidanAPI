@@ -1042,11 +1042,12 @@ window.__ModuleLoader__.load({
 @keyframes ofmbub{0%{transform:translateY(0);opacity:0}12%{opacity:.75}100%{transform:translateY(-136px);opacity:0}}
 .ofm_fish{position:absolute;left:-34px;width:26px;height:13px;animation:ofmswim 12s linear infinite;will-change:transform}
 .ofm_fish.f1{bottom:14px}
-.ofm_fish.f2{bottom:44px;animation-duration:16s;animation-delay:-7s}
-.ofm_fish.f2 svg{transform:scaleX(-1)}
+.ofm_fish.f1 svg,.ofm_fish.f3 svg{transform:scaleX(-1)}
+.ofm_fish.f2{bottom:44px;animation-duration:16s;animation-delay:-7s;animation-name:ofmswimrev}
 .ofm_fish.f3{bottom:68px;width:19px;height:10px;animation-duration:9.5s;animation-delay:-3.5s}
 .ofm_fish svg{display:block;width:100%;height:100%;fill:rgba(255,255,255,.82)}
 @keyframes ofmswim{0%{transform:translateX(0)}100%{transform:translateX(270px)}}
+@keyframes ofmswimrev{0%{transform:translateX(270px)}100%{transform:translateX(0)}}
 .ofm_tankglass{position:absolute;inset:0;pointer-events:none;border-radius:16px;box-shadow:inset 0 0 0 1px rgba(255,255,255,.14),inset 0 16px 30px rgba(255,255,255,.05),inset 0 -10px 22px rgba(0,0,0,.07)}
 @media (prefers-reduced-motion:reduce){.ofm_wave,.ofm_bubble,.ofm_fish,.ofm_tankrays{animation:none}}
 /* ── 三页外壳：极光底 · 毛玻璃导航 · 页过渡 ───────────────────────────────

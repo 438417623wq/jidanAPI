@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 312208,
-      "sha256": "f5fc16a3e56e7960c62139ebb39c89f4a4efb251062b08afaf96dcfbdcc01d69"
+      "size": 312335,
+      "sha256": "ee539389e9c9cc1ff423b02fa349410bb0098c7b7eeabe8f0f6ef185db20af3c"
     },
     {
       "path": "cordis.patch.yml",
@@ -79,8 +79,8 @@
     },
     {
       "path": "src/eac.js",
-      "size": 13227,
-      "sha256": "b998a8696517bbadd9cd85c886b2af0b1021eb6a95bb038d08566debd1d914ec"
+      "size": 13291,
+      "sha256": "7e27a0fe030b5a4fcf8dd2300dad82ebba4668f28e1f4088ccce57988cef740e"
     },
     {
       "path": "src/effort.js",
@@ -104,13 +104,13 @@
     },
     {
       "path": "src/http.js",
-      "size": 23461,
-      "sha256": "bc3d98ee0deeb565b98b4808ed13816a1aadc5471a62cff74dbe419685a4dd8b"
+      "size": 24912,
+      "sha256": "2afb523e410495c1af90105a1c2e9732a34fd306cf7b3829621836f48b866b83"
     },
     {
       "path": "src/kilo.js",
-      "size": 7681,
-      "sha256": "8e6ad19c81fd8d6bdf53c72fcbd6099c2371f53d1801e7b62693740e59d32cba"
+      "size": 7745,
+      "sha256": "8ece253a9ae295973103e72473b6812c2024fa26f48830295cdc7cfb56a22018"
     },
     {
       "path": "src/messages.js",

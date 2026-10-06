@@ -53,6 +53,34 @@ export class UpstreamError extends Error {
   }
 }
 
+/**
+ * The socket-level facts behind a transport failure, walked off the error's
+ * `cause` chain.
+ *
+ * Node's fetch collapses every DNS, TCP and TLS refusal into `TypeError: fetch
+ * failed`; the reason a user could act on — the ENOTFOUND, the ECONNRESET, the
+ * certificate alert — lives one or two `cause` links deeper and used to be
+ * dropped, leaving the settings page's probe reporting an unexplainable "fetch
+ * failed" (issue #79). The chain is walked at most three links deep, the codes
+ * and first lines are deduplicated, and anything found is appended by the
+ * transport wrap sites so "fetch failed" reads "fetch failed — getaddrinfo
+ * ENOTFOUND opencode.ai (ENOTFOUND)" instead.
+ */
+export function transportCause(error) {
+  const parts = []
+  let node = error
+  for (let depth = 0; depth < 3 && node?.cause !== undefined; depth += 1) {
+    node = node.cause
+    if (node === null || typeof node !== 'object') break
+    const code = typeof node.code === 'string' && node.code !== '' ? node.code : ''
+    const line = typeof node.message === 'string' ? node.message.split('\n')[0].trim() : ''
+    if (line === '' && code === '') continue
+    const fact = line === '' || line.includes(code) ? (line === '' ? code : line) : `${line} (${code})`
+    if (!parts.includes(fact)) parts.push(fact)
+  }
+  return parts.length > 0 ? ` — ${parts.join('; ')}` : ''
+}
+
 /** Turn a gateway JSON error envelope into a classified failure. */
 export function classifyFailure(status, payload, retryAfterMs) {
   const error = payload?.error ?? payload ?? {}
@@ -210,7 +238,7 @@ export async function readHead(stream, limit, { signal, timeoutMs }) {
 export function classifyStreamFailure(error, signal) {
   if (error instanceof UpstreamError) return error
   if (signal?.aborted === true || error?.name === 'AbortError') return new UpstreamError('request aborted', CODE.aborted)
-  return new UpstreamError(`our-free-model: upstream stream read failed: ${error?.message ?? error}`, CODE.transport)
+  return new UpstreamError(`our-free-model: upstream stream read failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
 }
 
 /** The head is the one read with no line-level deadline behind it, so it needs its own. */
@@ -336,7 +364,7 @@ export async function postStreamed({ path, body, session, requestId, attribution
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
     // reported a cancelled turn as `TRANSPORT`, which is retryable.
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
-    throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
   const setRetry = retryAfter(response.headers.get('retry-after'))
@@ -487,7 +515,7 @@ export async function getJson(path, { session, requestId, attributionUserAgent, 
     if (error instanceof UpstreamError) throw error
     if (callerAborted || signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
     if (error?.name === 'AbortError') throw new UpstreamError('our-free-model: upstream GET timed out', CODE.timeout)
-    throw new UpstreamError(`our-free-model: upstream GET failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`our-free-model: upstream GET failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)

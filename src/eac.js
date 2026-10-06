@@ -28,7 +28,7 @@ import { Readable } from 'node:stream'
 // Web-stream adapter: http.js's readHead/readSse speak getReader(), so the
 // node:http response is converted into a proper WHATWG ReadableStream.
 import { ReadableStream } from 'node:stream/web'
-import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody } from './http.js'
+import { CODE, UpstreamError, classifyFailure, classifyStreamFailure, readHead, readSse, replayStream, sniffBody, transportCause } from './http.js'
 import { readEacUser } from './eac-user.js'
 
 const LISTING_TIMEOUT_MS = 15000
@@ -188,7 +188,7 @@ export async function fetchSealedListing(credential, { signal, timeoutMs = LISTI
     if (error instanceof UpstreamError) throw error
     if (callerAborted || signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
     if (error?.name === 'AbortError') throw new UpstreamError('model listing timed out', CODE.timeout)
-    throw new UpstreamError(`model listing failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`model listing failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)
@@ -217,7 +217,7 @@ export async function postSealedStreamed({ credential, body, signal, onData, tim
     })
   } catch (error) {
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
-    throw new UpstreamError(`model request failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`model request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
   // `Retry-After` is seconds on the wire and milliseconds in the classified
