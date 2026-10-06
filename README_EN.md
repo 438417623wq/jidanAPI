@@ -10,9 +10,12 @@
   <img alt="build step" src="https://img.shields.io/badge/build%20step-none-7da1de?style=flat-square">
   <img alt="dsh kernels" src="https://img.shields.io/badge/dsh-0.1.5--0.1.7--rc.2-2f6f4f?style=flat-square">
   <img alt="status" src="https://img.shields.io/badge/status-beta-f0a441?style=flat-square">
-  <br>
-  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #7 JavaScript Repository Of The Day" src="https://trendshift.io/api/badge/trendshift/repositories/261203/daily?language=JavaScript"></a>
-  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift #12 JavaScript Repository Of The Week" src="https://trendshift.io/api/badge/trendshift/repositories/261203/weekly?language=JavaScript"></a>
+  <p><strong>Trending · recorded 2026-10-06</strong></p>
+  <!-- GitTrend pins the rank verified that day so history cannot drift; Trendshift uses its official live badge; click either badge to open its board. -->
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift JavaScript Repository Of The Day" src="https://trendshift.io/api/badge/trendshift/repositories/261203/daily?language=JavaScript"></a>
+  <a href="https://trendshift.io/repositories/261203"><img alt="Trendshift JavaScript Repository Of The Week" src="https://trendshift.io/api/badge/trendshift/repositories/261203/weekly?language=JavaScript"></a>
+  <a href="https://gittrend.io/trending/ai-infrastructure"><img alt="GitTrend AI Infrastructure daily #4, recorded 2026-10-06, list updated 2026-10-05" src="https://img.shields.io/badge/GitTrend-AI%20Infra%20%234-2563eb?style=for-the-badge" height="28"></a>
+  <p><sub>#4 on both the Trendshift JavaScript daily board and GitTrend's AI Infrastructure daily board. GitTrend's list data is as of 2026-10-05.</sub></p>
 
 </div>
 
@@ -38,7 +41,7 @@
 ## Highlights
 
 - **Nothing to configure** — install, restart, pick a model. No account, no key, no quota dashboard to register on.
-- **The upstream is named** — one source, nothing else: OpenCode's Zen gateway at `https://opencode.ai`, with no third party relaying your traffic. Who serves your requests, and where your data goes, is spelled out in [Where the models come from](#where-the-models-come-from).
+- **The upstreams are named** — the free lane is OpenCode's Zen gateway at `https://opencode.ai`, and the Kilo channel is Kilo AI's public gateway at `https://kilo.ai`; both are dialled directly, with no third party relaying your traffic. Who serves your requests, and where your data goes, is spelled out in [Where the models come from](#where-the-models-come-from) and the [Disclaimer](#disclaimer).
 - **A roster that tracks upstream** — model set, context length and capabilities are re-fetched on every refresh rather than frozen into the plugin.
 - **The picker offers only what actually answers** — a model the upstream listing names but the gateway refuses to route outright (`Model is unavailable`, a 404 for that id) leaves the dropdown and stays visible in the settings page with its refusal recorded. Everything that is *not* a statement about the model keeps its model reachable: a 5xx from the gateway, a 429 quota window, a timeout or a dropped connection. Region-gated ones move to their own `region-limited` group. If a whole round refuses everything, nothing is hidden: the picker never goes empty.
 - **Announcement center with live push** — the repository owner edits one JSON file and pushes; every installation receives it within one poll cycle. Bodies are HTML rendered through a strict allowlist; `urgent` items open a full-screen modal; optional OS-level notifications.
@@ -50,6 +53,8 @@
 - **Works without a browser UI** — only `llm` is a hard dependency, so the plugin activates on a headless composition such as dsh-tui and still serves its models. The dashboard half lives on its own fiber and mounts itself when `webServer` appears, so a composition that loads plugins before its HTTP server exists still gets its settings page. Availability probing and the background loops run on plain timers.
 - **Usage dashboard, local only** — token heatmap, cumulative curve by total or per model, output speed and time-to-first-token sampled per call. Nothing is uploaded.
 - **OpenAI-compatible forward port** — expose these models to any other local tool through a base URL plus a generated API key.
+- **EAC lane (desktop hosts)** — a co-paid lane that unlocks in the DeepSeek Harness desktop app and DSHEAC AIO, with models prefixed `EAC`; its credential is sealed and guarded by a host-fingerprint gate, and turns are checked server-side against a GitHub authorization (sign in and star the repository). It does not exist in the CLI or any other host.
+- **The Kilo channel (keyless free pool)** — the free model pool of Kilo AI's public gateway (the listing's `isFree` slice, fetched live, including the `kilo-auto/free` auto-router) is built in; no account, no key. Model cards carry a Kilo badge. Thinking effort works like the EAC lane: the model's own level menu (Off / Low / Medium / High, default High), sent for real through the gateway's unified `reasoning` parameter — Off was verified family by family to zero out thinking (nemotron, ling, dots, poolside, apodex, cohere); the stepfun and liquid endpoints refuse to disable thinking (HTTP 400) and the two auto-routers ignore it, so those models' menus omit the Off rung. The pool is the upstream's free offer, and its model cards state that prompts may be logged to improve their services — never send sensitive content; see the [Disclaimer](#disclaimer).
 - **Clean names in the UI** — no mojibake, no upstream vendor strings leaking into your model picker.
 
 ## What you get
@@ -65,9 +70,10 @@ A model the gateway names but refuses to route appears in neither group. It stay
 **Not in the picker** in the settings page, with the refusal and the probe time, and returns to
 the picker by itself as soon as a probe gets through.
 
-**Settings page — `Settings → Our Free Model`**, six sections:
+**Settings page — `Settings → Our Free Model`**, seven sections:
 
 1. **Model roster** — per-model availability, vision vs text-only, context window, max output, the output ceiling each effort rung really sends, measured time-to-first-token, and an on-demand single-call benchmark.
+2. **EAC lane authorization** — one-click GitHub sign-in (the browser does the work; nothing to paste), the signed-in name and star verdict, a re-check button and sign-out; model cards carry a lock until authorized. The free lane is unaffected.
 2. **Announcement center** — the owner-pushed feed: unread counter, urgency badges, mark-read (single/all), check-now button, OS-notification toggle. Bodies render HTML through the allowlist.
 3. **Usage board** — headline counters, a 17-week token heatmap, a cumulative curve switchable between tokens and request counts and between total and any single model, speed sparklines, and a per-model table.
 4. **Local forward** — enable/disable, bind host and port, copy base URL, show / copy / rotate the API key, and a ready-to-run `curl` example.
@@ -104,7 +110,7 @@ To install manually as a real directory, in `<DSH_HOME>/profiles/<profile>/`:
 
 1. Copy the published files into `node_modules/dsh-our-free-model/`
    (`index.js`, `client.js`, `adapter/`, `src/`, `locale/`, `icon.svg`, `cordis.patch.yml`, `package.json` — do not skip `adapter/`: `index.js` imports it on the first line)
-2. Add `"dsh-our-free-model": "1.4.4"` to `dependencies` — that number **tracks the repo's `package.json` `version`** (bump it together; 1.4.4 as of this line), never copy a stale one, and a version spec, not `link:`
+2. Add `"dsh-our-free-model": "1.5.0"` to `dependencies` — that number **tracks the repo's `package.json` `version`** (bump it together; 1.5.0 as of this line), never copy a stale one, and a version spec, not `link:`
 3. Append `"dsh-our-free-model"` to `dsh.profile.bundles`
 
 > Do **not** also add an entry to `cordis.patch.yml`. A bundle referenced from
@@ -399,12 +405,13 @@ token limit, and the model may ignore it. Recovery is a degraded answer: an
 original request for a long or step-by-step analysis may be shortened.
 
 One logical turn makes at most two physical requests: the original and one
-recovery. The default total deadline is 480 seconds; recovery gets at most 180
-seconds, bounded by the remaining total time. Recovery output is capped at 8192
-tokens and still respects the user's and model's ceilings. Known output tokens
-from the first segment are subtracted from the original budget; recovery does
-not start if fewer than 512 tokens remain. The checkpoint is limited to 131072
-characters and must pass a conservative text-byte estimate of context capacity.
+recovery. The default total deadline is 900 seconds (15 minutes); recovery gets
+at most 300 seconds, bounded by the remaining total time. Recovery output is
+capped at 8192 tokens and still respects the user's and model's ceilings. Known
+output tokens from the first segment are subtracted from the original budget;
+recovery does not start if fewer than 512 tokens remain. The checkpoint is
+limited to 131072 characters and must pass a conservative text-byte estimate of
+context capacity.
 That estimate does not count image tokens and is not an exact tokenizer check.
 Exceeding a limit stops recovery. Success requires a normal ending with answer
 text that is not only whitespace. Recovery failure returns `STREAM_CUT`, which
@@ -610,12 +617,13 @@ Requires Node `^22.19.0 || >=24.0.0`. No install step, no dependencies.
 
 ## Where the models come from
 
-There is exactly one upstream, and it is not a reseller: **OpenCode's Zen
-gateway**, `https://opencode.ai/zen/v1/*`. Once the plugin is installed your
-conversation goes from this machine straight there — no third party in the middle.
+Two public keyless upstreams, both dialled directly with no third party in the
+middle; the fourth destination (the EAC lane) is your own or the maintainer's
+deployed gateway, covered in its own section.
 
-Every fact in that sentence lives in `src/upstream.js`, and each one was checked
-by direct request against the live gateway on 2026-09-24:
+**The free lane: OpenCode's Zen gateway**, `https://opencode.ai/zen/v1/*`.
+Every fact lives in `src/upstream.js`, and each one was checked by direct
+request against the live gateway on 2026-09-24:
 
 | What | Where | Credentials sent |
 | --- | --- | --- |
@@ -624,31 +632,76 @@ by direct request against the live gateway on 2026-09-24:
 | Announcements and the update manifest | this repository's `feed/*.json`: `raw.githubusercontent.com` first, `cdn.jsdelivr.net` as fallback | none |
 | Egress region check | `api.ipify.org` / `ipinfo.io` / `ipapi.co`, only to read back your own public IP and country code | none |
 
+**The Kilo channel: Kilo AI's public gateway**, `https://api.kilo.ai/api/gateway`
+(added 2026-10-06). The code is `src/kilo.js`; each row was checked by direct
+request on the day it was wired in:
+
+| What | Where | Credentials sent |
+| --- | --- | --- |
+| Inference | `POST …/api/gateway/chat/completions` (OpenAI Chat Completions compatible, SSE streaming) | **none** — the gateway's free pool (the listing's `isFree: true` models, including the `kilo-auto/free` auto-router) needs no account, key or login state |
+| Model list | `GET …/api/gateway/models` | none |
+
 On privacy and trust, plainly:
 
-- **No account pool, no relay, no reseller.** There is no second lane in this
-  version; the four rows above are the complete set of destinations the plugin
-  can contact. `npm test` touches no network at all, and the only things that do
-  are `scripts/host-selftest.mjs` and `scripts/probes/`, which you run by hand. If
-  another source is ever added, this section is updated before the feature is.
-- **Your prompts, tool results and any attached images go to that upstream as an
-  ordinary inference request** — the same as calling any model API. Nothing else
-  leaves the machine: the usage dashboard's data, settings and the forwarding key
-  all stay in `DSH_HOME/our-free-model/`.
-- **Key-free is not unmanaged.** The lane fingerprints clients through
+- **No account pool, no relay, no reseller.** The tables above are the complete
+  set of destinations the plugin can contact. `npm test` touches no network at
+  all — the shared test scaffolding points both keyless upstreams at closed
+  loopback ports by default, so no suite can "incidentally" reach a real gateway —
+  and the only things that do are `scripts/host-selftest.mjs` and
+  `scripts/probes/`, which you run by hand. If another source is ever added, this
+  section is updated before the feature is.
+- **Your prompts, tool results and any attached images go to the upstream that
+  serves the model you picked, as an ordinary inference request** — the same as
+  calling any model API. Nothing else leaves the machine: the usage dashboard's
+  data, settings and the forwarding key all stay in `DSH_HOME/our-free-model/`.
+- **Key-free is not unmanaged.** The free lane fingerprints clients through
   `x-opencode-*` headers, accounts free usage per session, answers 403 for a
-  disallowed region and 429 once the allowance is spent. The model set and the
-  quota policy belong to the upstream and can change at any time; all the plugin
-  can do is withdraw an unavailable model from the picker and say why.
+  disallowed region and 429 once the allowance is spent. **Kilo's free pool
+  states on its model cards that prompts may be logged by the upstream provider
+  and used to improve their services** (verbatim from the `kilo-auto/free` card:
+  "Prompts may be logged by the upstream provider and used to improve their
+  services. Not suitable for production or sensitive data workloads."). The model
+  set and the quota policy belong to the upstream and can change at any time; all
+  the plugin can do is withdraw an unavailable model from the picker and say why.
 - This section is repository documentation. Inside the app — picker, settings
-  page, error copy — the upstream's name still does not appear (the convention is
-  recorded under [Verification](#verification)).
+  page, error copy — the upstreams' names still do not appear (the convention is
+  recorded under [Verification](#verification)), except that the Kilo badge's
+  tooltip does say prompts may be logged — that is information you need while
+  choosing a model.
+
+
+## Disclaimer
+
+- **This plugin is a client, not a model provider.** Every model response is
+  generated and delivered by the third-party upstreams named above (OpenCode's
+  Zen gateway, Kilo AI's public gateway, and the EAC gateway you or the
+  maintainer deploy); the plugin hosts, modifies and filters none of it. Models
+  can produce wrong, outdated or biased content — verify before you rely on it.
+- **Free does not mean unlimited, and it does not mean private.** The free
+  allowances are the upstreams' unilateral offer and can be throttled, priced or
+  withdrawn at any time; Kilo's free pool states that prompts may be logged and
+  used to improve their services. **Never send passwords, keys, personal data,
+  trade secrets, or anything you would not hand to a third party through this
+  plugin's free lanes**; for production and sensitive work, use your own paid
+  API.
+- **You agree to the upstreams' terms by using them.** Using a channel means you
+  accept that upstream's terms of service and usage policy; throttling, bans or
+  other consequences of violating them are yours to own. The plugin makes no
+  promise about any upstream's availability, accuracy or continuity.
+- **The EAC lane is a shared, co-paid offer.** Its gateway is deployed by the
+  repository maintainer and unlocked by a GitHub login plus a star; it is for
+  authorized users only. Do not try to bypass the gate, resell, or share access —
+  abuse tightens the lane for everyone.
+- **The plugin is not affiliated with, nor endorsed by, any of the upstreams.**
+  Vendor names and trademarks belong to their owners and are cited only to name
+  the source.
 
 ## Security and privacy
 
 - All state lives in `DSH_HOME/our-free-model/`; usage and settings stay local, nothing is uploaded.
 - The forward listener binds a **loopback address only**, `127.0.0.1` by default, and rejects keyless requests. Widening it to a routable interface is refused: `POST /settings` answers 400 with the reason, and on a composition with no web server a hand-written `settings.json` simply does not start the listener. That traffic is spent from this machine's free lane; one string in a settings file should not put a whole subnet on it.
 - **Network access is a second door, not a relaxation of the rule above.** The local listener still binds loopback only and still refuses a routable address; reaching another machine takes an explicit switch, and then **every** request must carry the network key — `/` and `/health` included, unlike the local listener, because an unauthenticated liveness answer tells the whole subnet that this machine is here and proxying. The relay carries three whitelisted paths (`/v1/models`, `/v1/chat/completions`, `/v1/responses`) and is not a general proxy for whatever else answers on loopback; it swaps the network key for the local one at the door, so the two are never interchangeable; a request that already carries the relay's hop marker is refused with `508`, so a relay port equal to the local one cannot spin. The network key is minted by `crypto`, compared with `timingSafeEqual`, stored in the same `0600` file, and rotated on its own from the panel.
+- **The EAC lane's per-user gate lives server-side.** The plugin carries only a shared signing secret, and any install can extract it — so the one place a per-person gate can actually hold is the gateway in front of the relay credential. A chat turn needs a token minted after a GitHub sign-in verified to have starred the repository; the star is re-checked on a configurable window (12 h by default), a removed star revokes at the next sweep, tokens are revocable at any time, and per-account rate and concurrency ceilings bound a shared token. The relay key never reaches the plugin, and the token never reaches the browser — the settings page sees a login name and a verdict.
 - The forward key is minted at runtime by `crypto`, compared with `timingSafeEqual`, and stored in a `0600` file. No hardcoded credential ships in this repository. `/` and `/health` answer ahead of the key check because they are liveness probes — they answer only "is it there"; the model roster requires the key.
 - The plugin's HTTP routes carry a **request trust fence** (fixed in v1.1): the plugin's `/api/our-free-model` prefix outranks the kernel's `/api` in webServer's longest-prefix dispatch and used to bypass kernel auth. Every request now goes through the composition's `connection` admission first (exactly the kernel's `/api` check: cookie/token); compositions without a connection service fall back to a structural fence — loopback Host, cross-site `sec-fetch-site` refused, `Origin`/`Referer` must match the Host authority and port, and a **missing or empty Host is refused too** (fail closed; there is no fallback to the socket's local address). Measured: foreign Host/Origin 403, cookieless loopback 401. `connection` is resolved per request, because the browser half provides it only after plugins load — reading it once at apply time silently degrades the fence to its structural layer for the life of the process.
 - **Announcement HTML renders through a strict client-side allowlist**: `scripts/sanitize-test.mjs` runs an XSS corpus (script injection, event handlers, `javascript:`/`data:` URLs, iframe/svg/form, style injection, mangled tags) and asserts all of it is dropped; nothing ever reaches an `innerHTML` sink. The feed URL is user-overridable, so the renderer treats feed content as untrusted.

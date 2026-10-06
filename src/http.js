@@ -30,6 +30,12 @@ export const CODE = {
   region: 'REGION_BLOCKED',
   quota: 'RATE_LIMIT',
   credential: 'INVALID_CREDENTIAL',
+  // The co-paid lane's per-user gate (GitHub login + star): the credential
+  // store is fine and the endpoint is reachable — this install just has not
+  // been authorized yet. Its own code keeps it out of INVALID_CREDENTIAL, so
+  // a refusal neither wipes the cached roster nor sends anyone chasing a
+  // re-install; the settings page answers it with a login prompt instead.
+  authorization: 'AUTHORIZATION_REQUIRED',
   transport: 'TRANSPORT',
   timeout: 'TIMEOUT',
   server: 'SERVER',
@@ -45,6 +51,34 @@ export class UpstreamError extends Error {
     this.code = code
     Object.assign(this, details)
   }
+}
+
+/**
+ * The socket-level facts behind a transport failure, walked off the error's
+ * `cause` chain.
+ *
+ * Node's fetch collapses every DNS, TCP and TLS refusal into `TypeError: fetch
+ * failed`; the reason a user could act on — the ENOTFOUND, the ECONNRESET, the
+ * certificate alert — lives one or two `cause` links deeper and used to be
+ * dropped, leaving the settings page's probe reporting an unexplainable "fetch
+ * failed" (issue #79). The chain is walked at most three links deep, the codes
+ * and first lines are deduplicated, and anything found is appended by the
+ * transport wrap sites so "fetch failed" reads "fetch failed — getaddrinfo
+ * ENOTFOUND opencode.ai (ENOTFOUND)" instead.
+ */
+export function transportCause(error) {
+  const parts = []
+  let node = error
+  for (let depth = 0; depth < 3 && node?.cause !== undefined; depth += 1) {
+    node = node.cause
+    if (node === null || typeof node !== 'object') break
+    const code = typeof node.code === 'string' && node.code !== '' ? node.code : ''
+    const line = typeof node.message === 'string' ? node.message.split('\n')[0].trim() : ''
+    if (line === '' && code === '') continue
+    const fact = line === '' || line.includes(code) ? (line === '' ? code : line) : `${line} (${code})`
+    if (!parts.includes(fact)) parts.push(fact)
+  }
+  return parts.length > 0 ? ` — ${parts.join('; ')}` : ''
 }
 
 /** Turn a gateway JSON error envelope into a classified failure. */
@@ -80,6 +114,15 @@ export function classifyFailure(status, payload, retryAfterMs) {
     return new UpstreamError(
       'the gateway rejected the request signature — the request body was modified in transit; if a local proxy plugin (e.g. billion-context) is installed, disable it for this lane or enable its passthrough for signed requests',
       CODE.transport, { status, type, signatureRejected: true })
+  }
+  // The co-paid lane's per-user gate speaks before any credential is judged:
+  // the gateway refuses a turn because this install has not completed GitHub
+  // login + star (or the star is gone), not because the lane's own material
+  // is wrong. Reading it as INVALID_CREDENTIAL would wipe the cached roster
+  // and send users chasing a re-install; it is a user-actionable state, so it
+  // gets its own code and the settings page answers with a login prompt.
+  if (type === 'AuthorizationRequired' || /需要 GitHub 授权|GitHub 授权无效/.test(raw)) {
+    return new UpstreamError(message, CODE.authorization, { status, type, reason: typeof error.reason === 'string' ? error.reason : '' })
   }
   // An HTML page at 401/403 is the front proxy speaking, not the credential
   // store: fall through to the 4xx branch so users are not sent re-logging for
@@ -195,7 +238,7 @@ export async function readHead(stream, limit, { signal, timeoutMs }) {
 export function classifyStreamFailure(error, signal) {
   if (error instanceof UpstreamError) return error
   if (signal?.aborted === true || error?.name === 'AbortError') return new UpstreamError('request aborted', CODE.aborted)
-  return new UpstreamError(`our-free-model: upstream stream read failed: ${error?.message ?? error}`, CODE.transport)
+  return new UpstreamError(`our-free-model: upstream stream read failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
 }
 
 /** The head is the one read with no line-level deadline behind it, so it needs its own. */
@@ -321,7 +364,7 @@ export async function postStreamed({ path, body, session, requestId, attribution
     // `TimeoutError`/user Error rather than `AbortError` — testing the name alone
     // reported a cancelled turn as `TRANSPORT`, which is retryable.
     if (signal?.aborted === true || error?.name === 'AbortError') throw new UpstreamError('request aborted', CODE.aborted)
-    throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`our-free-model: upstream request failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   }
 
   const setRetry = retryAfter(response.headers.get('retry-after'))
@@ -472,7 +515,7 @@ export async function getJson(path, { session, requestId, attributionUserAgent, 
     if (error instanceof UpstreamError) throw error
     if (callerAborted || signal?.aborted === true) throw new UpstreamError('request aborted', CODE.aborted)
     if (error?.name === 'AbortError') throw new UpstreamError('our-free-model: upstream GET timed out', CODE.timeout)
-    throw new UpstreamError(`our-free-model: upstream GET failed: ${error?.message ?? error}`, CODE.transport)
+    throw new UpstreamError(`our-free-model: upstream GET failed: ${error?.message ?? error}${transportCause(error)}`, CODE.transport)
   } finally {
     clearTimeout(timer)
     signal?.removeEventListener?.('abort', onCallerAbort)

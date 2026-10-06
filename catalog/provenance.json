@@ -2,9 +2,9 @@
   "subject": {
     "id": "dev.ebony-vinyl.dsh-our-free-model",
     "name": "dsh-our-free-model",
-    "version": "1.4.6",
+    "version": "2.0.0",
     "sourceRepository": "https://github.com/Ebony-Vinyl/dsh-our-free-model",
-    "sourceRevision": "5ca85b8414513ede19647cbc9e376c2067587e51"
+    "sourceRevision": "1a5f79ed1ef95e2df1fce5cc24ccfa9afe945c42"
   },
   "license": {
     "spdx": "MIT",
@@ -15,8 +15,16 @@
   "upstreamRuntime": {
     "package": "@deepseek-ai/dsh-llm",
     "isolationFile": "adapter/kernel.js",
-    "contract": "The only @deepseek-ai/* import in the package. Called lazily for attribution headers; any failure degrades to a static fallback User-Agent. No kernel version is pinned and no other module may import the kernel.",
-    "verifiedBy": "scripts/catalog-test.mjs (adapter isolation gate)"
+    "contract": "The only kernel import in this plugin's own modules. Called lazily for attribution headers; any failure degrades to a static fallback User-Agent. No kernel version is pinned. The vendored channel pack below is the one deliberate exception, and it is not this plugin's code.",
+    "verifiedBy": "scripts/catalog-test.mjs (adapter isolation gate, which exempts vendor/)"
+  },
+  "vendoredChannelPack": {
+    "path": "vendor/jet-hub/pack.js",
+    "upstreamRepository": "https://gitee.com/iJetLi/deepseek-harness-codearts",
+    "upstreamRevision": "345f0a07b22713c0ae189ca7d8b97ec4f64626c6",
+    "license": "MIT (vendor/jet-hub/LICENSE, unchanged)",
+    "contract": "A third-party dsh plugin carried verbatim and bundled into one file by scripts/build-channel-pack.mjs. It registers the fourteen free-channel providers (CodeArts, CodeBuddy, WorkBuddy, LobsterAI, Qoder, Qoder CN, TRAE, Cline, Loomy, Raccoon, MiniMax, ZCode, Gemini, OpenCode) and therefore imports the kernel itself; that import is upstream's design, not this plugin's seam. Mounted on its own fiber: a composition without credentials/commands/llm loses the channels and keeps the free lane. Credentials it obtains go to the host credential store, never to this plugin's files or to the browser.",
+    "provenanceNotes": "vendor/jet-hub/NOTICE.md records what was taken, what was left out (upstream's own browser half) and how to rebuild the bundle."
   },
   "distribution": {
     "selfUpdate": "default; in-app updater verifies feed/manifest.json SHA-256 digests before installing",

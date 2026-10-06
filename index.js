@@ -26,15 +26,20 @@
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs'
+import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { FreeModelAdapter, ROUTE_LABELS, ROUTE_MAIN, ROUTE_REGION } from './src/adapter.js'
 import { JsonStore, SETTINGS_INITIAL, STATS_INITIAL, STATS_VERSION, DATA_DIR_NAME, MIN_DECODE_MS, decodeWindow, migrateStats, pruneDays, recordTurn, recordUsage, resolveDshHome } from './src/store.js'
-import { buildCatalog, buildEacCatalog, isEacEntry, parseListing } from './src/catalog.js'
+import { buildCatalog, buildEacCatalog, buildKiloCatalog, isEacEntry, isKiloEntry, parseListing, reviveKiloCatalog } from './src/catalog.js'
 import { STATE, detectEgress, probeCatalog } from './src/probe.js'
 import { generateKey, startForwardServer, startLanRelay, toOpenAiUsage } from './src/forward.js'
+import { chanGatewayCredential, chanGatewayEnabled, chanGatewayPort, startChanRelay } from './src/chan-relay.js'
 import { CODE, UpstreamError, getJson } from './src/http.js'
 import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress.js'
 import { directFetch, fetchSealedListing } from './src/eac.js'
+import { fetchKiloListing } from './src/kilo.js'
+import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
@@ -65,6 +70,27 @@ function readPackageVersion() {
 // Bind the version to this module generation. Re-registering cached old exports
 // after a failed reload must not pick up the new package.json still on disk.
 export const version = readPackageVersion()
+
+/**
+ * Open a URL in the system browser, best effort. The settings page shows the
+ * same URL with a copy button, so a headless host or a refused spawn costs a
+ * paste, never the flow. The URL is always one this plugin built from the
+ * sealed gateway endpoint — never user input.
+ */
+function openExternal(url) {
+  if (!/^https?:\/\//i.test(url)) return false
+  try {
+    const [command, args] = process.platform === 'win32' ? ['cmd', ['/c', 'start', '', url]]
+      : process.platform === 'darwin' ? ['open', [url]]
+        : ['xdg-open', [url]]
+    const child = spawn(command, args, { detached: true, stdio: 'ignore', windowsHide: true })
+    child.on('error', () => {})
+    child.unref()
+    return true
+  } catch {
+    return false
+  }
+}
 
 /**
  * `llm` is what the plugin exists for, so it is the only hard requirement of the
@@ -188,7 +214,13 @@ export function apply(ctx, config) {
   }
   const sealedCredentialOf = () => unlockSealedLane({ profileName: profileNameOf() })
   let sealedCatalog = sealedCredentialOf() === null ? [] : buildEacCatalog(catalogStore.get().sealIds ?? [])
-  const mergeCatalogs = () => { catalog = [...catalog, ...sealedCatalog.filter(row => !catalog.some(entry => entry.id === row.id))] }
+  // The Kilo channel needs no credential and no host gate, so its roster loads
+  // from the persisted cache before the first listing round ever runs.
+  let kiloCatalog = reviveKiloCatalog(catalogStore.get().kiloRows)
+  const mergeCatalogs = () => {
+    catalog = [...catalog, ...sealedCatalog.filter(row => !catalog.some(entry => entry.id === row.id))]
+    catalog = [...catalog, ...kiloCatalog.filter(row => !catalog.some(entry => entry.id === row.id))]
+  }
   mergeCatalogs()
 
   // ── the pool snapshot (settings-page gauge) ─────────────────────────────────
@@ -234,6 +266,122 @@ export function apply(ctx, config) {
     } finally {
       clearTimeout(timer)
     }
+  }
+
+  // ── the GitHub authorization gate on the co-paid lane ───────────────────────
+  // One per-user token (src/eac-user.js) is what the gateway's GitHub gate
+  // mints after login + star, and these four hops are the settings page's whole
+  // relationship with that gate. The token never reaches the browser: the page
+  // sees a login name and a verdict, the file and the signed wire keep the
+  // credential. `cached` is the sync bit /summary can carry.
+  const eacAuthCache = { at: 0, data: { available: false, authorized: false, login: '' } }
+  const eacAuthRootOf = credential => credential.base.replace(/\/v1\/?$/, '')
+  async function eacAuthStatus() {
+    const credential = sealedCredentialOf()
+    if (credential === null || credential.mode !== 'worker') {
+      return { available: false, authorized: false, login: '', mode: credential?.mode ?? null }
+    }
+    const local = readEacUser()
+    const base = {
+      available: true,
+      mode: 'worker',
+      local: local !== null,
+      login: local?.login ?? '',
+      avatar: local?.avatar ?? '',
+      savedAt: local?.savedAt ?? 0,
+    }
+    try {
+      const response = await directFetch(`${eacAuthRootOf(credential)}/auth/status`, {
+        headers: { accept: 'application/json', ...(local === null ? {} : { 'x-ofm-user': local.token }) },
+        signal: AbortSignal.timeout(8000),
+      })
+      const data = await response.json().catch(() => null)
+      if (!response.ok || data === null) throw new Error('bad answer')
+      const result = {
+        ...base,
+        configured: data.configured === true,
+        required: data.required === true,
+        authorized: data.authorized === true,
+        login: typeof data.login === 'string' && data.login !== '' ? data.login : base.login,
+        avatar: typeof data.avatar === 'string' && data.avatar !== '' ? data.avatar : base.avatar,
+        starred: data.starred === true,
+        lastCheck: Number.isFinite(data.lastCheck) ? data.lastCheck : 0,
+        reason: typeof data.reason === 'string' ? data.reason : null,
+        repo: typeof data.repo === 'string' ? data.repo : '',
+        checkedAt: Date.now(),
+      }
+      eacAuthCache.at = Date.now()
+      eacAuthCache.data = result
+      return result
+    } catch {
+      // The gateway did not answer: report what this machine holds, marked
+      // unverified, rather than claiming an authorization nobody confirmed.
+      const fallback = { ...base, authorized: local !== null, unverified: true, checkedAt: Date.now() }
+      eacAuthCache.at = Date.now()
+      eacAuthCache.data = fallback
+      return fallback
+    }
+  }
+  const eacAuth = {
+    /** Fresh read; the settings page calls this on mount and after actions. */
+    status: eacAuthStatus,
+    /** The last verdict, for the sync /summary document. */
+    cached: () => eacAuthCache.data,
+    /** Begin a login: mint the link code, hand the URL to the system browser. */
+    async start() {
+      const credential = sealedCredentialOf()
+      if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
+      const link = crypto.randomBytes(24).toString('base64url')
+      const url = `${eacAuthRootOf(credential)}/auth/github/start?link=${link}`
+      return { url, link, opened: openExternal(url) }
+    },
+    /** Collect the token the browser flow just produced. */
+    async poll(link) {
+      const credential = sealedCredentialOf()
+      if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
+      if (typeof link !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(link)) return { error: 'bad-link' }
+      let data
+      try {
+        const response = await directFetch(`${eacAuthRootOf(credential)}/auth/poll?link=${encodeURIComponent(link)}`, {
+          headers: { accept: 'application/json' },
+          signal: AbortSignal.timeout(8000),
+        })
+        data = await response.json().catch(() => null)
+        if (!response.ok || data === null) return { error: 'gateway' }
+      } catch {
+        return { error: 'unreachable' }
+      }
+      if (data.status === 'ok' && typeof data.token === 'string' && data.token !== '') {
+        const saved = writeEacUser({ token: data.token, login: data.login ?? '', avatar: data.avatar ?? '' })
+        if (saved === null) return { error: 'not-writable' }
+        eacAuthCache.data = { ...eacAuthCache.data, available: true, local: true, authorized: true, login: saved.login, avatar: saved.avatar, savedAt: saved.savedAt }
+        return { status: 'ok', login: saved.login }
+      }
+      if (data.status === 'unstarred') return { status: 'unstarred', login: data.login ?? '', repo: data.repo ?? '' }
+      // The gateway no longer knows this link (collect window passed, or its
+      // process lost the pending login): waiting longer cannot help the user.
+      if (data.status === 'expired') return { status: 'expired' }
+      return { status: 'pending' }
+    },
+    /** Revoke server-side, then forget locally. Local removal is the part that
+     * must always happen — a gateway that cannot be reached must not leave the
+     * user logged in on this machine. */
+    async logout() {
+      const credential = sealedCredentialOf()
+      const local = readEacUser()
+      if (local !== null && credential !== null && credential.mode === 'worker') {
+        try {
+          await directFetch(`${eacAuthRootOf(credential)}/auth/logout`, {
+            method: 'POST',
+            headers: { accept: 'application/json', 'x-ofm-user': local.token },
+            signal: AbortSignal.timeout(8000),
+          })
+        } catch { /* local removal below is what the user asked for */ }
+      }
+      const cleared = clearEacUser()
+      eacAuthCache.data = { available: credential !== null && credential.mode === 'worker', authorized: false, login: '', local: false }
+      return { ok: cleared }
+    },
   }
 
   // ── push channel ────────────────────────────────────────────────────────────
@@ -406,6 +554,7 @@ export function apply(ctx, config) {
       catalog = materializeCatalog(catalogStore.get().entries ?? [])
     }
     await refreshSealedRoster()
+    await refreshKiloRoster()
     mergeCatalogs()
     if (probe) await refreshAvailability(force)
     emitTopology()
@@ -454,6 +603,30 @@ export function apply(ctx, config) {
     }
   }
 
+  /**
+   * One roster round for the Kilo channel, after the other two.
+   *
+   * The lane has no credential to refuse and no gate to fail, so there are only
+   * two outcomes: the listing named a free pool (which becomes the whole roster
+   * — a paid id on this gateway answers 401 keyless and is never advertised),
+   * or the round failed and the last roster keeps serving, exactly like the
+   * other channels' transient listings. Nothing here is secret, so the failure
+   * can name its cause.
+   */
+  async function refreshKiloRoster() {
+    try {
+      const payload = await fetchKiloListing()
+      const rows = Array.isArray(payload?.data) ? payload.data : []
+      const entries = buildKiloCatalog(rows)
+      if (entries.length > 0) {
+        kiloCatalog = entries
+        catalogStore.update({ kiloRows: entries })
+      }
+    } catch (error) {
+      logger.warn?.(`our-free-model: Kilo channel listing failed (${error?.code ?? error?.message ?? 'unknown'}); keeping its cached roster`)
+    }
+  }
+
   async function fetchListing() {
     // Read straight from the listing path rather than the probe helper: a listing
     // needs no session identity, and a failure should be a plain throw. Through
@@ -472,10 +645,11 @@ export function apply(ctx, config) {
   }
 
   async function runProbeRound() {
-    // The sealed lane gets no per-model probes: its verdicts would be spent
-    // against a different relay, and a roster the listing named is advertised
-    // as-is (its health is the listing round's, refreshed on the same cadence).
-    const probeable = catalog.filter(entry => !isEacEntry(entry))
+    // The absorbed channels get no per-model probes: their verdicts would be
+    // spent against a different gateway than the one that serves them, and a
+    // roster the listing named is advertised as-is (its health is the listing
+    // round's, refreshed on the same cadence).
+    const probeable = catalog.filter(entry => !isEacEntry(entry) && !isKiloEntry(entry))
     const results = await probeCatalog(probeable, { attributionUserAgent }, (id, result) => {
       availability.edit(state => ({ ...state, results: { ...state.results, [id]: { state: result.state, ...result.detail === undefined ? {} : { detail: result.detail }, ...result.ttftMs === undefined ? {} : { ttftMs: result.ttftMs }, latencyMs: result.latencyMs, at: Date.now() } } }))
     }, 2)
@@ -771,6 +945,120 @@ export function apply(ctx, config) {
       logger.warn?.(`our-free-model: LAN relay could not start (${relayError})`)
     }
   }
+
+  // ── the channels' gateway relay ─────────────────────────────────────────────
+  /**
+   * The absorbed pack serves every 白嫖 provider through one OpenAI-compatible
+   * gateway on the loopback. The relay is this plugin's own door in front of
+   * it: callers authenticate with `chanGateway.relay.key` and the forwarded
+   * hop is re-stamped with the gateway's own credential, which never leaves
+   * the host. Off until asked for; the settings page owns the switch.
+   */
+  let chanRelay = null
+  let chanRelayError = ''
+  let chanRelaySyncInFlight = null
+
+  function chanRelayKey() {
+    const relay = settings.get().chanGateway?.relay ?? {}
+    if (typeof relay.key === 'string' && relay.key !== '') return relay.key
+    const minted = generateKey()
+    settings.update({ chanGateway: { ...(settings.get().chanGateway ?? {}), relay: { ...(settings.get().chanGateway?.relay ?? {}), key: minted } } })
+    settings.flush()
+    return minted
+  }
+
+  function rotateChanRelayKey() {
+    const minted = generateKey()
+    settings.update({ chanGateway: { ...(settings.get().chanGateway ?? {}), relay: { ...(settings.get().chanGateway?.relay ?? {}), key: minted } } })
+    settings.flush()
+    return minted
+  }
+
+  /** The gateway's address and credential, read fresh: both can move (env). */
+  function chanGatewayTarget() {
+    return {
+      port: chanGatewayPort(process.env),
+      enabledByEnv: chanGatewayEnabled(process.env),
+      credential: chanGatewayCredential({ home, env: process.env }),
+    }
+  }
+
+  async function syncChanRelay() {
+    while (chanRelaySyncInFlight !== null) await chanRelaySyncInFlight.catch(() => {})
+    const run = syncChanRelayOnce()
+    chanRelaySyncInFlight = run
+    try { await run } finally { if (chanRelaySyncInFlight === run) chanRelaySyncInFlight = null }
+  }
+  async function syncChanRelayOnce() {
+    const relay = settings.get().chanGateway?.relay ?? {}
+    const wanted = relay.enabled === true
+    const host = String(relay.host ?? '').trim() || '127.0.0.1'
+    const port = Number.isFinite(Number(relay.port)) && Number(relay.port) > 0 ? Math.trunc(Number(relay.port)) : 0
+    const target = chanGatewayTarget()
+    if (chanRelay !== null && wanted && chanRelay.host === host && chanRelay.port === port) return
+    if (chanRelay === null && !wanted) return
+    if (chanRelay !== null) {
+      const closing = chanRelay
+      chanRelay = null
+      await closing.close().catch(() => {})
+    }
+    if (!wanted) { chanRelayError = ''; return }
+    if (port !== 0 && target.port === port) {
+      chanRelayError = 'the relay needs a port of its own (the gateway listens on ' + target.port + ')'
+      logger.warn?.(`our-free-model: channel gateway relay not started (${chanRelayError})`)
+      return
+    }
+    try {
+      chanRelay = await startChanRelay({
+        config: () => {
+          const current = settings.get().chanGateway?.relay ?? {}
+          const targetNow = chanGatewayTarget()
+          return {
+            enabled: current.enabled === true,
+            host: String(current.host ?? '').trim() || '127.0.0.1',
+            port: current.port ?? 0,
+            lanKey: chanRelayKey(),
+            gatewayHost: '127.0.0.1',
+            gatewayPort: targetNow.port,
+            gatewayKey: targetNow.credential?.key ?? '',
+          }
+        },
+        log: message => logger.warn?.(`our-free-model channel relay: ${message}`),
+      })
+      chanRelayError = ''
+      // The bound port goes back into the settings, so the page shows the
+      // address that actually answers (the OS picks when 0 was asked for).
+      const settled = settings.get().chanGateway ?? {}
+      settings.update({ chanGateway: { ...settled, relay: { ...(settled.relay ?? {}), port: chanRelay.port } } })
+      settings.flush()
+    } catch (error) {
+      chanRelayError = String(error?.message ?? error)
+      logger.warn?.(`our-free-model: channel gateway relay could not start (${chanRelayError})`)
+    }
+  }
+
+  function chanRelayStatus() {
+    const relay = settings.get().chanGateway?.relay ?? {}
+    const target = chanGatewayTarget()
+    return {
+      relay: {
+        enabled: relay.enabled === true,
+        running: chanRelay !== null,
+        host: chanRelay?.host ?? (String(relay.host ?? '').trim() || '127.0.0.1'),
+        port: chanRelay?.port ?? relay.port ?? 0,
+        hasKey: typeof relay.key === 'string' && relay.key !== '',
+        error: chanRelayError,
+      },
+      gateway: {
+        port: target.port,
+        enabledByEnv: target.enabledByEnv,
+        keyFound: target.credential !== null,
+        keyFromEnv: target.credential?.fromEnv === true,
+        keyPath: target.credential?.path ?? '',
+      },
+    }
+  }
+
 
   // ── egress outlet ───────────────────────────────────────────────────────────
   /** One gateway round trip at a time; the panel polls, the throttle decides. */
@@ -1068,6 +1356,45 @@ export function apply(ctx, config) {
    * its own structural check instead of reading as "admitted".
    */
   const fenceConnection = connectionAdmissionView(() => optional('connection'))
+  // ── the absorbed free-channel pack ──────────────────────────────────────────
+  /**
+   * The 白嫖 channels — CodeArts (华为云), CodeBuddy / WorkBuddy (腾讯), LobsterAI
+   * (有道), Qoder / Qoder CN (阿里系), TRAE (字节), Cline, Loomy (讯飞), Raccoon
+   * (商汤), MiniMax Code, ZCode (智谱), Gemini (Google) and OpenCode — are
+   * carried verbatim from the plugin that shipped them, vendored under
+   * `vendor/jet-hub` (provenance in `vendor/jet-hub/NOTICE.md`). Mounting the
+   * pack keeps every login flow, account pool, credit claim, model blacklist
+   * and its local OpenAI gateway working as they were validated upstream,
+   * instead of being re-implemented here and drifting.
+   *
+   * The pack runs on a fiber of its own, after `credentials`, `commands` and
+   * `llm` exist. A composition without them — a headless TUI, the offline test
+   * harness — keeps the free lane and loses only the channels, the same trade
+   * this plugin makes for every optional service. `channelPack` is the state
+   * bit `/summary` reports so the page can say *why* the channel list is empty
+   * instead of showing nothing.
+   */
+  let channelPack = { state: 'pending', error: '' }
+  ctx.inject(['credentials', 'commands', 'llm'], scoped => {
+    let stopped = false
+    scoped.effect(() => () => { stopped = true }, 'our-free-model: channel pack')
+    // Dynamic import: the pack's own imports (the kernel's llm and credential
+    // modules) are host-provided, and a composition that lacks them must still
+    // load this plugin's free lane. `pack.js` is the bundled form of the
+    // vendored tree (see scripts/build-channel-pack.mjs) — one file, so the
+    // release manifest stays inside its file cap.
+    void import('./vendor/jet-hub/pack.js').then(pack => {
+      if (stopped) return
+      pack.apply(scoped, {})
+      channelPack = { state: 'ready', error: '' }
+      logger.info?.('our-free-model: free-channel pack mounted (CodeArts, CodeBuddy, and 12 more)')
+    }).catch(error => {
+      if (stopped) return
+      channelPack = { state: 'failed', error: String(error?.message ?? error).slice(0, 300) }
+      logger.warn?.(`our-free-model: free-channel pack unavailable (${channelPack.error})`)
+    })
+  })
+
   const logAdmissionRejection = surface => ({ status, source, reason }) => {
     // Fixed fields only: headers, request URLs and admission errors may contain
     // credentials. JSON API and SSE must report the same admission boundary.
@@ -1077,6 +1404,37 @@ export function apply(ctx, config) {
     settings, stats, availability, catalog: () => catalog, state,
     refreshCatalog, refreshAvailability, syncForward, syncRelay, syncEgress,
     pool: fetchPoolSnapshot,
+    eacAuth,
+    // The absorbed channel pack's liveness, for the 白嫖接入 page: the page
+    // renders its channel grid from this bit plus the pack's own RPC.
+    channels: () => channelPack,
+    chanRelay: {
+      status: chanRelayStatus,
+      apply: async patch => {
+        const current = settings.get().chanGateway ?? {}
+        const relay = { ...(current.relay ?? {}) }
+        if (patch === null || typeof patch !== 'object') throw httpError(400, 'the request body must be a JSON object')
+        if (patch.enabled !== undefined) relay.enabled = patch.enabled === true
+        if (patch.host !== undefined) {
+          const host = String(patch.host ?? '').trim()
+          if (host !== '' && host !== '127.0.0.1' && host !== 'localhost' && host !== '0.0.0.0' && host !== '::') {
+            throw httpError(400, 'host must be one of 127.0.0.1, localhost, 0.0.0.0, ::')
+          }
+          relay.host = host === 'localhost' ? '127.0.0.1' : host
+        }
+        if (patch.port !== undefined) {
+          const port = Number(patch.port)
+          if (!Number.isInteger(port) || port < 0 || port > 65535) throw httpError(400, 'port must be an integer between 0 and 65535')
+          relay.port = port
+        }
+        settings.update({ chanGateway: { ...current, relay } })
+        settings.flush()
+        await syncChanRelay()
+        return chanRelayStatus()
+      },
+      key: () => chanRelayKey(),
+      rotate: rotateChanRelayKey,
+    },
     // Whether the co-paid lane is open on this host at all — the settings page's
     // one-bit answer to "why do I see no EAC group" (issue #60). Reads the gate,
     // not the listing: a closed gate and a dead relay are different sentences.
@@ -1263,6 +1621,7 @@ export function apply(ctx, config) {
   ctx.effect(() => () => {
     void forward?.close().catch(() => {})
     void relay?.close().catch(() => {})
+    void chanRelay?.close().catch(() => {})
     void outletRelay?.close().catch(() => {})
   }, 'our-free-model: forward listener')
 
@@ -1294,6 +1653,8 @@ export function apply(ctx, config) {
       await syncForward()
       if (disposed) return
       await syncRelay()
+      if (disposed) return
+      await syncChanRelay()
       if (disposed) return
       syncWatcher()
       emitTopology()
@@ -1481,8 +1842,15 @@ function computeMembership(catalog, availabilitySnapshot, settings) {
   const results = availabilitySnapshot?.results ?? {}
   const expose = settings?.exposeRegionModels !== false
   const verdictOf = entry => results[entry.id]?.state
+  // Only the free lane is ever probed, so "the round refused everything" is a
+  // verdict about that lane alone. The absorbed channels carry no verdict at
+  // all; counting them among the refused would keep the fallback from firing
+  // (usable could never empty), and a lane-wide refusal would then quietly drop
+  // the whole free roster from the picker while the channels stayed listed.
+  const probeable = catalog.filter(entry => !entry.channel)
+  const refusedAll = probeable.length > 0 && probeable.every(entry => verdictOf(entry) === STATE.unavailable)
   let usable = catalog.filter(entry => verdictOf(entry) !== STATE.unavailable)
-  if (catalog.length > 0 && usable.length === 0) usable = catalog
+  if (refusedAll) usable = catalog
   const main = []
   const region = []
   for (const entry of usable) {
@@ -1674,6 +2042,21 @@ function createApiRoutes(deps) {
       if (method === 'GET' && routePath === '/meta') {
         return send(200, { ...deps.meta(), feed: { fetchedAt: deps.announcements.view().fetchedAt, source: deps.announcements.view().source, error: deps.announcements.view().error }, update: deps.update.status() })
       }
+      if (method === 'POST' && routePath === '/eac/login/start') {
+        const started = await deps.eacAuth.start()
+        return send(started.error === undefined ? 200 : 404, started.error === undefined ? started : { error: started.error })
+      }
+      if (method === 'GET' && routePath === '/eac/login/poll') {
+        const polled = await deps.eacAuth.poll(url.searchParams.get('link') ?? '')
+        const status = polled.error === undefined ? 200 : polled.error === 'bad-link' ? 400 : polled.error === 'no-lane' ? 404 : 502
+        return send(status, polled)
+      }
+      if (method === 'GET' && routePath === '/eac/status') {
+        return send(200, await deps.eacAuth.status())
+      }
+      if (method === 'POST' && routePath === '/eac/logout') {
+        return send(200, await deps.eacAuth.logout())
+      }
       if (method === 'GET' && routePath === '/pool') {
         try { return send(200, await deps.pool()) } catch (error) {
           const reason = POOL_REASONS.has(error?.reason) ? error.reason : 'unreachable'
@@ -1818,6 +2201,22 @@ function createApiRoutes(deps) {
       if (method === 'POST' && routePath === '/forward/rotate') {
         return send(200, { key: deps.rotateKey() })
       }
+      // The channels' gateway relay (the pack's loopback OpenAI endpoint,
+   // re-exposed under this plugin's own key). Status never carries a secret;
+      // the key routes are read by the same fence as every other route here.
+      if (method === 'GET' && routePath === '/chan-gateway') {
+        return send(200, deps.chanRelay.status())
+      }
+      if (method === 'POST' && routePath === '/chan-gateway/apply') {
+        const body = await readJson(req)
+        return send(200, await deps.chanRelay.apply(body))
+      }
+      if (method === 'GET' && routePath === '/chan-gateway/key') {
+        return send(200, { key: deps.chanRelay.key() })
+      }
+      if (method === 'POST' && routePath === '/chan-gateway/rotate') {
+        return send(200, { key: deps.chanRelay.rotate() })
+      }
       if (method === 'GET' && routePath === '/forward/lan/key') {
         return send(200, { key: deps.settings.get().forwardLanKey ?? '' })
       }
@@ -1941,13 +2340,13 @@ function buildSummary(deps) {
   return {
     catalog: state.catalog.map(entry => ({
       ...entry,
-      // The sealed lane is not probed: its presence in the roster is the
-      // verdict — the listing round named it after the host gate opened.
-      availability: isEacEntry(entry) ? STATE.available : (snapshot.results?.[entry.id]?.state ?? STATE.unknown),
-      detail: isEacEntry(entry) ? '' : (snapshot.results?.[entry.id]?.detail ?? ''),
-      probedAt: isEacEntry(entry) ? 0 : (snapshot.results?.[entry.id]?.at ?? 0),
-      ttftMs: isEacEntry(entry) ? undefined : snapshot.results?.[entry.id]?.ttftMs,
-      latencyMs: isEacEntry(entry) ? undefined : snapshot.results?.[entry.id]?.latencyMs,
+      // The absorbed channels are not probed: their presence in the roster is
+      // the verdict — the listing round named them after the round succeeded.
+      availability: isEacEntry(entry) || isKiloEntry(entry) ? STATE.available : (snapshot.results?.[entry.id]?.state ?? STATE.unknown),
+      detail: isEacEntry(entry) || isKiloEntry(entry) ? '' : (snapshot.results?.[entry.id]?.detail ?? ''),
+      probedAt: isEacEntry(entry) || isKiloEntry(entry) ? 0 : (snapshot.results?.[entry.id]?.at ?? 0),
+      ttftMs: isEacEntry(entry) || isKiloEntry(entry) ? undefined : snapshot.results?.[entry.id]?.ttftMs,
+      latencyMs: isEacEntry(entry) || isKiloEntry(entry) ? undefined : snapshot.results?.[entry.id]?.latencyMs,
       // What each rung of the effort menu will really put on the wire for this
       // model, so the page never shows a 32K "output ceiling" beside a call that
       // was cut off at 8K. A model with no effort menu has no ladder to show.
@@ -1969,6 +2368,13 @@ function buildSummary(deps) {
     // gate never opened (a host the kernel gave no profile context), which is a
     // different sentence from "the relay is down" (issue #60).
     laneAvailable: deps.laneAvailable?.() === true,
+    // The last GitHub-authorization verdict (the settings page refreshes it via
+    // /eac/status on mount). `authorized: false` with the lane available is the
+    // one state the model cards badge as locked.
+    eacAuth: deps.eacAuth?.cached?.() ?? null,
+    // Whether the absorbed free-channel pack is live on this host, and its
+    // failure reason when it is not (see the mount in `apply`).
+    channels: deps.channels?.() ?? { state: 'unknown', error: '' },
     update: { available: update.available, latest: update.latest, current: update.current, checkedAt: update.checkedAt, applying: update.applying, managed: update.managed === true },
   }
 }

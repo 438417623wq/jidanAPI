@@ -39,7 +39,7 @@
 ## 亮点
 
 - **开箱即用，无配置环节**——不需要账号、不需要 Key、不需要在后台申请配额。
-- **上游来源公开透明**——唯一来源为 OpenCode 的 Zen 网关（https://opencode.ai），不经任何第三方中转。请求由谁处理、数据发往何处，见「上游是哪些源」。
+- **上游来源公开透明**——免费车道来源为 OpenCode 的 Zen 网关（https://opencode.ai），Kilo 渠道来源为 Kilo AI 的公共网关（https://kilo.ai），均直连、不经任何第三方中转。请求由谁处理、数据发往何处，见「上游是哪些源」与「免责声明」。
 - **清单跟随上游**——模型集合、上下文长度与能力在每次刷新时向上游重新拉取，插件内不保存静态快照。
 - **选择器只广播可用的模型**——上游清单已声明但网关明确拒绝路由的模型（返回 `Model is unavailable`、或 404 找不到该 id）从下拉框移除，仅在设置页保留记录并注明拒因；网关自身故障（5xx）、配额限制（429）、超时与断网不属于对模型的判定，一律保持可达；被地区策略拦截的模型归入 region-limited 分组。整轮探测全部被拒时同样保留，选择器不会为空。
 - **公告中心 + 实时推送**——仓库维护者在仓库中编辑 JSON 并推送后，所有已安装实例最迟在一个轮询周期内收到；正文为白名单约束下的 HTML，支持图文排版；`urgent` 级别触发全屏弹窗；可选系统级通知。
@@ -50,8 +50,12 @@
 - **不依赖浏览器界面**——插件仅将 llm 作为硬依赖，在没有 web server 的 composition（如 dsh-tui）中同样完成启动并输出模型；看板模块挂载在独立的 fiber 上，待 webServer 就绪后再注册路由，因此既不会阻塞模型车道，也不会因插件先于 web 服务加载而永久丢失设置页。
 - **用量看板，数据全部留在本机**——Token 热力图、总量曲线（支持总计与单模型视图）、输出速度与首字延迟逐次采样。不上传任何数据。
 - **OpenAI 兼容转发端口**——本机其它工具通过 base URL 与 Key 即可调用这些模型。
-- **EAC 渠道（桌面端专属）**——在 DeepSeek Harness 桌面端与 DSHEAC AIO 桌面端中自动解锁一条协付通道，模型以 EAC 前缀显示（如 EAC DeepSeek V4.1 Flash）；凭据加密密封，由宿主指纹闸门把守；在命令行及其它宿主中该通道完全不存在。详见「EAC 渠道」。
+- **EAC 渠道（桌面端专属）**——在 DeepSeek Harness 桌面端与 DSHEAC AIO 桌面端中自动解锁一条协付通道，模型以 EAC 前缀显示（如 EAC DeepSeek V4.1 Flash）；凭据加密密封，由宿主指纹闸门把守；该渠道在服务器侧校验 GitHub 授权（登录并 star 本仓库）后才放行对话；在命令行及其它宿主中该通道完全不存在。详见「EAC 渠道」。
+- **Kilo 渠道（免密免费池）**——内置 Kilo AI 公共网关的免费模型池（`isFree` 清单实时拉取，含 `kilo-auto/free` 自动路由），无需任何账号或 Key；模型卡带 Kilo 徽章。思考强度与 EAC 渠道同款：模型自身的档位菜单（Off / Low / Medium / High，默认 High），经网关统一的 `reasoning` 参数真实下发——Off 已逐家族实测将思考归零（nemotron、ling、dots、poolside、apodex、cohere）；stepfun 与 liquid 端点强制思考（对关闭请求返回 400）、两个自动路由不透传关闭，这些模型的菜单不含 Off 档。该池由上游免费提供，上游会在其模型卡中声明 prompt 可能被记录用于改进服务——请勿发送敏感内容，详见「免责声明」。
 - **接口具备鉴权围栏**——插件 HTTP 路由优先级高于内核 `/api`，因此内置与内核一致的信任检查（优先复用 composition 的 connection 服务，缺失时退回结构化围栏）。
+- **十四个白嫖渠道，一体接入**——整体吸收 [dsh-codearts-auth](https://gitee.com/iJetLi/deepseek-harness-codearts)（Jet Hub，出处与再构建见 `vendor/jet-hub/NOTICE.md`）：CodeArts（华为云）、CodeBuddy / WorkBuddy（腾讯）、LobsterAI（有道）、Qoder / Qoder 中国版（阿里系）、TRAE（字节）、Cline、Loomy（讯飞）、Raccoon（商汤）、MiniMax Code、ZCode（智谱）、Gemini（Google Code Assist）与 OpenCode。各渠道的登录流程、账号池、每日积分领取、模型黑名单与其本地 OpenAI 网关（Chat Completions + Responses，默认 `127.0.0.1:8326`）按上游原样挂载与运行；凭据只写入宿主凭据库，浏览器永远拿不到明文。
+- **六页毛玻璃界面**——设置页重排为顶部导航的六个页面：**免费模型**（鱼缸水位 = 可用模型占比）、**EAC 模型**（鱼缸水位 = 协付池压力）、**白嫖模型接入**（十四张渠道卡：登录、账号、模型开关、一键领取积分）、**数据看板**（今日/全部 Token 消耗、平均生成速度、缓存命中率、成功率，账号透视与模型性能表、最近请求总览）、**运行日志**（逐请求明细：结果、耗时、首字、速度、Token 细分，失败原因悬停可见）与**网关设置**（网关开关/端点/密钥；局域网转发中继：监听地址、端口与独立中继密钥）。每页都有直达 GitHub 仓库的 Star 按钮。
+- **局域网转发中继**——渠道网关本身只监听本机（上游的安全选择）；本插件提供自己的转发门：调用方用插件签发与轮换的中继密钥，转发跳由宿主换用网关凭据（凭据不出宿主进程），仅放行 `/v1/*` 模型接口并带环路保护。
 
 ## 你会看到什么
 
@@ -65,9 +69,10 @@
 被判定为「已声明但不路由」的模型不出现在任何分组中——它们仅在设置页的「不在选择器中」分组保留记录，
 附带拒因与探测时间；后续探测重新通过后自动回到选择器。
 
-**设置页** 设置 → Our Free Model，包含六个分区：
+**设置页** 设置 → Our Free Model，包含七个分区：
 
 - **模型清单**——各模型的可用性、是否支持视觉、上下文窗口、最长输出、各思考档位实际下发的输出上限、实测首字延迟，以及单次调用基准测试按钮。
+- **EAC 渠道授权**——一键发起 GitHub 登录（自动打开浏览器，无需复制粘贴）、显示登录名与 star 校验状态、重新检查、退出登录；未授权时模型卡带锁标记。免费车道的模型不受影响。
 - **公告中心**——仓库维护者推送的公告流：未读计数、紧急徽章、单条/全部标记已读、检查新公告按钮、系统通知开关。公告正文按白名单渲染 HTML。
 - **用量看板**——总览计数、17 周 Token 热力图、总量曲线（Token / 请求数切换，总计与单模型切换）、速度迷你图、按模型汇总表。
 - **本地转发**——开关、监听地址与端口、复制 base URL、显示 / 复制 / 轮换 API Key，并提供可直接执行的 curl 示例。
@@ -102,7 +107,7 @@ PROFILE_UPGRADE_REQUIRED: offline dependency migration is not yet available
 
 1. 将发布文件复制至 node_modules/dsh-our-free-model/
 （index.js、client.js、adapter/、src/、locale/、icon.svg、cordis.patch.yml、package.json——adapter/ 不可遗漏：index.js 首行即 import 该目录）
-2. 在 dependencies 中加入 "dsh-our-free-model": "1.4.4"——该版本号跟随仓库 package.json 的 version（版本变更时同步，当前为 1.4.4），不要沿用旧值，也不要写为 link:
+2. 在 dependencies 中加入 "dsh-our-free-model": "1.5.0"——该版本号跟随仓库 package.json 的 version（版本变更时同步，当前为 1.5.0），不要沿用旧值，也不要写为 link:
 3. 在 dsh.profile.bundles 末尾追加 "dsh-our-free-model"
 
 不要再向 cordis.patch.yml 添加条目。被 dsh.profile.bundles 引用的包，其自带的
@@ -152,6 +157,23 @@ del "%DSH_HOME%\profiles\web\pnpm-lock.yaml"
 ```
 
 同时出现的 Ignoring broken lockfile 警告会随重建一同消失。
+
+**安装失败：`git ls-remote "git+ssh://git@github.com/..."`（插件市场自动安装）**
+
+插件市场（dsh-plugin-hub）对 git 源的自动安装会把 GitHub 地址交给 pnpm 解析，pnpm 再调用本机
+git 执行 `git ls-remote`。若本机 git 配置了 `insteadOf` 重写（常见于把 https 改写为 ssh 的
+`url."git+ssh://git@github.com/".insteadOf` 规则），或 SSH 密钥未配置，这一步会在下载任何插件
+文件之前失败。处理方式二选一：
+
+- 修正本机 git 配置（`git config --global --get-regexp insteadof` 查看重写规则），保证终端里
+  `git ls-remote https://github.com/Ebony-Vinyl/dsh-our-free-model.git` 能成功；
+- 改用本地安装：从 Releases 下载发布包解压后 `dsh plugin add <解压目录>`，绕开 git 解析。
+
+**安装失败：`profile "desktop" is managed exclusively by the Electron application`**
+
+这是宿主自身的保护，不是插件问题：桌面端（Electron）的 profile 只允许桌面应用自己管理，
+命令行 `dsh plugin add` 无法写入。请在桌面端的插件管理器（设置 → 插件）里完成安装或升级；
+命令行安装仅适用于纯 web profile（`dsh web`）。
 
 ## 使用说明
 
@@ -295,8 +317,8 @@ reasoning token 从分子中剔除，decodeWindow() 拒绝过短以至于无法�
 为避免重复长思考，恢复提示要求结论优先、最多 800 词；此为提示层面的约束（非硬性 token
 限制），模型可能不遵守。恢复属于降级回答，原始请求中的长篇或逐步分析可能被简化。
 
-每个逻辑回合最多两次物理请求：原始请求加一次恢复。默认总时限 480 秒，恢复段最多
-180 秒，且受剩余总时长约束；恢复输出上限 8192 tokens，并继续受用户与模型的上限
+每个逻辑回合最多两次物理请求：原始请求加一次恢复。默认总时限 900 秒（15 分钟），恢复段最多
+300 秒，且受剩余总时长约束；恢复输出上限 8192 tokens，并继续受用户与模型的上限
 约束。首段已知的输出 tokens 会从原始预算中扣除，恢复预算不足 512 tokens 时不发起恢复。
 检查点最多 131072 字符，且必须通过基于文本字节的保守上下文余量估算；该估算不计算图片
 token，不等同于精确的 tokenizer 校验。超出限制即停止恢复，不会无限续接。恢复必须正常结束且
@@ -506,11 +528,13 @@ DeepSeek Harness 桌面端（Electron 壳）：内核自身提供的 desktop pro
 
 签名网关（推荐形态）：worker/ 目录附带一个 Cloudflare Worker 网关——插件密封的仅有网关地址与 HMAC 签名密钥，请求按 时间戳 + HMAC-SHA256(方法/路径/ body 摘要) 签名，中继的真实 key 仅存放于 Worker 的环境变量中；防重放时间窗、模型白名单、可选按 IP 限速均在网关执行，签名密钥泄露只需在网关侧轮换即可全体吊销。部署与轮换见 worker/README.md。
 
+**GitHub 授权闸门**：自建网关（宝塔 Node 形态）另带一道按人计的授权闸门——对话请求除签名外还需携带一枚**专属令牌**，而令牌只发给「用 GitHub 登录 + 已 star 本仓库」的账号。登录全程在浏览器里完成：设置页「EAC 渠道授权」一键发起，网关回调页确认 star 状态后签发令牌，插件自动领取，无需复制粘贴；未 star 时页面会给出 ⭐ 按钮与「我已 star，重新检查」，不必重新登录。网关默认每 12 小时用保存的授权复查一次 star，取消 star 即在复查窗口内吊销令牌；GitHub 侧不可达时保留既有判定，不会误伤已授权用户。网关只申请 `read:user` 最小权限，授权仅用于 star 复查。免费车道（opencode）不经过网关，完全不受影响。
+
 ## 上游是哪些源
 
-只有一个，且它不是中转站：OpenCode 的 Zen 网关，https://opencode.ai/zen/v1/\*。
-安装插件后，会话内容从本机直达该网关，中间无任何第三方经手。
+两条公开免密来源，均直连、不经任何第三方中转；另有第四条出网目标为自建网关（EAC 渠道，见其专节）。
 
+**免费车道：OpenCode 的 Zen 网关，https://opencode.ai/zen/v1/\***。
 具体到代码——src/upstream.js 中每一条均于 2026-09-24 通过直接请求核对：
 
 | 用途 | 目标 | 携带何种凭据 |
@@ -520,15 +544,30 @@ DeepSeek Harness 桌面端（Electron 壳）：内核自身提供的 desktop pro
 | 公告与升级清单 | 本仓库的 feed/\*.json：raw.githubusercontent.com 优先，cdn.jsdelivr.net 兜底 | 无 |
 | 出口地区判定 | api.ipify.org / ipinfo.io / ipapi.co，仅用于读取本机公网 IP 与国家码 | 无 |
 
+**Kilo 渠道：Kilo AI 的公共网关，https://api.kilo.ai/api/gateway**（2026-10-06 接入）。
+代码在 src/kilo.js，每一条均于接入当日通过直接请求核对：
+
+| 用途 | 目标 | 携带何种凭据 |
+| --- | --- | --- |
+| 推理请求 | POST …/api/gateway/chat/completions（OpenAI Chat Completions 兼容，SSE 流式） | **无**——该网关的免费池（清单中 `isFree: true` 的模型，含 kilo-auto/free 自动路由）不需任何账号、Key 或登录态 |
+| 模型清单 | GET …/api/gateway/models | 无 |
+
 关于隐私与信任，说明如下：
 
-没有号池、没有中转、没有二道贩子。当前版本不存在第二条车道，上表四行即为本插件全部出网目标；npm test 的离线套件完全不出网，仅 scripts/host-selftest.mjs 与 scripts/probes/ 会主动请求这些地址，且需手动运行。若将来引入新的来源，本节会先于功能更新，不会默认将流量分配给第三方。
+没有号池、没有中转、没有二道贩子。上表即为本插件全部出网目标；npm test 的离线套件完全不出网（共享测试脚手架会把两条免密来源都默认指向已关闭的本机端口，杜绝任何套件"顺带"打到真实网关），仅 scripts/host-selftest.mjs 与 scripts/probes/ 会主动请求这些地址，且需手动运行。若将来引入新的来源，本节会先于功能更新，不会默认将流量分配给第三方。
 
-你的 prompt、工具结果与随附图像会作为正常推理请求发送至该上游——与调用任何模型 API 相同。除此之外插件不上传任何内容：用量看板数据、设置、转发 Key 均只落在本机 DSH_HOME/our-free-model/。
+你的 prompt、工具结果与随附图像会作为正常推理请求发送至所选模型对应的上游——与调用任何模型 API 相同。除此之外插件不上传任何内容：用量看板数据、设置、转发 Key 均只落在本机 DSH_HOME/our-free-model/。
 
-免密不等于无人管理：该车道通过 x-opencode-\* 指纹识别客户端、按会话统计免费额度，会因地区返回 403、因超量返回 429。模型集合与额度政策由上游决定，随时可能变更；插件仅能如实将不可用的模型从选择器中移除。
+免密不等于无人管理：免费车道通过 x-opencode-\* 指纹识别客户端、按会话统计免费额度，会因地区返回 403、因超量返回 429。**Kilo 免费池在其模型卡中明确声明：prompt 可能被上游提供方记录，并用于改进其服务**（原文见 kilo-auto/free 模型卡："Prompts may be logged by the upstream provider and used to improve their services. Not suitable for production or sensitive data workloads."）。模型集合与额度政策由上游决定，随时可能变更；插件仅能如实将不可用的模型从选择器中移除。
 
-本节属于仓库文档。应用内的选择器、设置页与报错文案中仍不出现上游厂名（该约定见验收情况一节）。
+本节属于仓库文档。应用内的选择器、设置页与报错文案中仍不出现上游厂名（该约定见验收情况一节），但 Kilo 渠道的模型卡徽章悬停提示会告知"prompt 可能被上游记录"——这是选择模型时需要知道的信息。
+## 免责声明
+
+- **本插件是一个客户端，不是模型服务方。** 所有模型响应均由上述第三方上游（OpenCode Zen 网关、Kilo AI 公共网关、以及你自己部署的 EAC 网关）生成并传输；插件不托管、不修改、不过滤任何模型输出。模型可能产出错误、过时或有偏颇的内容，请自行核实后再使用。
+- **免费不等于无限，也不等于私有。** 免费额度由上游单方面提供，随时可能限流、收费或下线；Kilo 免费池明确声明 prompt 可能被上游记录并用于改进服务。**请勿通过本插件的免费车道发送密码、密钥、个人身份信息、商业机密或任何你不愿第三方处理的内容**；生产与敏感场景请使用你自己的付费 API。
+- **上游条款由你遵守。** 使用各渠道即表示你同意对应上游的服务条款与用量政策；因违反上游政策导致的限流、封禁或其它后果由使用者自行承担。插件不对任何上游的可用性、准确性或连续性作任何承诺。
+- **EAC 渠道为协付性质。** 该渠道的凭据与网关由仓库维护者部署（GitHub 登录 + star 仓库解锁），仅限授权用户使用；请勿尝试绕过授权闸门，勿转售或共享渠道访问权——滥用会导致全体用户的通道被收紧。
+- **本插件与上述任何上游厂商无隶属或背书关系。** 各厂商名称与商标归其各自所有者所有，仅在说明来源时引用。
 
 ## 安全与隐私
 

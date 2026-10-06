@@ -70,6 +70,21 @@ node scripts/live-audit.mjs          # 打印 OK 才算发出去；FAIL 就按�
 用户确认后下载、校验、备份、替换、热重载全部在应用内完成。清单会校验每个文件的
 SHA-256，并在安装前重新拉取一次，避免用陈旧清单校验新文件。
 
+## main 上的发布一致性是强制的（ruleset）
+
+**推送即发布**意味着「改了发布文件却没重签清单」不是普通的 CI 红灯，而是让所有旧
+版本用户的一键升级当场失败（1.4.5 事故、2026-10-06 main 上 1.4.6 的漂移都是这一类）。
+仓库因此给 main 配了 ruleset：`offline` 与 `release-readiness` 两个检查是必需的，且
+改动必须走 PR——清单与实物不一致的树在 merge 前就会被挡下，而不是发布后让用户撞墙。
+
+这带来两条纪律：
+
+- 改了 `package.json` 的 `files` 清单里的任何文件，同一 PR 里必须带上重签后的
+  `feed/manifest.json` 与 `catalog/integrity.json`（`node scripts/build-manifest.mjs`
+  用发布私钥跑一遍即可），否则 `release-readiness` 会红、merge 被拒。
+- ruleset 本身在仓库 Settings → Rules → Rulesets 调整。紧急情况可以临时改成
+  inactive，但事后必须恢复；绕过它的每一次 merge 都要让全量校验立刻补跑。
+
 ## 目录记录与 revision 约定
 
 `catalog/dsh-plugin.json`（`source.revision`）与 `catalog/provenance.json`
@@ -225,6 +240,26 @@ Installed plugins discover the new release automatically (every
 `updateCheckHours`, 6 by default) and notify the user; the upgrade itself runs
 in-app, and the manifest is re-fetched right before installing so a document
 fetched hours earlier cannot be used to vouch for bytes that changed since.
+
+## Release consistency on main is enforced (ruleset)
+
+**Pushing is publishing**, so "edited a released file but skipped the manifest
+rebuild" is not an ordinary red CI run — it breaks the one-click upgrade for
+every user on an older version at once (the 1.4.5 incident, and the 1.4.6 drift
+on main measured 2026-10-06, were exactly this). A ruleset therefore guards
+main: `offline` and `release-readiness` are required checks and changes must
+arrive as pull requests, so a tree whose manifest does not describe its files
+is stopped at merge time instead of failing in the field.
+
+Two disciplines follow:
+
+- Any change to a file in `package.json`'s `files` list must carry the re-signed
+  `feed/manifest.json` and `catalog/integrity.json` in the same PR (run
+  `node scripts/build-manifest.mjs` with the release key); otherwise
+  `release-readiness` goes red and the merge is refused.
+- The ruleset lives in Settings → Rules → Rulesets. In an emergency it can be
+  flipped to inactive, but it must be restored afterwards, and every merge that
+  bypassed it owes an immediate full verification run.
 
 ## Catalog records and the revision convention
 

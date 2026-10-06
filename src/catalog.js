@@ -267,3 +267,172 @@ export function buildEacCatalog(ids) {
 export function isEacEntry(entry) {
   return entry?.channel === EAC_CHANNEL
 }
+
+// ── the Kilo channel ──────────────────────────────────────────────────────────
+//
+// A third producer whose ids are Kilo gateway ids (`org/model`, mostly with a
+// `:free` suffix) and whose entries carry `channel: 'kilo'` end to end: the
+// adapter routes them to their own wire, the probe skips them (their presence
+// in the roster is the verdict — the listing named them this round), and the
+// pages show the channel tag. No credential exists on this lane, so there is
+// nothing to seal, gate, or leak; the cost is stated upstream instead —
+// free-pool prompts may be logged by the provider (README, 免责声明).
+
+export const KILO_CHANNEL = 'kilo'
+export const KILO_TAG = 'Kilo'
+
+/**
+ * The thinking menu the free pool honours, verified live on 2026-10-06.
+ *
+ * The gateway speaks OpenRouter's unified `reasoning` object: `effort` picks a
+ * level, `enabled: false` switches thinking off. Level runs measured on
+ * `nemotron-3.5-lightning` (`reasoning_tokens`: off 0/0/0, low ≈216–252,
+ * medium ≈220–428) — the parameter is accepted and forwarded on every probed
+ * family, so the menu is the model's own control exactly like the EAC lane's,
+ * not a token ladder wearing an effort name.
+ *
+ * Two families refuse the off rung outright — stepfun and liquid answer HTTP
+ * 400 "Reasoning is mandatory for this endpoint and cannot be disabled", and
+ * the two auto-routers accept the parameter but keep thinking anyway (verified
+ * on `kilo-auto/off`), so their menus omit `disabled` rather than promise a
+ * rung that fails the turn. `inkling-small` could not be probed (daily rate
+ * limit) and stays conservative with them; ling-3.1 and laguna-xs inherit the
+ * off rung from their verified siblings (ling-3.0-sante, laguna-s).
+ */
+const KILO_EFFORT_PATCH = { reasoning: { effort: '$effort' } }
+const KILO_EFFORT_OFF_PATCH = { reasoning: { enabled: false } }
+const KILO_REASONING_MANDATORY = [/^stepfun\//, /^liquid\//, /^thinkingmachines\//]
+const KILO_NO_DISABLE_IDS = new Set(['kilo-auto/free', 'openrouter/free'])
+
+/** The declared thinking menu for one listing row, EAC shape, or {} when the
+ *  row does not declare reasoning support at all. */
+function kiloEffortMenuFor(row) {
+  const params = Array.isArray(row?.supported_parameters) ? row.supported_parameters : []
+  if (!params.includes('reasoning')) return {}
+  const id = String(row?.id ?? '')
+  const canDisable = !KILO_REASONING_MANDATORY.some(pattern => pattern.test(id))
+    && !KILO_NO_DISABLE_IDS.has(id)
+  return {
+    efforts: canDisable ? ['disabled', 'low', 'medium', 'high'] : ['low', 'medium', 'high'],
+    // Parity with the EAC lane: the menu's own default is its top level.
+    effortDefault: 'high',
+    effortPatch: KILO_EFFORT_PATCH,
+    ...canDisable ? { effortOffPatch: KILO_EFFORT_OFF_PATCH } : {},
+    canDisableThinking: canDisable,
+  }
+}
+
+/**
+ * Is this raw listing row on Kilo's free pool? Everything else on that gateway
+ * is a paid id that answers 401 keyless, and a picker full of guaranteed
+ * refusals is worse than a short roster.
+ */
+export function isKiloFreeRow(row) {
+  return row?.isFree === true && typeof row?.id === 'string' && row.id.trim() !== ''
+}
+
+/**
+ * The picker name: the listing's own name with the vendor prefix and the
+ * `(free)` qualifier stripped, under the channel tag — `NVIDIA: Nemotron 3
+ * Ultra (free)` → `Kilo Nemotron 3 Ultra`. The `org/` prefix is routing
+ * detail, never a name the picker shows.
+ */
+export function kiloDisplayName(row) {
+  const raw = typeof row?.name === 'string' ? row.name.trim() : ''
+  const bare = (raw !== '' ? raw : String(row?.id ?? ''))
+    .replace(/^[^:]{1,40}:\s+/, '')
+    .replace(/\s*\(free\)\s*$/i, '')
+    .trim()
+  const pretty = bare !== '' ? bare : String(row?.id ?? '')
+    .replace(/[-_.]+/g, ' ').trim()
+    .split(' ')
+    .map(word => (/^\d/.test(word) ? word : word.toUpperCase() === word ? word.toUpperCase() : word.charAt(0).toUpperCase() + word.slice(1)))
+    .join(' ')
+  return `${KILO_TAG} ${pretty}`
+}
+
+function kiloEntryOf(row) {
+  const context = number(row?.context_length) ?? number(row?.top_provider?.context_length) ?? 131072
+  const output = number(row?.top_provider?.max_completion_tokens) ?? 32768
+  const modalities = Array.isArray(row?.architecture?.input_modalities) ? row.architecture.input_modalities : []
+  const menu = kiloEffortMenuFor(row)
+  return {
+    id: String(row.id).trim(),
+    name: kiloDisplayName(row),
+    channel: KILO_CHANNEL,
+    wire: 'chat',
+    vision: modalities.includes('image'),
+    reasoning: true,
+    contextWindow: context,
+    maxOutput: output,
+    // With a declared menu the thinking level itself is the control (a real
+    // effort field on the wire); without one the free lane's token-budget
+    // ladder applies and the model's streaming thinking cannot be switched off.
+    canDisableThinking: menu.canDisableThinking === true,
+    regionSensitive: false,
+    ...menu.efforts === undefined ? {} : {
+      efforts: [...menu.efforts],
+      effortDefault: menu.effortDefault,
+      effortPatch: menu.effortPatch,
+      ...menu.effortOffPatch === undefined ? {} : { effortOffPatch: menu.effortOffPatch },
+    },
+  }
+}
+
+/**
+ * Build the Kilo channel's catalog rows from its raw listing rows.
+ * Rows that are not on the free pool, or that repeat an id, are dropped.
+ */
+export function buildKiloCatalog(rows) {
+  const seen = new Set()
+  const entries = []
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!isKiloFreeRow(row)) continue
+    const entry = kiloEntryOf(row)
+    if (seen.has(entry.id)) continue
+    seen.add(entry.id)
+    entries.push(entry)
+  }
+  return entries
+}
+
+/**
+ * Rebuild the channel's rows from the persisted cache (`kiloRows` in the
+ * catalog store) — the same objects `buildKiloCatalog` produced, re-validated
+ * field by field so a damaged store degrades to a shorter roster instead of a
+ * malformed one.
+ */
+export function reviveKiloCatalog(stored) {
+  const seen = new Set()
+  const entries = []
+  for (const row of Array.isArray(stored) ? stored : []) {
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) continue
+    if (typeof row.id !== 'string' || row.id.trim() === '' || row.channel !== KILO_CHANNEL) continue
+    const entry = {
+      ...kiloEntryOf({ ...row, name: typeof row.name === 'string' && row.name !== '' ? row.name : row.id }),
+      name: typeof row.name === 'string' && row.name !== '' ? row.name : kiloDisplayName({ id: row.id }),
+      contextWindow: number(row.contextWindow) ?? 131072,
+      maxOutput: number(row.maxOutput) ?? 32768,
+      vision: row.vision === true,
+    }
+    // The persisted rows are built entries, not listing rows, so the declared
+    // thinking menu travels with them (validated field by field) instead of
+    // being re-derived from a `supported_parameters` array they never had.
+    if (Array.isArray(row.efforts) && row.efforts.length > 0) {
+      entry.efforts = row.efforts.filter(level => typeof level === 'string')
+      entry.effortDefault = typeof row.effortDefault === 'string' ? row.effortDefault : entry.effortDefault
+      if (row.effortPatch !== undefined && row.effortPatch !== null && typeof row.effortPatch === 'object') entry.effortPatch = row.effortPatch
+      if (row.effortOffPatch !== undefined && row.effortOffPatch !== null && typeof row.effortOffPatch === 'object') entry.effortOffPatch = row.effortOffPatch
+      entry.canDisableThinking = entry.efforts.includes('disabled')
+    }
+    if (seen.has(entry.id)) continue
+    seen.add(entry.id)
+    entries.push(entry)
+  }
+  return entries
+}
+
+/** Is this catalog row from the Kilo channel? */
+export function isKiloEntry(entry) {
+  return entry?.channel === KILO_CHANNEL
+}
