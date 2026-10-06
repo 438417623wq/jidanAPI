@@ -40,6 +40,7 @@ import { outletLabel, readOutletSelection, startEgressRelay } from './src/egress
 import { directFetch, fetchSealedListing } from './src/eac.js'
 import { fetchKiloListing } from './src/kilo.js'
 import { clearEacUser, readEacUser, writeEacUser } from './src/eac-user.js'
+import { createEacLoginPoller } from './src/eac-login.js'
 import { unlockSealedLane } from './src/vault.js'
 import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
@@ -289,7 +290,7 @@ export function apply(ctx, config) {
     try {
       const response = await directFetch(`${eacAuthRootOf(credential)}/auth/status`, {
         headers: { accept: 'application/json', ...(local === null ? {} : { 'x-ofm-user': local.token }) },
-        signal: AbortSignal.timeout(8000),
+        signal: AbortSignal.timeout(15_000),
       })
       const data = await response.json().catch(() => null)
       if (!response.ok || data === null) throw new Error('bad answer')
@@ -318,6 +319,13 @@ export function apply(ctx, config) {
       return fallback
     }
   }
+  const eacLoginPoller = createEacLoginPoller({
+    credentialOf: sealedCredentialOf, fetch: directFetch,
+    readUser: readEacUser, writeUser: writeEacUser,
+    onSaved: saved => {
+      eacAuthCache.data = { ...eacAuthCache.data, available: true, local: true, authorized: true, login: saved.login, avatar: saved.avatar, savedAt: saved.savedAt }
+    },
+  })
   const eacAuth = {
     /** Fresh read; the settings page calls this on mount and after actions. */
     status: eacAuthStatus,
@@ -332,34 +340,12 @@ export function apply(ctx, config) {
       return { url, link, opened: openExternal(url) }
     },
     /** Collect the token the browser flow just produced. */
-    async poll(link) {
-      const credential = sealedCredentialOf()
-      if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
-      if (typeof link !== 'string' || !/^[A-Za-z0-9_-]{16,64}$/.test(link)) return { error: 'bad-link' }
-      let data
-      try {
-        const response = await directFetch(`${eacAuthRootOf(credential)}/auth/poll?link=${encodeURIComponent(link)}`, {
-          headers: { accept: 'application/json' },
-          signal: AbortSignal.timeout(8000),
-        })
-        data = await response.json().catch(() => null)
-        if (!response.ok || data === null) return { error: 'gateway' }
-      } catch {
-        return { error: 'unreachable' }
-      }
-      if (data.status === 'ok' && typeof data.token === 'string' && data.token !== '') {
-        const saved = writeEacUser({ token: data.token, login: data.login ?? '', avatar: data.avatar ?? '' })
-        if (saved === null) return { error: 'not-writable' }
-        eacAuthCache.data = { ...eacAuthCache.data, available: true, local: true, authorized: true, login: saved.login, avatar: saved.avatar, savedAt: saved.savedAt }
-        return { status: 'ok', login: saved.login }
-      }
-      if (data.status === 'unstarred') return { status: 'unstarred', login: data.login ?? '', repo: data.repo ?? '' }
-      return { status: 'pending' }
-    },
+    poll: link => eacLoginPoller.poll(link),
     /** Revoke server-side, then forget locally. Local removal is the part that
      * must always happen — a gateway that cannot be reached must not leave the
      * user logged in on this machine. */
     async logout() {
+      eacLoginPoller.reset()
       const credential = sealedCredentialOf()
       const local = readEacUser()
       if (local !== null && credential !== null && credential.mode === 'worker') {
@@ -1595,6 +1581,7 @@ export function apply(ctx, config) {
 
   ctx.effect(() => () => {
     disposed = true
+    eacLoginPoller.reset()
     // The geography-reprobe timer belongs to this generation; without this it
     // outlives teardown and fires a forced probe round after the stores it
     // reads have been disposed (the rejection gets swallowed, quota burned).

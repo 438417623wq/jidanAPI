@@ -15,7 +15,8 @@
  *     │◀─ poll /auth/poll?link ───────│◀── callback?code ──┤
  *     │                               │ exchange code, GET /user,
  *     │                               │ GET /user/starred/<repo>
- *     │◀─ token (once) ───────────────│ starred ⇒ mint per-user token
+ *     │◀─ token + ack ───────────────│ starred ⇒ mint per-user token
+ *     │ ── ack after local save ─────▶│
  *     │ ── x-ofm-user: token ────────▶│ chat turns are refused without it
  *
  * Storage is `users.json` next to this file (0600, atomic writes): GitHub
@@ -493,8 +494,28 @@ export function createAuthGate(env = {}, options = {}) {
         return json(res, 200, { status: 'pending' }), true
       }
       if (entry.status === 'unstarred') return json(res, 200, { status: 'unstarred', login: entry.login, repo: starRepo }), true
-      pending.delete(link) // one-shot: the token is collected exactly once
-      return json(res, 200, { status: 'ok', token: entry.token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo }), true
+      const found = lookup(entry.token)
+      if (found === null || found.user.starred !== true) {
+        pending.delete(link)
+        return json(res, 200, { status: 'pending' }), true
+      }
+      const retain = url.searchParams.get('retain') === '1'
+      if (!retain) pending.delete(link) // legacy clients still collect once
+      return json(res, 200, { status: 'ok', token: entry.token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo, ...(retain ? { ackRequired: true } : {}) }), true
+    }
+
+    if (req.method === 'POST' && route === '/auth/ack') {
+      const link = url.searchParams.get('link') ?? ''
+      if (!LINK_PATTERN.test(link)) return json(res, 400, { error: { message: 'bad link code' } }), true
+      const token = String(req.headers['x-ofm-user'] ?? '')
+      const found = lookup(token)
+      const entry = pending.get(link)
+      if (found === null || found.user.starred !== true || (entry !== undefined && entry.token !== token)) {
+        return json(res, 401, { error: { message: 'invalid delivery confirmation' } }), true
+      }
+      // Idempotent after the matching delivery has already been removed.
+      pending.delete(link)
+      return json(res, 200, { ok: true }), true
     }
 
     if (req.method === 'GET' && route === '/auth/status') {

@@ -274,6 +274,112 @@ try {
   await new Promise(resolve => primary.server.close(resolve))
 }
 
+// Retained delivery survives a lost response and requires the matching token.
+{
+  const gh = makeGithubStub()
+  gh.state.starred = true
+  const retained = await startGateway(gh, { REQUIRE_USER_TOKEN: '1' })
+  const authorize = async link => {
+    const start = await get(`${retained.base}/auth/github/start?link=${link}`)
+    const state = new URL(start.headers.get('location')).searchParams.get('state')
+    await get(`${retained.base}/auth/github/callback?code=retained&state=${encodeURIComponent(state)}`)
+    return (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()
+  }
+  try {
+    const link = 'r'.repeat(32), otherLink = 's'.repeat(32)
+    const first = await authorize(link)
+    const retry = await (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()
+    check('retained delivery repeats the same token after a lost response', [first.status, first.ackRequired, retry.token === first.token], ['ok', true, true])
+    const other = await authorize(otherLink)
+    check('a different valid user token cannot ACK another delivery', (await post(`${retained.base}/auth/ack?link=${link}`, { 'x-ofm-user': other.token })).status, 401)
+    check('an unauthenticated ACK is refused', (await post(`${retained.base}/auth/ack?link=${link}`)).status, 401)
+    check('failed ACK leaves the original delivery collectable', (await (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()).token === first.token, true)
+    check('matching ACK succeeds', (await post(`${retained.base}/auth/ack?link=${link}`, { 'x-ofm-user': first.token })).status, 200)
+    check('matching ACK is idempotent', (await post(`${retained.base}/auth/ack?link=${link}`, { 'x-ofm-user': first.token })).status, 200)
+    check('ACK removes pending delivery', (await (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()).status, 'pending')
+    await post(`${retained.base}/auth/logout`, { 'x-ofm-user': other.token })
+    check('a revoked token cannot be redelivered', (await (await get(`${retained.base}/auth/poll?link=${otherLink}&retain=1`)).json()).status, 'pending')
+    check('a revoked token cannot ACK', (await post(`${retained.base}/auth/ack?link=${otherLink}`, { 'x-ofm-user': other.token })).status, 401)
+  } finally {
+    retained.server.authGate.close()
+    await new Promise(resolve => retained.server.close(resolve))
+  }
+}
+
+// Exercise the actual Host collector, Node transport, disk persistence and
+// gateway together. GitHub is stubbed; all HTTP stays on loopback.
+{
+  const { createEacLoginPoller } = await import('../src/eac-login.js')
+  const { directFetch } = await import('../src/eac.js')
+  const { readEacUser, writeEacUser } = await import('../src/eac-user.js')
+  const previousHome = process.env.DSH_HOME
+  const clientHome = fs.mkdtempSync(path.join(os.tmpdir(), 'eac-host-delivery-'))
+  process.env.DSH_HOME = clientHome
+  const gh = makeGithubStub(); gh.state.starred = true
+  const gateway = await startGateway(gh, { REQUIRE_USER_TOKEN: '1' })
+  try {
+    const link = 'h'.repeat(32)
+    const start = await get(`${gateway.base}/auth/github/start?link=${link}`)
+    const state = new URL(start.headers.get('location')).searchParams.get('state')
+    await get(`${gateway.base}/auth/github/callback?code=host-delivery&state=${encodeURIComponent(state)}`)
+    let savedBeforeAck = false, ackStatus = null
+    const collector = createEacLoginPoller({
+      credentialOf: () => ({ mode: 'worker', base: `${gateway.base}/v1` }),
+      readUser: readEacUser, writeUser: writeEacUser, onSaved() {},
+      fetch: async (url, init) => {
+        if (url.includes('/auth/ack?')) savedBeforeAck = readEacUser()?.token === init.headers['x-ofm-user']
+        const response = await directFetch(url, init)
+        if (url.includes('/auth/ack?')) ackStatus = response.status
+        return response
+      },
+    })
+    const result = await collector.poll(link)
+    const saved = readEacUser()
+    check('real Host collection saves before the gateway ACK', [result.status, savedBeforeAck, ackStatus], ['ok', true, 200])
+    check('the actual Host response contains no user token', typeof result.token, 'undefined')
+    const status = await (await get(`${gateway.base}/auth/status`, { 'x-ofm-user': saved?.token ?? '' })).json()
+    check('the saved local token authorizes against the real gateway', [status.authorized, status.required], [true, true])
+    check('gateway delivery is removed after Host confirmation', (await (await get(`${gateway.base}/auth/poll?link=${link}&retain=1`)).json()).status, 'pending')
+    check('the Host still completes a retry of its lost local response', (await collector.poll(link)).status, 'ok')
+  } finally {
+    if (previousHome === undefined) delete process.env.DSH_HOME
+    else process.env.DSH_HOME = previousHome
+    gateway.server.authGate.close()
+    await new Promise(resolve => gateway.server.close(resolve))
+    fs.rmSync(clientHome, { recursive: true, force: true })
+    fs.rmSync(gateway.dir, { recursive: true, force: true })
+  }
+}
+
+// Use the real gate with a controlled clock to prove retained TTL and unstar.
+{
+  const { createAuthGate } = await import('../worker/auth-github.mjs')
+  const gh = makeGithubStub(); gh.state.starred = true
+  let clock = Date.now()
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eac-delivery-expiry-'))
+  const gate = createAuthGate({ GITHUB_CLIENT_ID: 'test', GITHUB_CLIENT_SECRET: 'test', USER_STORE_KEY: SIGNING, REQUIRE_USER_TOKEN: '1', MOUNT_PREFIX: '/eac' }, { now: () => clock, fetchImpl: gh.impl, storePath: path.join(dir, 'users.json'), log() {} })
+  const server = http.createServer((req, res) => gate.handle(req, res, new URL(req.url, 'http://localhost')))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const base = `http://127.0.0.1:${server.address().port}/eac`
+  const authorize = async link => {
+    const start = await get(`${base}/auth/github/start?link=${link}`)
+    const state = new URL(start.headers.get('location')).searchParams.get('state')
+    await get(`${base}/auth/github/callback?code=ttl&state=${encodeURIComponent(state)}`)
+  }
+  try {
+    const link = 't'.repeat(32)
+    await authorize(link)
+    clock += 15 * 60_000 + 1
+    check('retained delivery expires after 15 minutes', (await (await get(`${base}/auth/poll?link=${link}&retain=1`)).json()).status, 'pending')
+    await authorize('u'.repeat(32))
+    gh.state.starred = false
+    await gate.recheckUser('4242', true)
+    check('removed star prevents retained token redelivery', (await (await get(`${base}/auth/poll?link=${'u'.repeat(32)}&retain=1`)).json()).status, 'pending')
+  } finally {
+    gate.close(); await new Promise(resolve => server.close(resolve)); fs.rmSync(dir, { recursive: true, force: true })
+  }
+}
+
 // ── 6. the compatibility window ──────────────────────────────────────────────
 {
   const githubWindow = makeGithubStub()

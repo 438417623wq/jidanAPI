@@ -90,6 +90,10 @@ window.__ModuleLoader__.load({
         'eac.pillLocked': '未授权',
         'eac.pillRequired': '已开启强制',
         'eac.pillCompat': '兼容期',
+        'eac.pillUnknown': '授权策略未确认',
+        'eac.pollFailed': '领取授权失败（{reason}），正在自动重试；无需重新授权。',
+        'eac.saveFailed': '授权已完成，但本机无法保存登录记录。请检查 DSH_HOME 目录权限；修复后将自动重试。',
+        'eac.cancel': '取消此次登录',
         'eac.pillUnverified': '网关暂不可达',
         'eac.intro': 'EAC 渠道的对话在服务器侧校验授权：用 GitHub 登录，并给 {repo} 点一个 Star，即可解锁。登录在浏览器里完成，无需复制粘贴；取消 Star 后授权会自动失效。',
         'eac.login': '使用 GitHub 登录',
@@ -524,6 +528,10 @@ window.__ModuleLoader__.load({
         'eac.pillLocked': 'not authorized',
         'eac.pillRequired': 'enforced',
         'eac.pillCompat': 'grace period',
+        'eac.pillUnknown': 'authorization policy unverified',
+        'eac.pollFailed': 'Could not collect authorization ({reason}); retrying automatically. No new sign-in is needed.',
+        'eac.saveFailed': 'Authorization completed, but this machine could not save it. Check DSH_HOME permissions; collection will retry automatically.',
+        'eac.cancel': 'Cancel this sign-in',
         'eac.pillUnverified': 'gateway unreachable',
         'eac.intro': 'EAC turns are checked server-side: sign in with GitHub and star {repo} to unlock them. The browser does the work — nothing to paste — and removing the star revokes access automatically.',
         'eac.login': 'Sign in with GitHub',
@@ -1697,7 +1705,7 @@ window.__ModuleLoader__.load({
           ? h(Fragment, null,
             h('p', { className: 'ofm_note' }, t('eac.lockedNote')),
             eacLogin === undefined ? null : h('div', { className: 'ofm_row' },
-              h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+              h(Button, { kind: 'primary', disabled: eacLogin.busy || eacLogin.pending !== null, onClick: eacLogin.login },
                 eacLogin.busy ? t('eac.starting') : t('eac.login'))))
           : null,
         m.availability === 'region-blocked' ? h('p', { className: 'ofm_note' }, t('hint.region'))
@@ -1873,69 +1881,113 @@ window.__ModuleLoader__.load({
     // 登录流（发起、轮询、busy/notice）住在 SettingsPage 级的 hook 里：页头的
     // 未授权按钮、上锁模型卡的「去授权」和这个面板必须共享同一个进行中的会话，
     // 各挂一份轮询会互相抢令牌的领取权。
+    const EAC_LOGIN_TTL = 10 * 60_000
+    const EAC_LOGIN_KEY = `ofm.eac.pending:${API}`
+    function rememberEacLogin(pending) {
+      try {
+        if (pending === null) sessionStorage.removeItem(EAC_LOGIN_KEY)
+        else sessionStorage.setItem(EAC_LOGIN_KEY, JSON.stringify(pending))
+      } catch { /* restricted browser storage: this mounted page can still log in */ }
+    }
+    function restoreEacLogin() {
+      try {
+        const value = JSON.parse(sessionStorage.getItem(EAC_LOGIN_KEY))
+        if (value !== null && /^[A-Za-z0-9_-]{16,64}$/.test(value.link)
+          && typeof value.url === 'string' && /^https?:\/\//.test(value.url)
+          && Number.isFinite(value.startedAt) && value.startedAt <= Date.now()
+          && Date.now() - value.startedAt < EAC_LOGIN_TTL) return value
+      } catch { /* absent or malformed */ }
+      rememberEacLogin(null)
+      return null
+    }
     function useEacLogin({ t, summary, onAuth }) {
       const [busy, setBusy] = useState(false)
       const [notice, setNotice] = useState('')
-      const [pending, setPending] = useState(null)
+      const [pending, setPending] = useState(restoreEacLogin)
       const [copied, setCopied] = useState(false)
-
-      // 授权状态由 SettingsPage 持有（模型卡的锁标记与这个面板必须看到同一个
-      // 判定），这里只负责发起动作与把新判定送回去。
+      const starting = useRef(false)
+      const attempt = useRef(0)
+      const pendingRef = useRef(pending)
+      pendingRef.current = pending
+      const updatePending = value => {
+        pendingRef.current = value
+        rememberEacLogin(value)
+        setPending(value)
+      }
       const refresh = useCallback(() => {
-        api('/eac/status').then(onAuth).catch(() => onAuth({ available: false, authorized: false, login: '' }))
+        api('/eac/status', { timeout: 20_000 }).then(onAuth).catch(() => onAuth({ available: true, authorized: false, login: '', unverified: true }))
       }, [onAuth])
-      // 轮询闭包要用的 summary 每帧都是新对象，放进依赖会让定时器每帧重建、
-      // 密集渲染下永远等不到下一次触发——用 ref 取最新值。
       const latest = useRef(summary)
       latest.current = summary
+      const latestT = useRef(t)
+      latestT.current = t
 
-      // 登录进行中时轮询网关领取令牌：2.5 秒一次，够快也不至于压网关；整轮
-      // 十分钟放弃，与网关保留待领取链接的窗口一致。
+      // Schedule only after completion: slow gateway responses must not create
+      // overlapping collectors. The link survives settings-page remounts.
       useEffect(() => {
         if (pending === null) return undefined
         let alive = true
-        const timer = setInterval(async () => {
-          if (Date.now() - pending.startedAt > 10 * 60_000) { setPending(null); setNotice(t('eac.expired')); return }
+        let timer
+        const poll = async () => {
+          const t = latestT.current
+          if (!alive) return
+          if (Date.now() - pending.startedAt >= EAC_LOGIN_TTL) {
+            updatePending(null); setNotice(t('eac.expired')); return
+          }
           try {
-            const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`)
-            if (!alive) return
+            const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`, { timeout: 22_000 })
+            if (!alive || pendingRef.current?.link !== pending.link) return
             if (result.status === 'ok') {
-              setPending(null)
+              updatePending(null)
               setNotice(t('eac.done').replace('{login}', result.login ?? ''))
-              refresh()
-              latest.current?.reload?.()
-            } else if (result.status === 'unstarred') {
-              setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
+              refresh(); latest.current?.reload?.()
+              return
             }
-          } catch { /* 链接可能还会完成，继续轮询 */ }
-        }, 2500)
-        return () => { alive = false; clearInterval(timer) }
+            if (result.status === 'unstarred') setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
+            else setNotice('')
+          } catch (error) {
+            if (!alive || pendingRef.current?.link !== pending.link) return
+            const reason = String(error?.message ?? '')
+            // Never render response HTML, URL or credentials as diagnostics.
+            const safe = /^gateway-http-\d{3}$/.test(reason) ? `HTTP ${reason.slice(-3)}`
+              : ['unreachable', 'malformed', 'not-writable', 'cancelled', 'no-lane', 'bad-link', 'timeout'].includes(reason) ? reason : 'unreachable'
+            setNotice(reason === 'not-writable' ? t('eac.saveFailed') : t('eac.pollFailed').replace('{reason}', safe))
+          }
+          if (alive && pendingRef.current?.link === pending.link) timer = setTimeout(poll, 2500)
+        }
+        timer = setTimeout(poll, 2500)
+        return () => { alive = false; clearTimeout(timer) }
       }, [pending, refresh])
 
+      const cancel = () => { attempt.current++; updatePending(null); setNotice('') }
       const login = async () => {
+        if (starting.current || pendingRef.current !== null) return
+        starting.current = true
+        const current = ++attempt.current
         setBusy(true); setNotice('')
         try {
           const started = await post('/eac/login/start')
+          if (current !== attempt.current) return
           if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
-          setPending({ link: started.link, url: started.url, startedAt: Date.now() })
+          updatePending({ link: started.link, url: started.url, startedAt: Date.now() })
           if (started.opened !== true) setNotice(t('eac.openManually'))
         } catch (error) {
-          setNotice(String(error?.message ?? error))
-        } finally { setBusy(false) }
+          if (current === attempt.current) setNotice(t('eac.startFailed').replace('{reason}', 'unreachable'))
+        } finally { starting.current = false; setBusy(false) }
       }
       const logout = async () => {
-        setBusy(true)
+        cancel(); setBusy(true)
         try {
           await post('/eac/logout')
-          setNotice(''); setPending(null); refresh(); latest.current?.reload?.()
-        } catch { /* 本地记录已被后端清除，这里不必再报错 */ } finally { setBusy(false) }
+          refresh(); latest.current?.reload?.()
+        } catch { setNotice(t('eac.startFailed').replace('{reason}', 'unreachable')) } finally { setBusy(false) }
       }
-      return { busy, notice, pending, copied, setCopied, refresh, login, logout }
+      return { busy, notice, pending, copied, setCopied, refresh, login, logout, cancel }
     }
 
     function EacAuth(props) {
       const { t, auth, eacLogin } = props
-      const { busy, notice, pending, copied, setCopied, refresh, login, logout } = eacLogin
+      const { busy, notice, pending, copied, setCopied, refresh, login, logout, cancel } = eacLogin
 
       if (auth === undefined) return h('p', { className: 'ofm_note' }, t('loading'))
       if (auth.available !== true) return h('p', { className: 'ofm_note' }, t('eac.noLane'))
@@ -1945,7 +1997,7 @@ window.__ModuleLoader__.load({
           auth.authorized === true
             ? h(Pill, { strong: true, tone: 'ok' }, t('eac.pillOk'))
             : h(Pill, { strong: true, tone: 'warn' }, t('eac.pillLocked')),
-          auth.required === true ? h(Pill, { tone: 'err' }, t('eac.pillRequired')) : h(Pill, null, t('eac.pillCompat')),
+          auth.required === true ? h(Pill, { tone: 'err' }, t('eac.pillRequired')) : h(Pill, null, auth.required === false ? t('eac.pillCompat') : t('eac.pillUnknown')),
           auth.unverified === true ? h(Pill, { tone: 'warn' }, t('eac.pillUnverified')) : null),
         h('p', { className: 'ofm_note' }, t('eac.intro').replace('{repo}', repo)),
         auth.authorized === true
@@ -1954,12 +2006,13 @@ window.__ModuleLoader__.load({
             h(Button, { disabled: busy, onClick: refresh }, t('eac.recheck')),
             h(Button, { disabled: busy, onClick: logout }, t('eac.logout')))
           : h('div', { className: 'ofm_row' },
-            h(Button, { kind: 'primary', disabled: busy, onClick: login }, busy ? t('eac.starting') : t('eac.login')),
+            h(Button, { kind: 'primary', disabled: busy || pending !== null, onClick: login }, busy ? t('eac.starting') : t('eac.login')),
             h(StarButton, { t, repo })),
         pending !== null
           ? h('div', { className: 'ofm_callout' },
             h('div', null,
               h('div', null, t('eac.waiting')),
+              h(Button, { kind: 'ghost', onClick: cancel }, t('eac.cancel')),
               h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
                 h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
                 h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
@@ -3404,7 +3457,7 @@ window.__ModuleLoader__.load({
       const [eacAuth, setEacAuth] = useState(undefined)
       useEffect(() => {
         let alive = true
-        const load = () => api('/eac/status')
+        const load = () => api('/eac/status', { timeout: 20_000 })
           .then(data => { if (alive) setEacAuth(data) })
           .catch(() => { if (alive) setEacAuth({ available: false, authorized: false, login: '' }) })
         load()
@@ -3634,7 +3687,7 @@ window.__ModuleLoader__.load({
                 // 未授权时把登录入口放到页头：撞到「没授权」的用户第一眼看到的
                 // 位置就该有钥匙，而不是要先找到下方的授权区。
                 eacAuth?.available === true && eacAuth?.authorized !== true
-                  ? h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+                  ? h(Button, { kind: 'primary', disabled: eacLogin.busy || eacLogin.pending !== null, onClick: eacLogin.login },
                     eacLogin.busy ? t('eac.starting') : t('eac.login'))
                   : null,
                 h(StarButton, { t })),
@@ -3912,7 +3965,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, useEacLogin, EacAuth }
     return module.exports
   },
 })
