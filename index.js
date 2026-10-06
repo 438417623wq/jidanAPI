@@ -354,6 +354,9 @@ export function apply(ctx, config) {
         return { status: 'ok', login: saved.login }
       }
       if (data.status === 'unstarred') return { status: 'unstarred', login: data.login ?? '', repo: data.repo ?? '' }
+      // The gateway no longer knows this link (collect window passed, or its
+      // process lost the pending login): waiting longer cannot help the user.
+      if (data.status === 'expired') return { status: 'expired' }
       return { status: 'pending' }
     },
     /** Revoke server-side, then forget locally. Local removal is the part that

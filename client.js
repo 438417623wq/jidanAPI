@@ -100,6 +100,8 @@ window.__ModuleLoader__.load({
         'eac.done': '授权成功：@{login}，现在可以使用 EAC 模型了。',
         'eac.needStar': '已用 @{login} 登录，但还没有 star 仓库；请先 Star，再在授权页点「我已 star，重新检查」。',
         'eac.expired': '这次登录等待超时了，请重新发起。',
+        'eac.sessionExpired': '登录链接已失效（服务器不再认识它），请重新发起 GitHub 登录。',
+        'eac.gatewayFlaky': '暂时连不上授权网关，正在自动重试……',
         'eac.openManually': '浏览器没有自动打开，请手动访问下面的地址完成授权。',
         'eac.startFailed': '无法发起登录（{reason}）。',
         'eac.loggedIn': '已授权：@{login} · 上次复查 {when}',
@@ -534,6 +536,8 @@ window.__ModuleLoader__.load({
         'eac.done': 'Authorized as @{login} — EAC models are unlocked.',
         'eac.needStar': 'Signed in as @{login}, but the repository is not starred yet. Star it, then press "I starred it — check again" on the authorization page.',
         'eac.expired': 'This login attempt timed out; please start again.',
+        'eac.sessionExpired': 'The login link is no longer valid (the server does not know it) — please start the GitHub login again.',
+        'eac.gatewayFlaky': 'The authorization gateway is temporarily unreachable; retrying automatically…',
         'eac.openManually': 'The browser did not open automatically — visit the address below to finish.',
         'eac.startFailed': 'Could not start the login ({reason}).',
         'eac.loggedIn': 'Authorized: @{login} · last checked {when}',
@@ -1894,20 +1898,35 @@ window.__ModuleLoader__.load({
       useEffect(() => {
         if (pending === null) return undefined
         let alive = true
+        let misses = 0 // 连续失败的次数：第 3 次提示一次，成功后归零
         const timer = setInterval(async () => {
           if (Date.now() - pending.startedAt > 10 * 60_000) { setPending(null); setNotice(t('eac.expired')); return }
+          let result
           try {
-            const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`)
+            result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`)
             if (!alive) return
-            if (result.status === 'ok') {
-              setPending(null)
-              setNotice(t('eac.done').replace('{login}', result.login ?? ''))
-              refresh()
-              latest.current?.reload?.()
-            } else if (result.status === 'unstarred') {
-              setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
-            }
-          } catch { /* 链接可能还会完成，继续轮询 */ }
+            misses = 0
+          } catch {
+            // 网关这一跳可能在重启/抖动（520 那类故障）：不能一声不吭地装作
+            // 还在等授权，提示一句，然后继续轮询等它缓过来。
+            if (alive && ++misses === 3) setNotice(t('eac.gatewayFlaky'))
+            return
+          }
+          if (result.status === 'ok') {
+            setPending(null)
+            setNotice(t('eac.done').replace('{login}', result.login ?? ''))
+            refresh()
+            latest.current?.reload?.()
+          } else if (result.status === 'unstarred') {
+            setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
+          } else if (result.status === 'expired') {
+            // 网关不再认识这个链接（窗口已过或它重启丢了待领条目）：再等也等不到。
+            setPending(null)
+            setNotice(t('eac.sessionExpired'))
+          } else if (result.error !== undefined && ++misses === 3) {
+            // 领取请求到了网关但被拒（网关出错/不可达）：保持轮询，给用户一个交代。
+            setNotice(t('eac.gatewayFlaky'))
+          }
         }, 2500)
         return () => { alive = false; clearInterval(timer) }
       }, [pending, refresh])

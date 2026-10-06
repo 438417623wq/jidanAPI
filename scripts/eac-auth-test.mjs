@@ -10,7 +10,9 @@
  *    expired state, a bad link code, or an unconfigured gateway is refused.
  * 2. **Star verdict** — 204 mints a per-user token, 404 keeps the user on a
  *    recheck ticket that needs no second OAuth round, and the token is
- *    collectable exactly once.
+ *    collectable by repeated polls until the pending window closes: a lost
+ *    poll response is retried by the plugin instead of stranding the login,
+ *    and the pending entry survives a gateway restart.
  * 3. **Enforcement** — with REQUIRE_USER_TOKEN=1 a chat turn without a valid
  *    token is 401 AuthorizationRequired *before* the relay is touched, a
  *    valid one reaches the relay, listings stay open, a removed star revokes
@@ -98,7 +100,10 @@ function makeGithubStub() {
 }
 
 async function startGateway(github, patch = {}, upstreamPort = relay.port) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eac-auth-'))
+  // `__dir` reuses a previous instance's directory (same users.json): that is
+  // how the restart-persistence contract further down is tested.
+  const { __dir: reuseDir, ...rest } = patch
+  const dir = reuseDir ?? fs.mkdtempSync(path.join(os.tmpdir(), 'eac-auth-'))
   const env = {
     UPSTREAM_URL: `http://127.0.0.1:${upstreamPort}/v1`,
     UPSTREAM_API_KEY: 'sk-relay-test',
@@ -117,7 +122,7 @@ async function startGateway(github, patch = {}, upstreamPort = relay.port) {
     CONCURRENCY_PER_IP: '0',
     SSE_PRELUDE_SECONDS: '0',
     LOG_SALT: 'auth-test-salt',
-    ...patch,
+    ...rest,
   }
   const server = createGatewayServer(env, { authFetch: github.impl })
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
@@ -186,6 +191,8 @@ try {
   check('and a state that is not the link itself', authorize.searchParams.get('state') !== 'a'.repeat(32) && authorize.searchParams.get('state').includes('.'), true)
 
   check('a bad link code is refused', (await get(`${primary.base}/auth/github/start?link=short`)).status, 400)
+  check('poll before the callback is just pending', (await (await get(`${primary.base}/auth/poll?link=${'a'.repeat(32)}`)).json()).status, 'pending')
+  check('a link the gate never opened is expired, not pending', (await (await get(`${primary.base}/auth/poll?link=${'f'.repeat(32)}`)).json()).status, 'expired')
 
   const callbackPath = `/eac/auth/github/callback?code=code-test&state=${encodeURIComponent(authorize.searchParams.get('state'))}`
   const tampered = await get(`http://127.0.0.1:${new URL(primary.base).port}/eac/auth/github/callback?code=code-test&state=${encodeURIComponent('x' + authorize.searchParams.get('state'))}`)
@@ -205,8 +212,11 @@ try {
   check('recheck after starring grants without a new OAuth round', [rechecked.status, (await rechecked.text()).includes('已确认 Star')], [200, true])
 
   const collected = await (await get(`${primary.base}/auth/poll?link=${'a'.repeat(32)}`)).json()
-  check('poll hands the token over once', [collected.status, collected.login, typeof collected.token === 'string' && collected.token.length >= 32], ['ok', 'octocat', true])
-  check('and only once', (await (await get(`${primary.base}/auth/poll?link=${'a'.repeat(32)}`)).json()).status, 'pending')
+  check('poll hands the token over', [collected.status, collected.login, typeof collected.token === 'string' && collected.token.length >= 32], ['ok', 'octocat', true])
+  // 收取是幂等的：一次领取的响应可能在半路死掉（源站重启/代理掐断都会变成
+  // 520），客户端只能靠再轮询一次自救——一次性领取把这种抖动变成永久卡死。
+  const recollected = await (await get(`${primary.base}/auth/poll?link=${'a'.repeat(32)}`)).json()
+  check('and again, until the window closes', [recollected.status, recollected.token === collected.token], ['ok', true])
 
   const token = collected.token
   const statusWith = await (await get(`${primary.base}/auth/status`, { 'x-ofm-user': token })).json()
@@ -221,6 +231,21 @@ try {
   // Windows has no POSIX mode bits to check — writeFileSync's mode is a no-op
   // there, and the repo's own JsonStore makes the same trade.
   check('and it is 0600 where the platform has modes', process.platform === 'win32' || mode === 0o600, true)
+
+  // ── 3b. a completed login survives a gateway restart ───────────────────────
+  // The live host restarts its gateway (deploys, panel actions, the old
+  // watch-mode restart storm that caused HTTP 520 mid-login): a login between
+  // callback and collect must not evaporate with the process.
+  {
+    const reborn = await startGateway(github, { __dir: primary.dir, REQUIRE_USER_TOKEN: '1' })
+    try {
+      const after = await (await get(`${reborn.base}/auth/poll?link=${'a'.repeat(32)}`)).json()
+      check('the pending token is still collectable after a restart', [after.status, after.token === token, after.login], ['ok', true, 'octocat'])
+      check('the user it belongs to is still authorized', (await (await get(`${reborn.base}/auth/status`, { 'x-ofm-user': token })).json()).authorized, true)
+    } finally {
+      reborn.server.close()
+    }
+  }
 
   // ── 4. enforcement ─────────────────────────────────────────────────────────
   const chatPath = '/eac/v1/chat/completions'
