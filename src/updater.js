@@ -4,15 +4,16 @@
  * The plugin updates itself from the same place the owner publishes it: a
  * manifest in the repository listing every file of the release with its size
  * and SHA-256. Applying an update is download → verify → stage → backup →
- * replace → verify → reload, and every step is built to leave either the old
- * version or the new one intact — never a mixture:
+ * replace → verify → reload. Filesystem access failures can also prevent
+ * rollback; in that case the verified backup is retained and the incomplete
+ * transaction is reported explicitly:
  *
  * - downloads land in a staging directory under the plugin's data dir and are
  *   hash-checked before anything on the installed copy is touched;
  * - the running process keeps executing from its in-memory module graph, so
  *   replacing files on disk cannot disturb a live request;
  * - the installed package is backed up first, a failed verification restores
- *   it, and a failed reload rolls the package back before re-registering;
+ *   it, and a failed reload also restores the disk from that same backup;
  * - replacements are written as `<file>.ofm-new` beside their target and
  *   renamed over it, so a crash mid-swap cannot truncate a file that the next
  *   boot will import (transient Windows EPERM from indexers is retried).
@@ -127,6 +128,10 @@ const MAX_MANIFEST_BYTES = 256 * 1024
 const MAX_FILE_BYTES = 4 * 1024 * 1024
 const MAX_FILES = 80
 const SHA_RE = /^[0-9a-f]{64}$/
+// Hot reload evaluates a fresh updater module before the old request finishes.
+// A process-wide lock keeps the successor from starting a second transaction.
+const UPGRADE_LOCKS = Symbol.for('our-free-model.upgrade-locks')
+const upgradeLocks = globalThis[UPGRADE_LOCKS] ??= new Set()
 
 /** Parse `1.2.3` / `1.2.3-rc.4` into a comparable tuple; `null` when malformed. */
 export function parseVersion(value) {
@@ -394,14 +399,86 @@ export function listPackageFiles(dir) {
  * @returns {number} files backed up
  */
 export function backupPackage(pkgDir, backupDir) {
-  fs.rmSync(backupDir, { recursive: true, force: true })
-  const files = listPackageFiles(pkgDir)
-  for (const rel of files) {
-    const target = path.join(backupDir, ...rel.split('/'))
-    fs.mkdirSync(path.dirname(target), { recursive: true })
-    fs.copyFileSync(path.join(pkgDir, ...rel.split('/')), target)
+  const snapshot = packageSnapshot(pkgDir)
+  const pending = `${backupDir}.pending-${crypto.randomUUID()}`
+  const previous = `${backupDir}.previous-${crypto.randomUUID()}`
+  let movedPrevious = false
+  try {
+    fs.mkdirSync(pending, { recursive: true })
+    for (const file of snapshot.files) {
+      const target = path.join(pending, ...file.path.split('/'))
+      fs.mkdirSync(path.dirname(target), { recursive: true })
+      fs.copyFileSync(path.join(pkgDir, ...file.path.split('/')), target)
+    }
+    verifySnapshot(pending, snapshot)
+    // Detect edits during backup too: the copy must describe the preimage
+    // that is actually about to be replaced.
+    verifySnapshot(pkgDir, snapshot)
+    fs.writeFileSync(path.join(pending, '.ofm-backup.json'), JSON.stringify(snapshot))
+    if (fs.existsSync(backupDir)) {
+      fs.renameSync(backupDir, previous)
+      movedPrevious = true
+    }
+    try {
+      fs.renameSync(pending, backupDir)
+    } catch (error) {
+      if (movedPrevious) fs.renameSync(previous, backupDir)
+      throw error
+    }
+    // Failure to clean an older copy does not invalidate the new verified copy.
+    if (movedPrevious) {
+      try { fs.rmSync(previous, { recursive: true, force: true }) } catch { /* retain it */ }
+    }
+    return snapshot.files.length
+  } finally {
+    try { fs.rmSync(pending, { recursive: true, force: true }) } catch { /* retain it */ }
   }
-  return files.length
+}
+
+function packageSnapshot(dir) {
+  const files = listPackageFiles(dir).sort().map(rel => {
+    const file = path.join(dir, ...rel.split('/'))
+    return { path: rel, size: fs.statSync(file).size, sha256: sha256File(file) }
+  })
+  if (!files.some(file => file.path === 'package.json') || !files.some(file => file.path === 'index.js')) {
+    throw new Error(`no complete rollback copy in ${dir} — package.json and index.js are required`)
+  }
+  return { files }
+}
+
+function verifySnapshot(dir, snapshot) {
+  const paths = listPackageFiles(dir).sort()
+  if (paths.join('\n') !== snapshot.files.map(file => file.path).sort().join('\n')) {
+    throw new Error('rollback file set mismatch')
+  }
+  for (const file of snapshot.files) {
+    const target = path.join(dir, ...file.path.split('/'))
+    if (fs.statSync(target).size !== file.size || sha256File(target) !== file.sha256) {
+      throw new Error(`rollback hash drift for ${file.path}`)
+    }
+  }
+}
+
+function backupSnapshot(backupDir) {
+  if (listPackageFiles(backupDir).length === 0) {
+    throw new Error(`no rollback copy in ${backupDir} — leaving the installed package untouched`)
+  }
+  const metadata = path.join(backupDir, '.ofm-backup.json')
+  // Older releases did not leave a receipt. Keep their complete backups usable.
+  if (!fs.existsSync(metadata)) return packageSnapshot(backupDir)
+  const snapshot = JSON.parse(fs.readFileSync(metadata, 'utf8'))
+  if (!Array.isArray(snapshot?.files) || snapshot.files.length === 0
+    || snapshot.files.some(file => file === null || typeof file !== 'object')
+    || !snapshot.files.some(file => file.path === 'package.json')
+    || !snapshot.files.some(file => file.path === 'index.js')
+    || snapshot.files.some(file => typeof file.path !== 'string' || file.path.startsWith('/')
+      || file.path.includes('\\') || file.path.split('/').some(part => part === '' || part === '.' || part === '..')
+      || /:/.test(file.path) || !SHA_RE.test(file.sha256) || !Number.isInteger(file.size) || file.size < 0)
+    || new Set(snapshot.files.map(file => file.path)).size !== snapshot.files.length) {
+    throw new Error('invalid rollback receipt')
+  }
+  verifySnapshot(backupDir, snapshot)
+  return snapshot
 }
 
 /** Put a backed-up copy back in place (used when a swap or reload fails). */
@@ -411,12 +488,9 @@ export function restoreBackup(backupDir, pkgDir) {
   // never applied an update has no rollback copy at all — walking into the
   // delete loop with nothing to put back would empty the package (index.js,
   // client.js, src/*) while the running process keeps going from memory.
-  const backup = listPackageFiles(backupDir)
-  if (backup.length === 0) throw new Error(`no rollback copy in ${backupDir} — leaving the installed package untouched`)
+  const snapshot = backupSnapshot(backupDir)
+  const backup = snapshot.files.map(file => file.path)
   const failures = []
-  for (const rel of listPackageFiles(pkgDir)) {
-    try { fs.rmSync(path.join(pkgDir, ...rel.split('/')), { force: true }) } catch { /* best effort */ }
-  }
   for (const rel of backup) {
     // Copy loop must survive a locked file: attempting every entry keeps the
     // restore as complete as this machine allows instead of crashing halfway.
@@ -426,6 +500,16 @@ export function restoreBackup(backupDir, pkgDir) {
       fs.copyFileSync(path.join(backupDir, ...rel.split('/')), target)
     } catch (error) { failures.push(`${rel} (${error?.message ?? error})`) }
   }
+  // Restore first. Deleting every installed file before copying made a denied
+  // copy destroy files that could otherwise still have been used for recovery.
+  try {
+    for (const rel of listPackageFiles(pkgDir)) {
+      if (backup.includes(rel)) continue
+      try { fs.rmSync(path.join(pkgDir, ...rel.split('/')), { force: true }) }
+      catch (error) { failures.push(`${rel} (${error?.message ?? error})`) }
+    }
+    verifySnapshot(pkgDir, snapshot)
+  } catch (error) { failures.push(String(error?.message ?? error)) }
   if (failures.length > 0) throw new Error(`rollback incomplete: ${failures.slice(0, 3).join('; ')}${failures.length > 3 ? ` +${failures.length - 3} more` : ''}`)
 }
 
@@ -462,7 +546,7 @@ export async function installStaged(stageDir, pkgDir, files) {
   // A file the new release dropped must not linger from the old one.
   for (const rel of listPackageFiles(pkgDir)) {
     if (files.includes(rel)) continue
-    try { fs.rmSync(path.join(pkgDir, ...rel.split('/')), { force: true }) } catch { /* best effort */ }
+    fs.rmSync(path.join(pkgDir, ...rel.split('/')), { force: true })
   }
 }
 
@@ -476,9 +560,8 @@ export function verifyInstalled(pkgDir, manifest) {
 }
 
 /**
- * The upgrade lifecycle. `apply` stops short of the code swap itself: the caller
- * (index.js) owns `ctx` and performs the hot reload after the files are in
- * place, rolling back with {@link restoreBackup} if the reload cannot start.
+ * The upgrade lifecycle. The optional activate callback lets the Host include
+ * hot reload in the transaction; standalone release audits only install files.
  */
 export class PluginUpdater {
   /**
@@ -490,9 +573,10 @@ export class PluginUpdater {
    * @param {typeof fetch} [deps.fetchImpl]
    * @param {string} [deps.manifestPublicKey] - SPKI base64; tests substitute a
    *   throwaway keypair here, installs pin the release key
+   * @param {string} [deps.runningVersion] - version captured by the running module
    */
-  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES, manifestPublicKey = PINNED_MANIFEST_PUBLIC_KEY }) {
-    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources, manifestPublicKey }
+  constructor({ pkgDir, dataDir, settings, log = () => {}, fetchImpl = fetch, defaultSources = DEFAULT_MANIFEST_SOURCES, manifestPublicKey = PINNED_MANIFEST_PUBLIC_KEY, runningVersion }) {
+    this.deps = { pkgDir, dataDir, settings, log, fetchImpl, defaultSources, manifestPublicKey, runningVersion }
     this.latest = undefined
     this.checkedAt = 0
     this.error = ''
@@ -502,6 +586,38 @@ export class PluginUpdater {
 
   get stageDir() { return path.join(this.deps.dataDir, 'upgrade-stage') }
   get backupDir() { return path.join(this.deps.dataDir, 'rollback') }
+  get stateFile() { return path.join(this.deps.dataDir, 'upgrade-state.json') }
+
+  loadUpgradeState() {
+    try {
+      const state = JSON.parse(fs.readFileSync(this.stateFile, 'utf8'))
+      if (state === null || !['installing', 'activating', 'recovery-required', 'rolled-back', 'complete'].includes(state.phase)) {
+        throw new Error('invalid transaction phase')
+      }
+      return state
+    }
+    catch (error) {
+      if (error?.code === 'ENOENT') return undefined
+      return { phase: 'recovery-required', error: `could not read upgrade state (${error?.message ?? error})` }
+    }
+  }
+
+  saveUpgradeState(state) {
+    fs.mkdirSync(this.deps.dataDir, { recursive: true })
+    const pending = `${this.stateFile}.tmp`
+    fs.writeFileSync(pending, JSON.stringify(state), { mode: 0o600 })
+    fs.renameSync(pending, this.stateFile)
+  }
+
+  reconcileRecovery() {
+    const state = this.loadUpgradeState()
+    if (upgradeLocks.has(this.deps.pkgDir) || !['installing', 'activating', 'recovery-required'].includes(state?.phase)) return
+    try {
+      verifySnapshot(this.deps.pkgDir, backupSnapshot(this.backupDir))
+      if ((this.deps.runningVersion ?? this.currentVersion()) !== state.from) return
+      this.saveUpgradeState({ ...state, phase: 'rolled-back', error: '', diskRestored: true, runtimeRestored: true })
+    } catch { /* keep the blocker until both the bytes and runtime match */ }
+  }
 
   currentVersion() {
     try {
@@ -521,7 +637,9 @@ export class PluginUpdater {
   }
 
   recordHistory(entry) {
-    this.history = [...this.history, entry].slice(-20)
+    // A hot reload creates a successor before the caller finishes. Merge with
+    // durable history, and let both instances read the final outcome.
+    this.history = [...this.loadHistory(), entry].slice(-20)
     try {
       fs.mkdirSync(this.deps.dataDir, { recursive: true })
       fs.writeFileSync(path.join(this.deps.dataDir, 'updates.json'), JSON.stringify({ applied: this.history }, undefined, 2))
@@ -531,17 +649,29 @@ export class PluginUpdater {
   }
 
   status() {
-    const current = this.currentVersion()
+    const installedVersion = this.currentVersion()
+    const current = this.deps.runningVersion ?? installedVersion
+    const state = this.loadUpgradeState()
+    const active = upgradeLocks.has(this.deps.pkgDir)
+    const unfinished = ['installing', 'activating'].includes(state?.phase)
+    const recoveryRequired = state?.phase === 'recovery-required' || (unfinished && !active)
     const available = this.latest !== undefined && compareVersions(this.latest.version, current) > 0
+    this.history = this.loadHistory()
     return {
       current,
+      runningVersion: current,
+      installedVersion,
+      versionMismatch: current !== installedVersion,
+      recoveryRequired,
+      phase: state?.phase ?? 'idle',
       latest: this.latest?.version ?? '',
       available,
       notes: this.latest?.notes ?? '',
       publishedAt: this.latest?.publishedAt ?? 0,
       checkedAt: this.checkedAt,
-      applying: this.applying,
-      error: this.error,
+      applying: active,
+      error: state?.error || this.error,
+      recoveryBackup: recoveryRequired ? this.backupDir : undefined,
       lastApplied: this.history[this.history.length - 1] ?? undefined,
     }
   }
@@ -561,8 +691,9 @@ export class PluginUpdater {
    */
   async check() {
     try {
+      this.reconcileRecovery()
       const { manifest, source } = await downloadManifest(this.sources(), { fetchImpl: this.deps.fetchImpl, verifyKey: this.deps.manifestPublicKey })
-      const current = this.currentVersion()
+      const current = this.deps.runningVersion ?? this.currentVersion()
       if (manifest.minSupported !== undefined && current !== '' && compareVersions(current, manifest.minSupported) < 0) {
         throw new Error(`update path requires at least ${manifest.minSupported}; ${current} is installed`)
       }
@@ -580,13 +711,23 @@ export class PluginUpdater {
 
   /**
    * Download, verify and install one manifest. Idempotent for the same version.
-   * @param {{version?: string, onProgress?: (progress: object) => void}} [options]
+   * @param {{version?: string, onProgress?: (progress: object) => void, activate?: (result: object) => Promise<object>}} [options]
    * @returns {Promise<{version: string, files: number, bytes: number, previous: string}>}
    */
-  async apply({ version, onProgress = () => {} } = {}) {
-    if (this.applying) throw new Error('an upgrade is already running')
+  async apply({ version, onProgress = () => {}, activate } = {}) {
+    if (upgradeLocks.has(this.deps.pkgDir)) throw new Error('an upgrade is already running')
+    this.reconcileRecovery()
+    const priorState = this.loadUpgradeState()
+    if (['installing', 'activating', 'recovery-required'].includes(priorState?.phase)) {
+      throw new Error(`previous upgrade requires recovery; restore the verified backup in ${this.backupDir} and restart before upgrading again`)
+    }
     this.applying = true
+    upgradeLocks.add(this.deps.pkgDir)
     const previous = this.currentVersion()
+    let targetVersion = version ?? ''
+    let state
+    let installed = false
+    let activated = false
     try {
       // Re-check immediately before installing: the owner may have pushed a new
       // manifest since the last check, and a stale cached manifest would verify
@@ -594,6 +735,7 @@ export class PluginUpdater {
       await this.check()
       const manifest = this.latest
       if (manifest === undefined) throw new Error('no manifest available')
+      targetVersion = manifest.version
       if (version !== undefined && manifest.version !== version) throw new Error(`manifest offers ${manifest.version}, not ${version}`)
       if (compareVersions(manifest.version, previous) < 0) throw new Error(`installed ${previous} is newer than ${manifest.version}`)
 
@@ -612,9 +754,27 @@ export class PluginUpdater {
 
       onProgress({ phase: 'install' })
       const backedUp = backupPackage(this.deps.pkgDir, this.backupDir)
+      state = { from: previous, to: manifest.version, at: Date.now(), phase: 'installing' }
+      // Persist the intent before the first installed byte changes.
+      this.saveUpgradeState(state)
+      const result = { version: manifest.version, previous, files: manifest.files.length, bytes: staged.bytes }
       try {
+        installed = true
         await installStaged(this.stageDir, this.deps.pkgDir, manifest.files.map(file => file.path))
         verifyInstalled(this.deps.pkgDir, manifest)
+        if (activate !== undefined) {
+          state = { ...state, phase: 'activating' }
+          this.saveUpgradeState(state)
+          onProgress({ phase: 'reload' })
+          const activation = await activate(result)
+          if (activation?.ok !== true) {
+            throw Object.assign(new Error(activation?.error ?? 'hot reload did not confirm activation'), { runtimeRestored: activation?.restored === true })
+          }
+          if (activation.version !== manifest.version) {
+            throw new Error(`activation version mismatch: expected ${manifest.version}, got ${String(activation.version ?? '(missing)')}`)
+          }
+          activated = true
+        }
       } catch (error) {
         // The installed copy is now in an unknown state: put the old one back
         // before surfacing the failure, so the next boot still works. A failed
@@ -622,23 +782,39 @@ export class PluginUpdater {
         // "previous version restored" claim is only true when it succeeded.
         let restoreError = null
         try { restoreBackup(this.backupDir, this.deps.pkgDir) } catch (rollbackError) { restoreError = rollbackError }
-        if (restoreError !== null) {
-          throw new Error(`install failed (${error?.message ?? error}); rollback also failed (${restoreError?.message ?? restoreError})`)
+        state = {
+          ...state,
+          phase: restoreError !== null || (state.phase === 'activating' && error.runtimeRestored !== true) ? 'recovery-required' : 'rolled-back',
+          diskRestored: restoreError === null,
+          runtimeRestored: state.phase !== 'activating' || error.runtimeRestored === true,
         }
-        throw new Error(`install failed, previous version restored (${error?.message ?? error})`)
+        if (restoreError !== null) {
+          throw new Error(`upgrade failed (${error?.message ?? error}); rollback also failed (${restoreError?.message ?? restoreError})`)
+        }
+        throw new Error(`upgrade failed, previous files restored (${error?.message ?? error})`)
       }
-      fs.rmSync(this.stageDir, { recursive: true, force: true })
-      const record = { from: previous, to: manifest.version, at: Date.now(), ok: true, files: manifest.files.length, bytes: staged.bytes, backedUp }
+      this.saveUpgradeState({ ...state, phase: 'complete', activated })
+      try { fs.rmSync(this.stageDir, { recursive: true, force: true }) } catch (error) { this.deps.log?.(`our-free-model: staging cleanup failed (${error?.message ?? error})`) }
+      const record = { from: previous, to: manifest.version, at: Date.now(), ok: true, files: manifest.files.length, bytes: staged.bytes, backedUp, activated }
       this.recordHistory(record)
       this.checkedAt = Date.now()
       this.deps.log?.(`our-free-model: upgraded ${previous} -> ${manifest.version} (${manifest.files.length} files)`)
-      return { version: manifest.version, previous, files: manifest.files.length, bytes: staged.bytes }
+      return result
     } catch (error) {
-      const record = { from: previous, to: version ?? '', at: Date.now(), ok: false, error: String(error?.message ?? error) }
+      this.error = String(error?.message ?? error)
+      if (state !== undefined && installed) {
+        try {
+          this.saveUpgradeState({ ...state, phase: activated ? 'complete' : state.phase, error: this.error, activated })
+        } catch (stateError) {
+          this.error += `; could not persist upgrade outcome (${stateError?.message ?? stateError})`
+        }
+      }
+      const record = { from: previous, to: targetVersion, at: Date.now(), ok: false, error: this.error }
       this.recordHistory(record)
-      throw error
+      throw new Error(this.error)
     } finally {
       this.applying = false
+      upgradeLocks.delete(this.deps.pkgDir)
     }
   }
 }
