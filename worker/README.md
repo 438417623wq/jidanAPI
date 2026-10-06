@@ -60,9 +60,11 @@ New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 
 
 - **GitHub OAuth App**（用仓库 owner 账号建，1 分钟）：GitHub → Settings → Developer settings → OAuth Apps → New OAuth App；Homepage URL 填仓库地址；**Authorization callback URL 必须精确填 `https://<网关域名>/eac/auth/github/callback`**；创建后复制 Client ID 并生成 Client Secret，只放进服务器的 `.env`（600 权限），绝不写进仓库或插件。只申请 `read:user` 一个 scope。
 - **上线顺序**：先以 `REQUIRE_USER_TOKEN=0` 部署（旧版插件照常可用）→ 发布带登录入口的插件版本 → 公告 → 把 `REQUIRE_USER_TOKEN` 改成 `1` 并重启网关。这就是全部切换动作，回滚同理（改回 0）。
-- 网关自带一个授权页（`{mount}/auth/github/start|callback|recheck`）与两个插件用的 JSON 接口（`{mount}/auth/poll`、`{mount}/auth/status`、`{mount}/auth/logout`），全部挂在 `{mount}/auth/*` 下，nginx 现有的 `/eac/` 反代直接透传，**不需要改 nginx**。若站点 WAF 拦截，只需在该站点 URL 白名单里放行 `/eac/auth/*`。
+- 网关自带一个授权页（`{mount}/auth/github/start|callback|recheck`）与插件用的 JSON 接口（`{mount}/auth/poll`、`{mount}/auth/status`、`{mount}/auth/logout`、`{mount}/auth/ack`），全部挂在 `{mount}/auth/*` 下，nginx 现有的 `/eac/` 反代直接透传，**不需要改 nginx**。若站点 WAF 拦截，只需在该站点 URL 白名单里放行 `/eac/auth/*`。
 - **GitHub 出网走 `node:https`，不是全局 fetch**——实测本机部署的服务器上 undici（全局 fetch）对 GitHub 一律 `UND_ERR_CONNECT_TIMEOUT`，而同一台机器 `node:https` 毫秒级拿到应答（403/404 都是 GitHub 的真实回复）。`auth-github.mjs` 里的 `nodeFetch` 就是为此存在，换服务器也不需要改配置；离线套件用注入的桩，不受影响。
 - 看板 `/stats-data` 的 `auth` 字段报告已授权 / 已知 / 待领取数量与强制开关状态。
+
+新版插件使用 `/auth/poll?link=...&retain=1` 领取，确认本机已保存后以 `x-ofm-user` 调用 `POST /auth/ack?link=...`。网关在确认前保留令牌最多 15 分钟，响应丢失可以重领；旧插件继续幂等领取，新插件也兼容没有 ACK 的网关。待领取令牌沿用上游实现加密保存在 users.json 中，同一存储与密钥下重启仍可领取；旧版一次领取且不持久化的网关不能保证重领。升级请避开正在授权的会话，并保持以下单实例配置。
 
 ## ⚠️ 只能单实例运行（cluster / instances>1 会直接坏）
 
@@ -201,4 +203,4 @@ npx wrangler deploy        # 如需限速，先取消 wrangler.toml 里 bindings
 
 离线套件直接驱动本仓库的 `worker.js`（同一份代码，无逻辑漂移）：`node scripts/test-all.mjs --only vault`，覆盖验签通过/时间戳过期/坏签名/未知路径/白名单外模型/超限 body/流式转发全链路。
 
-授权闸门另有一整套离线验收：`node scripts/test-all.mjs --only eac-auth`（或 `node scripts/eac-auth-test.mjs`）——GitHub 全部打桩、中继是本机回环服务器，覆盖 start 跳转形状、state 篡改/过期、star 通过 / 未 star 重检、令牌幂等领取且重启后仍可领取、未知链接按过期答复、users.json 不落明文、无令牌 / 未知令牌 / 已吊销令牌被拒、listing 不拦、取消 star 吊销、GitHub 不可达不误伤、退出登录、兼容期放行与按账号限流。
+授权闸门另有一整套离线验收：`node scripts/test-all.mjs --only eac-auth`（或 `node scripts/eac-auth-test.mjs`）——GitHub 全部打桩、中继是本机回环服务器，覆盖 start 跳转形状、state 篡改/过期、star 通过 / 未 star 重检、令牌幂等领取且重启后仍可领取、新协议保存后匹配确认、未知链接按过期答复、users.json 不落明文、无令牌 / 未知令牌 / 已吊销令牌被拒、listing 不拦、取消 star 吊销、GitHub 不可达不误伤、退出登录、兼容期放行与按账号限流。

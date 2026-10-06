@@ -881,11 +881,12 @@ export function registerJetHubRpc(
    * 省略时退化为只用 `ctx.llm.listModels()` 的历史行为。
    */
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  config: { disableOpencode?: boolean } = {},
 ): void {
   ctx.inject(['connection'], (connectionCtx) => {
     registerJetHubEndpoints(
       connectionCtx as Context, pool, codearts, buddy, workbuddy, lobsterai,
-      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters,
+      qoder, qoderCn, trae, cline, loomy, raccoon, minimax, zcode, gemini, modelAdapters, config,
     )
   })
 }
@@ -980,6 +981,7 @@ function registerJetHubEndpoints(
   zcode: ZcodeAuth,
   gemini: GeminiAuth,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
+  config: { disableOpencode?: boolean } = {},
 ): void {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const connection = (ctx as any).connection ?? ctx.get('connection')
@@ -1359,6 +1361,9 @@ function registerJetHubEndpoints(
    */
   async function handleMethod(method: string, payload: unknown, _signal?: AbortSignal): Promise<unknown> {
     if (method.startsWith('opencode.')) {
+      if (config.disableOpencode === true) {
+        return { ok: false, error: { code: 'provider-disabled', message: 'OpenCode account integration is disabled in this host' } }
+      }
       const handled = await handleOpencodeRpc(ctx, pool, method, payload)
       if (handled !== undefined) return handled
     }
@@ -1372,6 +1377,9 @@ function registerJetHubEndpoints(
       case 'account.create': {
         const req = payload as RpcCreateAccountRequest
         const { provider } = req
+        if (provider === 'opencode' && config.disableOpencode === true) {
+          return { ok: false, error: { code: 'provider-disabled', message: 'OpenCode account integration is disabled in this host' } }
+        }
         const id = `${provider}-${shortId()}`
         const suffix = shortId().toUpperCase()
         const refName = `${provider.toUpperCase()}_ACCOUNT_${suffix}`

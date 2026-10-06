@@ -22,6 +22,7 @@
 import http from 'node:http'
 import fs from 'node:fs'
 import path from 'node:path'
+import { homedir } from 'node:os'
 import { keyMatches } from './forward.js'
 
 /** Request loop breaker: present on hops this relay already forwarded once. */
@@ -46,17 +47,24 @@ function openAiError(res, status, code, message) {
   res.end(JSON.stringify({ error: { message, type: code, code } }))
 }
 
+/** Match the vendored resolveJetHubHome order, without moving OFM's data. */
+export function chanGatewayHome({ profileContext, env = process.env } = {}) {
+  const override = String(env.DSH_JET_HUB_STATE_DIR ?? '').trim()
+  if (override !== '') return override
+  if (typeof profileContext?.home === 'string' && profileContext.home.length > 0) return profileContext.home
+  const envHome = String(env.DSH_HOME ?? '').trim()
+  return envHome || path.join(homedir(), '.dsh')
+}
+
 /**
- * Where the pack's gateway credential lives. The gateway generates a key on
- * first start and keeps it beside its state under the dsh home; an env
- * override outranks the file, exactly as the gateway itself ranks them.
- * Returns `null` when neither source has a key — the relay then answers 503
- * rather than forwarding an unauthenticated hop.
+ * The gateway's API-key env override outranks its credential file. An absent
+ * key returns null so the relay fails closed with 503. Explicit home is kept
+ * as a test/embedding seam; normal callers pass the current profileContext.
  */
-export function chanGatewayCredential({ home, env = process.env }) {
+export function chanGatewayCredential({ home, profileContext, env = process.env }) {
   const fromEnv = String(env.DSH_OPENAI_GATEWAY_API_KEY ?? '').trim()
   if (fromEnv !== '') return { key: fromEnv, fromEnv: true, path: null }
-  const directory = path.join(home, 'openai-gateway')
+  const directory = path.join(home ?? chanGatewayHome({ profileContext, env }), 'openai-gateway')
   const file = path.join(directory, 'api-key')
   try {
     const stored = fs.readFileSync(file, 'utf8').trim()

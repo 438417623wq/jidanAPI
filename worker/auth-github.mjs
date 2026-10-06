@@ -15,8 +15,8 @@
  *     │◀─ poll /auth/poll?link ───────│◀── callback?code ──┤
  *     │                               │ exchange code, GET /user,
  *     │                               │ GET /user/starred/<repo>
- *     │◀─ token (idempotent until the │ starred ⇒ mint per-user token
- *     │   pending link expires) ──────│
+ *     │◀─ token + ack ───────────────│ starred ⇒ mint per-user token
+ *     │ ── ack after local save ─────▶│
  *     │ ── x-ofm-user: token ────────▶│ chat turns are refused without it
  *
  * Storage is `users.json` next to this file (0600, atomic writes): GitHub
@@ -500,6 +500,10 @@ export function createAuthGate(env = {}, options = {}) {
     return entry
   }
 
+  function pendingToken(entry) {
+    return decryptGh(entry.token) ?? (typeof entry.token === 'string' && !entry.token.startsWith('v1.') ? entry.token : '')
+  }
+
   function grant(link, githubUser, ghToken) {
     const user = store.users[githubUser.id] ?? { created: now(), tokens: {} }
     user.login = githubUser.login
@@ -535,11 +539,31 @@ export function createAuthGate(env = {}, options = {}) {
       if (entry === undefined) return json(res, 200, { status: 'expired' }), true
       if (entry.status === 'waiting') return json(res, 200, { status: 'pending' }), true
       if (entry.status === 'unstarred') return json(res, 200, { status: 'unstarred', login: entry.login, repo: starRepo }), true
-      // Collected repeatedly until the entry expires: a lost response used to
-      // consume the one-shot token and strand the login on "需要登录" forever.
-      const token = decryptGh(entry.token) ?? (typeof entry.token === 'string' && !entry.token.startsWith('v1.') ? entry.token : '')
-      if (token === '') return json(res, 200, { status: 'expired' }), true
-      return json(res, 200, { status: 'ok', token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo }), true
+      const token = pendingToken(entry)
+      const found = lookup(token)
+      if (found === null || found.user.starred !== true) {
+        delete store.pending[link]
+        save()
+        return json(res, 200, { status: 'expired' }), true
+      }
+      // Preserve upstream's repeatable legacy delivery. New clients ACK only
+      // after local persistence, removing the encrypted pending copy early.
+      const retain = url.searchParams.get('retain') === '1'
+      return json(res, 200, { status: 'ok', token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo, ...(retain ? { ackRequired: true } : {}) }), true
+    }
+
+    if (req.method === 'POST' && route === '/auth/ack') {
+      const link = url.searchParams.get('link') ?? ''
+      if (!LINK_PATTERN.test(link)) return json(res, 400, { error: { message: 'bad link code' } }), true
+      const token = String(req.headers['x-ofm-user'] ?? '')
+      const found = lookup(token)
+      const entry = pendingEntry(link)
+      if (found === null || found.user.starred !== true || (entry !== undefined && pendingToken(entry) !== token)) {
+        return json(res, 401, { error: { message: 'invalid delivery confirmation' } }), true
+      }
+      // Idempotent after the matching delivery has already been removed.
+      if (entry !== undefined) { delete store.pending[link]; save() }
+      return json(res, 200, { ok: true }), true
     }
 
     if (req.method === 'GET' && route === '/auth/status') {

@@ -90,6 +90,10 @@ window.__ModuleLoader__.load({
         'eac.pillLocked': '未授权',
         'eac.pillRequired': '已开启强制',
         'eac.pillCompat': '兼容期',
+        'eac.pillUnknown': '授权策略未确认',
+        'eac.pollFailed': '领取授权失败（{reason}），正在自动重试；无需重新授权。',
+        'eac.saveFailed': '授权已完成，但本机无法保存登录记录。请检查 DSH_HOME 目录权限；修复后将自动重试。',
+        'eac.cancel': '取消此次登录',
         'eac.pillUnverified': '网关暂不可达',
         'eac.intro': 'EAC 渠道的对话在服务器侧校验授权：用 GitHub 登录，并给 {repo} 点一个 Star，即可解锁。登录在浏览器里完成，无需复制粘贴；取消 Star 后授权会自动失效。',
         'eac.login': '使用 GitHub 登录',
@@ -101,7 +105,6 @@ window.__ModuleLoader__.load({
         'eac.needStar': '已用 @{login} 登录，但还没有 star 仓库；请先 Star，再在授权页点「我已 star，重新检查」。',
         'eac.expired': '这次登录等待超时了，请重新发起。',
         'eac.sessionExpired': '登录链接已失效（服务器不再认识它），请重新发起 GitHub 登录。',
-        'eac.gatewayFlaky': '暂时连不上授权网关，正在自动重试……',
         'eac.openManually': '浏览器没有自动打开，请手动访问下面的地址完成授权。',
         'eac.startFailed': '无法发起登录（{reason}）。',
         'eac.loggedIn': '已授权：@{login} · 上次复查 {when}',
@@ -530,6 +533,10 @@ window.__ModuleLoader__.load({
         'eac.pillLocked': 'not authorized',
         'eac.pillRequired': 'enforced',
         'eac.pillCompat': 'grace period',
+        'eac.pillUnknown': 'authorization policy unverified',
+        'eac.pollFailed': 'Could not collect authorization ({reason}); retrying automatically. No new sign-in is needed.',
+        'eac.saveFailed': 'Authorization completed, but this machine could not save it. Check DSH_HOME permissions; collection will retry automatically.',
+        'eac.cancel': 'Cancel this sign-in',
         'eac.pillUnverified': 'gateway unreachable',
         'eac.intro': 'EAC turns are checked server-side: sign in with GitHub and star {repo} to unlock them. The browser does the work — nothing to paste — and removing the star revokes access automatically.',
         'eac.login': 'Sign in with GitHub',
@@ -541,7 +548,6 @@ window.__ModuleLoader__.load({
         'eac.needStar': 'Signed in as @{login}, but the repository is not starred yet. Star it, then press "I starred it — check again" on the authorization page.',
         'eac.expired': 'This login attempt timed out; please start again.',
         'eac.sessionExpired': 'The login link is no longer valid (the server does not know it) — please start the GitHub login again.',
-        'eac.gatewayFlaky': 'The authorization gateway is temporarily unreachable; retrying automatically…',
         'eac.openManually': 'The browser did not open automatically — visit the address below to finish.',
         'eac.startFailed': 'Could not start the login ({reason}).',
         'eac.loggedIn': 'Authorized: @{login} · last checked {when}',
@@ -1709,7 +1715,7 @@ window.__ModuleLoader__.load({
           ? h(Fragment, null,
             h('p', { className: 'ofm_note' }, t('eac.lockedNote')),
             eacLogin === undefined ? null : h('div', { className: 'ofm_row' },
-              h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+              h(Button, { kind: 'primary', disabled: eacLogin.busy || eacLogin.pending !== null, onClick: eacLogin.login },
                 eacLogin.busy ? t('eac.starting') : t('eac.login'))))
           : null,
         m.availability === 'region-blocked' ? h('p', { className: 'ofm_note' }, t('hint.region'))
@@ -1885,84 +1891,116 @@ window.__ModuleLoader__.load({
     // 登录流（发起、轮询、busy/notice）住在 SettingsPage 级的 hook 里：页头的
     // 未授权按钮、上锁模型卡的「去授权」和这个面板必须共享同一个进行中的会话，
     // 各挂一份轮询会互相抢令牌的领取权。
+    const EAC_LOGIN_TTL = 10 * 60_000
+    const EAC_LOGIN_KEY = `ofm.eac.pending:${API}`
+    function rememberEacLogin(pending) {
+      try {
+        if (pending === null) sessionStorage.removeItem(EAC_LOGIN_KEY)
+        else sessionStorage.setItem(EAC_LOGIN_KEY, JSON.stringify(pending))
+      } catch { /* restricted browser storage: this mounted page can still log in */ }
+    }
+    function restoreEacLogin() {
+      try {
+        const value = JSON.parse(sessionStorage.getItem(EAC_LOGIN_KEY))
+        if (value !== null && /^[A-Za-z0-9_-]{16,64}$/.test(value.link)
+          && typeof value.url === 'string' && /^https?:\/\//.test(value.url)
+          && Number.isFinite(value.startedAt) && value.startedAt <= Date.now()
+          && Date.now() - value.startedAt < EAC_LOGIN_TTL) return value
+      } catch { /* absent or malformed */ }
+      rememberEacLogin(null)
+      return null
+    }
     function useEacLogin({ t, summary, onAuth }) {
       const [busy, setBusy] = useState(false)
       const [notice, setNotice] = useState('')
-      const [pending, setPending] = useState(null)
+      const [pending, setPending] = useState(restoreEacLogin)
       const [copied, setCopied] = useState(false)
-
-      // 授权状态由 SettingsPage 持有（模型卡的锁标记与这个面板必须看到同一个
-      // 判定），这里只负责发起动作与把新判定送回去。
+      const starting = useRef(false)
+      const attempt = useRef(0)
+      const pendingRef = useRef(pending)
+      pendingRef.current = pending
+      const updatePending = value => {
+        pendingRef.current = value
+        rememberEacLogin(value)
+        setPending(value)
+      }
       const refresh = useCallback(() => {
-        api('/eac/status').then(onAuth).catch(() => onAuth({ available: false, authorized: false, login: '' }))
+        api('/eac/status', { timeout: 20_000 }).then(onAuth).catch(() => onAuth({ available: true, authorized: false, login: '', unverified: true }))
       }, [onAuth])
-      // 轮询闭包要用的 summary 每帧都是新对象，放进依赖会让定时器每帧重建、
-      // 密集渲染下永远等不到下一次触发——用 ref 取最新值。
       const latest = useRef(summary)
       latest.current = summary
+      const latestT = useRef(t)
+      latestT.current = t
 
-      // 登录进行中时轮询网关领取令牌：2.5 秒一次，够快也不至于压网关；整轮
-      // 十分钟放弃，与网关保留待领取链接的窗口一致。
+      // Schedule only after completion: slow gateway responses must not create
+      // overlapping collectors. The link survives settings-page remounts.
       useEffect(() => {
         if (pending === null) return undefined
         let alive = true
-        let misses = 0 // 连续失败的次数：第 3 次提示一次，成功后归零
-        const timer = setInterval(async () => {
-          if (Date.now() - pending.startedAt > 10 * 60_000) { setPending(null); setNotice(t('eac.expired')); return }
-          let result
+        let timer
+        const poll = async () => {
+          const t = latestT.current
+          if (!alive) return
+          if (Date.now() - pending.startedAt >= EAC_LOGIN_TTL) {
+            updatePending(null); setNotice(t('eac.expired')); return
+          }
           try {
-            result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`)
-            if (!alive) return
-            misses = 0
-          } catch {
-            // 网关这一跳可能在重启/抖动（520 那类故障）：不能一声不吭地装作
-            // 还在等授权，提示一句，然后继续轮询等它缓过来。
-            if (alive && ++misses === 3) setNotice(t('eac.gatewayFlaky'))
-            return
+            const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`, { timeout: 22_000 })
+            if (!alive || pendingRef.current?.link !== pending.link) return
+            if (result.status === 'ok') {
+              updatePending(null)
+              setNotice(t('eac.done').replace('{login}', result.login ?? ''))
+              refresh(); latest.current?.reload?.()
+              return
+            }
+            if (result.status === 'expired') {
+              updatePending(null); setNotice(t('eac.sessionExpired')); return
+            }
+            if (result.status === 'unstarred') setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
+            else setNotice('')
+          } catch (error) {
+            if (!alive || pendingRef.current?.link !== pending.link) return
+            const reason = String(error?.message ?? '')
+            // Never render response HTML, URL or credentials as diagnostics.
+            const safe = /^gateway-http-\d{3}$/.test(reason) ? `HTTP ${reason.slice(-3)}`
+              : ['unreachable', 'malformed', 'not-writable', 'cancelled', 'no-lane', 'bad-link', 'timeout'].includes(reason) ? reason : 'unreachable'
+            setNotice(reason === 'not-writable' ? t('eac.saveFailed') : t('eac.pollFailed').replace('{reason}', safe))
           }
-          if (result.status === 'ok') {
-            setPending(null)
-            setNotice(t('eac.done').replace('{login}', result.login ?? ''))
-            refresh()
-            latest.current?.reload?.()
-          } else if (result.status === 'unstarred') {
-            setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
-          } else if (result.status === 'expired') {
-            // 网关不再认识这个链接（窗口已过或它重启丢了待领条目）：再等也等不到。
-            setPending(null)
-            setNotice(t('eac.sessionExpired'))
-          } else if (result.error !== undefined && ++misses === 3) {
-            // 领取请求到了网关但被拒（网关出错/不可达）：保持轮询，给用户一个交代。
-            setNotice(t('eac.gatewayFlaky'))
-          }
-        }, 2500)
-        return () => { alive = false; clearInterval(timer) }
+          if (alive && pendingRef.current?.link === pending.link) timer = setTimeout(poll, 2500)
+        }
+        timer = setTimeout(poll, 2500)
+        return () => { alive = false; clearTimeout(timer) }
       }, [pending, refresh])
 
+      const cancel = () => { attempt.current++; updatePending(null); setNotice('') }
       const login = async () => {
+        if (starting.current || pendingRef.current !== null) return
+        starting.current = true
+        const current = ++attempt.current
         setBusy(true); setNotice('')
         try {
           const started = await post('/eac/login/start')
+          if (current !== attempt.current) return
           if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
-          setPending({ link: started.link, url: started.url, startedAt: Date.now() })
+          updatePending({ link: started.link, url: started.url, startedAt: Date.now() })
           if (started.opened !== true) setNotice(t('eac.openManually'))
         } catch (error) {
-          setNotice(String(error?.message ?? error))
-        } finally { setBusy(false) }
+          if (current === attempt.current) setNotice(t('eac.startFailed').replace('{reason}', 'unreachable'))
+        } finally { starting.current = false; setBusy(false) }
       }
       const logout = async () => {
-        setBusy(true)
+        cancel(); setBusy(true)
         try {
           await post('/eac/logout')
-          setNotice(''); setPending(null); refresh(); latest.current?.reload?.()
-        } catch { /* 本地记录已被后端清除，这里不必再报错 */ } finally { setBusy(false) }
+          refresh(); latest.current?.reload?.()
+        } catch { setNotice(t('eac.startFailed').replace('{reason}', 'unreachable')) } finally { setBusy(false) }
       }
-      return { busy, notice, pending, copied, setCopied, refresh, login, logout }
+      return { busy, notice, pending, copied, setCopied, refresh, login, logout, cancel }
     }
 
     function EacAuth(props) {
       const { t, auth, eacLogin } = props
-      const { busy, notice, pending, copied, setCopied, refresh, login, logout } = eacLogin
+      const { busy, notice, pending, copied, setCopied, refresh, login, logout, cancel } = eacLogin
 
       if (auth === undefined) return h('p', { className: 'ofm_note' }, t('loading'))
       if (auth.available !== true) return h('p', { className: 'ofm_note' }, t('eac.noLane'))
@@ -1972,7 +2010,7 @@ window.__ModuleLoader__.load({
           auth.authorized === true
             ? h(Pill, { strong: true, tone: 'ok' }, t('eac.pillOk'))
             : h(Pill, { strong: true, tone: 'warn' }, t('eac.pillLocked')),
-          auth.required === true ? h(Pill, { tone: 'err' }, t('eac.pillRequired')) : h(Pill, null, t('eac.pillCompat')),
+          auth.required === true ? h(Pill, { tone: 'err' }, t('eac.pillRequired')) : h(Pill, null, auth.required === false ? t('eac.pillCompat') : t('eac.pillUnknown')),
           auth.unverified === true ? h(Pill, { tone: 'warn' }, t('eac.pillUnverified')) : null),
         h('p', { className: 'ofm_note' }, t('eac.intro').replace('{repo}', repo)),
         auth.authorized === true
@@ -1981,12 +2019,13 @@ window.__ModuleLoader__.load({
             h(Button, { disabled: busy, onClick: refresh }, t('eac.recheck')),
             h(Button, { disabled: busy, onClick: logout }, t('eac.logout')))
           : h('div', { className: 'ofm_row' },
-            h(Button, { kind: 'primary', disabled: busy, onClick: login }, busy ? t('eac.starting') : t('eac.login')),
+            h(Button, { kind: 'primary', disabled: busy || pending !== null, onClick: login }, busy ? t('eac.starting') : t('eac.login')),
             h(StarButton, { t, repo })),
         pending !== null
           ? h('div', { className: 'ofm_callout' },
             h('div', null,
               h('div', null, t('eac.waiting')),
+              h(Button, { kind: 'ghost', onClick: cancel }, t('eac.cancel')),
               h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
                 h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
                 h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
@@ -2538,7 +2577,7 @@ window.__ModuleLoader__.load({
     const BRAND_ICON = 'data:image/jpeg;base64,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'
 
     /**
-     * The fourteen channels the vendored pack serves. Identity is static (it is
+     * The thirteen account channels enabled by OFM. Identity is static (it is
      * the product, not a reading), so the grid renders instantly and only the
      * *state* comes from the pack over RPC. `accent` drives each card's stripe
      * and logo tile; `login` picks the flow the card offers.
@@ -2557,7 +2596,6 @@ window.__ModuleLoader__.load({
       { id: 'minimax', name: 'MiniMax Code', org: 'MiniMax', accent: '#E4007F', note: '设备码 + PKCE，每日签到', login: 'browser' },
       { id: 'zcode', name: 'ZCode', org: '智谱', accent: '#3B6EF6', note: '浏览器登录（需本机可开浏览器）', login: 'browser' },
       { id: 'gemini', name: 'Gemini', org: 'Google Code Assist', accent: '#4285F4', note: '本地回调 OAuth 免费线', login: 'browser' },
-      { id: 'opencode', name: 'OpenCode', org: 'OpenCode Zen', accent: '#F2A65A', note: '账号制 Zen 通道', login: 'browser' },
     ]
 
     /** Channels whose daily credits can be claimed from here. */
@@ -3442,7 +3480,7 @@ window.__ModuleLoader__.load({
       const [eacAuth, setEacAuth] = useState(undefined)
       useEffect(() => {
         let alive = true
-        const load = () => api('/eac/status')
+        const load = () => api('/eac/status', { timeout: 20_000 })
           .then(data => { if (alive) setEacAuth(data) })
           .catch(() => { if (alive) setEacAuth({ available: false, authorized: false, login: '' }) })
         load()
@@ -3502,7 +3540,7 @@ window.__ModuleLoader__.load({
     // people actually open this page for — below the fold:
     //   免费模型       the no-account lane (this plugin's own gateway),
     //   EAC 模型       the desktop co-paid lane behind GitHub auth,
-    //   白嫖模型接入   the fourteen absorbed channels and their logins.
+    //   白嫖模型接入   the thirteen enabled account channels and their logins.
     // The active page lives in localStorage so a reload — or the hot reload the
     // upgrader triggers — comes back to the page the user was reading.
     const TAB_KEY = 'ofm.tab'
@@ -3539,7 +3577,7 @@ window.__ModuleLoader__.load({
       const tabs = [
         ['free', t('nav.tab.free'), counts.available ?? 0],
         ['eac', t('nav.tab.eac'), data.catalog.filter(m => m.channel === 'eac').length],
-        ['channels', t('nav.tab.channels'), 14],
+        ['channels', t('nav.tab.channels'), CHANNEL_PROVIDERS.length],
         ['ledger', t('nav.tab.ledger'), null],
         ['logs', t('nav.tab.logs'), null],
         ['gateway', t('nav.tab.gateway'), null],
@@ -3672,7 +3710,7 @@ window.__ModuleLoader__.load({
                 // 未授权时把登录入口放到页头：撞到「没授权」的用户第一眼看到的
                 // 位置就该有钥匙，而不是要先找到下方的授权区。
                 eacAuth?.available === true && eacAuth?.authorized !== true
-                  ? h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+                  ? h(Button, { kind: 'primary', disabled: eacLogin.busy || eacLogin.pending !== null, onClick: eacLogin.login },
                     eacLogin.busy ? t('eac.starting') : t('eac.login'))
                   : null,
                 h(StarButton, { t })),
@@ -3950,7 +3988,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, UpgradePanel }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth }
     return module.exports
   },
 })

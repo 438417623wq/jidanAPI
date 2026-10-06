@@ -14,7 +14,7 @@ import os from 'node:os'
 import path from 'node:path'
 import assert from 'node:assert/strict'
 
-import { startChanRelay, chanGatewayCredential, chanGatewayPort, chanGatewayEnabled } from '../src/chan-relay.js'
+import { startChanRelay, chanGatewayCredential, chanGatewayHome, chanGatewayPort, chanGatewayEnabled } from '../src/chan-relay.js'
 
 const checks = []
 const check = (name, got, want) => {
@@ -123,6 +123,29 @@ check('the gateway key file is found under the dsh home',
 check('an env override outranks the file',
   chanGatewayCredential({ home, env: { DSH_OPENAI_GATEWAY_API_KEY: 'env-key' } }), { key: 'env-key', fromEnv: true, path: null })
 fs.rmSync(home, { recursive: true, force: true })
+
+const homes = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-channel-homes-'))
+try {
+  const envHome = path.join(homes, 'env')
+  const profileHome = path.join(homes, 'profile')
+  const overrideHome = path.join(homes, 'override')
+  for (const [directory, key] of [[envHome, 'wrong-profile-key'], [profileHome, 'profile-key'], [overrideHome, 'override-key']]) {
+    fs.mkdirSync(path.join(directory, 'openai-gateway'), { recursive: true })
+    fs.writeFileSync(path.join(directory, 'openai-gateway', 'api-key'), `${key}\n`)
+  }
+  const env = { DSH_HOME: envHome }
+  check('a missing profileContext falls back to DSH_HOME', chanGatewayHome({ env }), envHome)
+  check('profileContext.home outranks a different DSH_HOME',
+    chanGatewayCredential({ profileContext: { home: profileHome }, env })?.key, 'profile-key')
+  check('the channel state override outranks profileContext.home',
+    chanGatewayCredential({ profileContext: { home: profileHome }, env: { ...env, DSH_JET_HUB_STATE_DIR: ` ${overrideHome} ` } })?.key, 'override-key')
+  check('the env API key still outranks all directory sources',
+    chanGatewayCredential({ profileContext: { home: profileHome }, env: { ...env, DSH_OPENAI_GATEWAY_API_KEY: 'override-api-key' } })?.key, 'override-api-key')
+  check('a profile with no key must not use another home credential',
+    chanGatewayCredential({ profileContext: { home: path.join(homes, 'missing') }, env }), null)
+} finally {
+  fs.rmSync(homes, { recursive: true, force: true })
+}
 
 check('the gateway port reads the env override', chanGatewayPort({ DSH_OPENAI_GATEWAY_PORT: '9001' }), 9001)
 check('a bad port falls back to the default rather than guessing', chanGatewayPort({ DSH_OPENAI_GATEWAY_PORT: 'not-a-port' }), 8326)

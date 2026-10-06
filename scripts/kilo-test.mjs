@@ -8,6 +8,8 @@
  * 1. **Roster** — only the listing's `isFree: true` rows are served (a paid id
  *    keyless is a guaranteed 401), ids dedupe, and the persisted cache revives
  *    into the same roster after a restart with the gateway unreachable.
+ *    Successful empty free pools clear both views; failed or malformed
+ *    listings retain the last roster, including an already-cleared roster.
  * 2. **Mount** — the channel's entries join the catalog under `channel:
  *    'kilo'`, land on the main route without ever being probed (a probe would
  *    spend itself against the wrong gateway), and the free lane's health gauge
@@ -85,14 +87,16 @@ const KILO_MODELS = [
   { id: 'kilo-auto/free', name: 'Auto Free', isFree: true, context_length: 256000, top_provider: { max_completion_tokens: 32768 }, architecture: { input_modalities: ['text'] }, supported_parameters: ['max_tokens', 'reasoning'] },
   { id: 'anthropic/claude-sonnet-5', name: 'Anthropic: Claude Sonnet 5', isFree: false },
 ]
+let kiloListing = { status: 200, payload: { data: KILO_MODELS } }
 const turns = []
 const kiloServer = http.createServer((req, res) => {
   const chunks = []
   req.on('data', piece => chunks.push(piece))
   req.on('end', () => {
     if (req.method === 'GET' && req.url === '/models') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ data: KILO_MODELS }))
+      if (kiloListing.disconnect) { req.destroy(); return }
+      res.writeHead(kiloListing.status, { 'content-type': 'application/json' })
+      res.end(kiloListing.raw ?? JSON.stringify(kiloListing.payload))
       return
     }
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8') || '{}')
@@ -239,6 +243,76 @@ check('a paid id keyless fails as a plain request defect', paidFailure?.code, 'C
 check('with the message naming the lane, not a credential store',
   /not on the free pool/.test(paidFailure?.message ?? ''), true)
 
-kiloServer.close()
+// Drive actual catalog refreshes; an HTTP success with no free models is an
+// authoritative roster, while a failed listing is not an empty-pool signal.
+const expectedIds = kiloRows.map(row => row.id)
+// Discovery and picker rows omit the internal channel tag.
+const kiloIds = rows => rows.filter(row => row.channel === 'kilo' || expectedIds.includes(row.id)).map(row => row.id)
+const catalogFile = path.join(home, 'our-free-model', 'catalog.json')
+const cachedKiloIds = () => JSON.parse(fs.readFileSync(catalogFile, 'utf8')).kiloRows.map(row => row.id)
+const waitForCache = expected => until(() => {
+  try { return JSON.stringify(cachedKiloIds()) === JSON.stringify(expected) } catch { return false }
+}, { what: `Kilo cache to contain ${expected.length} models`, timeoutMs: 5000 })
+const visibleKiloIds = async () => kiloIds((await callRoute(api(), 'GET', '/api/our-free-model/summary')).json.catalog)
+const refreshKiloIds = async () => kiloIds(await ctx.__captured.discovery())
+const stopContext = async context => {
+  for (const stop of context.__disposers.slice().reverse()) await stop()
+}
+let restarted
+let stopped = false
+try {
+  kiloListing = { status: 200, payload: { data: KILO_MODELS.map(row => ({ ...row, isFree: false })) } }
+  check('a successful all-paid listing clears discovery', await refreshKiloIds(), [])
+  check('and clears the current settings catalog', await visibleKiloIds(), [])
+  check('and clears the adapter picker', kiloIds(await adapter.listModels(ROUTE_MAIN)), [])
+  await waitForCache([])
+  check('a successful empty free pool clears the persisted roster', cachedKiloIds(), [])
+  const before = turns.length
+  const refused = []
+  for await (const chunk of adapter.stream({ ...turnOptions, model: expectedIds[0] })) refused.push(chunk)
+  check('a stale selected model is refused locally after removal',
+    refused.some(chunk => chunk.type === 'finish' && chunk.reason?.kind === 'error'), true)
+  check('and the removed model spends no upstream request', turns.length, before)
+
+  kiloListing = { status: 200, payload: { data: KILO_MODELS } }
+  check('models can rejoin when the free pool returns', await refreshKiloIds(), expectedIds)
+  await waitForCache(expectedIds)
+  for (const [label, response] of [
+    ['HTTP 503', { status: 503, payload: { error: { message: 'temporary listing failure' } } }],
+    ['network disconnect', { disconnect: true }],
+    ['HTTP 200 error envelope', { status: 200, payload: { error: { message: 'temporary listing failure' } } }],
+    ['HTTP 200 error with empty data', { status: 200, payload: { error: { message: 'temporary listing failure' }, data: [] } }],
+    ['wrong data shape', { status: 200, payload: { data: {} } }],
+    ['non-JSON response', { status: 200, raw: '<html>temporarily unavailable</html>' }],
+  ]) {
+    kiloListing = response
+    check(`${label} retains the last free roster`, await refreshKiloIds(), expectedIds)
+    check(`${label} retains its persisted cache`, cachedKiloIds(), expectedIds)
+  }
+
+  kiloListing = { status: 200, payload: { data: [] } }
+  check('an explicitly empty listing also clears discovery', await refreshKiloIds(), [])
+  check('and clears the settings catalog', await visibleKiloIds(), [])
+  await waitForCache([])
+  await stopContext(ctx)
+  stopped = true
+
+  // Mount a fresh instance from the same disk state while its gateway fails.
+  // Merely reviving [] through the pure helper would not test the boot path.
+  kiloListing = { status: 503, payload: { error: { message: 'offline at restart' } } }
+  restarted = fakeContext({ inject, mounted: ['llm', 'webServer', 'attachments'] })
+  apply(restarted, {})
+  const restartAdapter = restarted.__captured.adapters[0].adapter
+  check('a restart loads the empty cache without resurrecting old models',
+    kiloIds(await restartAdapter.listModels(ROUTE_MAIN)), [])
+  check('a failed refresh after restart still keeps that empty roster',
+    kiloIds(await restarted.__captured.discovery()), [])
+  check('and the empty cache stays empty on disk', cachedKiloIds(), [])
+} finally {
+  if (restarted) await stopContext(restarted)
+  if (!stopped) await stopContext(ctx)
+  await new Promise(resolve => kiloServer.close(resolve))
+  fs.rmSync(home, { recursive: true, force: true })
+}
 console.log(failures === 0 ? '\nkilo-test: all checks passed' : `\nkilo-test: ${failures} check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1
