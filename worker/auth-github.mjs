@@ -20,9 +20,12 @@
  *     │ ── x-ofm-user: token ────────▶│ chat turns are refused without it
  *
  * Storage is `users.json` next to this file (0600, atomic writes): GitHub
- * ids, logins, SHA-256 of issued tokens, star verdicts, and the GitHub OAuth
+ * ids, logins, SHA-256 of issued tokens, star verdicts, the GitHub OAuth
  * token AES-256-GCM-encrypted under `USER_STORE_KEY` — it is the only way to
- * re-check the star later, and a star that is removed must stop working.
+ * re-check the star later, and a star that is removed must stop working —
+ * plus the pending login links (token encrypted the same way) so a completed
+ * login survives a gateway restart: the plugin collects the token by polling,
+ * and a restart between callback and poll must not strand the flow.
  *
  * Enforcement is `REQUIRE_USER_TOKEN=1`. With the flag off the gate is a
  * compatibility window: tokens are accepted and tracked, nothing is refused.
@@ -185,12 +188,10 @@ export function createAuthGate(env = {}, options = {}) {
   const keyReady = keyMaterial.length >= 16
   const stateKey = crypto.createHash('sha256').update(`ofm-eac-auth-state\0${keyMaterial}`, 'utf8').digest()
 
-  /** @type {{version: number, users: Record<string, object>}} */
-  let store = { version: STORE_VERSION, users: {} }
+  /** @type {{version: number, users: Record<string, object>, pending: Record<string, object>}} */
+  let store = { version: STORE_VERSION, users: {}, pending: {} }
   /** token sha256 → github id; rebuilt on load and on every mutation. */
   let tokenIndex = new Map()
-  /** link → completed login the plugin has not collected yet (memory only). */
-  const pending = new Map()
   /** ticket id → {link, login, gh, exp} for the "starred now?" recheck page. */
   const tickets = new Map()
   /** Fixed-window limiter for the auth surface (per IP). */
@@ -207,9 +208,16 @@ export function createAuthGate(env = {}, options = {}) {
     try {
       const parsed = JSON.parse(fs.readFileSync(storePath, 'utf8'))
       if (parsed !== null && typeof parsed === 'object' && parsed.users !== null && typeof parsed.users === 'object') {
-        store = { version: STORE_VERSION, users: parsed.users }
+        store = {
+          version: STORE_VERSION,
+          users: parsed.users,
+          // Pre-2026-10 stores have no pending section; a lost poll window from
+          // that era simply answers "expired" and the user logs in again.
+          pending: parsed.pending !== null && typeof parsed.pending === 'object' && !Array.isArray(parsed.pending) ? parsed.pending : {},
+        }
       }
     } catch { /* absent is the normal first boot; unreadable keeps the empty store */ }
+    sweepPending(false)
     rebuildIndex()
   }
 
@@ -415,7 +423,7 @@ export function createAuthGate(env = {}, options = {}) {
       authorized: users.filter(u => u.starred === true).length,
       known: users.length,
       unstarred: users.filter(u => u.starred !== true).length,
-      pending: pending.size,
+      pending: Object.keys(store.pending).length,
       required: enforcement,
       configured,
       repo: starRepo,
@@ -455,9 +463,45 @@ export function createAuthGate(env = {}, options = {}) {
 
   const starLink = () => `https://github.com/${starRepo}`
 
+  /** Drop expired pending links. `persist=false` (store load) folds the sweep
+   * into the caller's next save instead of writing during startup. */
+  function sweepPending(persist = true) {
+    const t = now()
+    let dropped = false
+    for (const [link, entry] of Object.entries(store.pending)) {
+      if ((entry?.exp ?? 0) < t) { delete store.pending[link]; dropped = true }
+    }
+    if (dropped && persist) save()
+    return dropped
+  }
+
+  /**
+   * Record a collectable login result for `link`. The raw per-user token is
+   * encrypted at rest like the GitHub token; the plugin collects it by
+   * polling, and the entry stays collectable until it expires — a poll whose
+   * response dies mid-flight (origin restart, proxy reset) is retried by the
+   * plugin's existing loop instead of stranding a completed login.
+   */
   function rememberPending(link, entry) {
-    pending.set(link, { ...entry, exp: now() + PENDING_TTL_MS })
-    for (const [key, value] of pending) if (value.exp < now()) pending.delete(key)
+    sweepPending(false)
+    const { token, ...rest } = entry
+    store.pending[link] = { ...rest, ...(token === undefined ? {} : { token: encryptGh(token) }), exp: now() + PENDING_TTL_MS }
+    save()
+  }
+
+  function pendingEntry(link) {
+    const entry = store.pending[link]
+    if (entry === undefined) return undefined
+    if (entry.exp < now()) {
+      delete store.pending[link]
+      save()
+      return undefined
+    }
+    return entry
+  }
+
+  function pendingToken(entry) {
+    return decryptGh(entry.token) ?? (typeof entry.token === 'string' && !entry.token.startsWith('v1.') ? entry.token : '')
   }
 
   function grant(link, githubUser, ghToken) {
@@ -488,20 +532,24 @@ export function createAuthGate(env = {}, options = {}) {
     if (req.method === 'GET' && route === '/auth/poll') {
       const link = url.searchParams.get('link') ?? ''
       if (!LINK_PATTERN.test(link)) return json(res, 400, { error: { message: 'bad link code' } }), true
-      const entry = pending.get(link)
-      if (entry === undefined || entry.exp < now()) {
-        pending.delete(link)
-        return json(res, 200, { status: 'pending' }), true
-      }
+      const entry = pendingEntry(link)
+      // Unknown or swept: the link was never opened, or its window has passed.
+      // Telling the plugin apart from "not finished yet" lets it stop polling
+      // instead of waiting out its full timeout on a dead link.
+      if (entry === undefined) return json(res, 200, { status: 'expired' }), true
+      if (entry.status === 'waiting') return json(res, 200, { status: 'pending' }), true
       if (entry.status === 'unstarred') return json(res, 200, { status: 'unstarred', login: entry.login, repo: starRepo }), true
-      const found = lookup(entry.token)
+      const token = pendingToken(entry)
+      const found = lookup(token)
       if (found === null || found.user.starred !== true) {
-        pending.delete(link)
-        return json(res, 200, { status: 'pending' }), true
+        delete store.pending[link]
+        save()
+        return json(res, 200, { status: 'expired' }), true
       }
+      // Preserve upstream's repeatable legacy delivery. New clients ACK only
+      // after local persistence, removing the encrypted pending copy early.
       const retain = url.searchParams.get('retain') === '1'
-      if (!retain) pending.delete(link) // legacy clients still collect once
-      return json(res, 200, { status: 'ok', token: entry.token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo, ...(retain ? { ackRequired: true } : {}) }), true
+      return json(res, 200, { status: 'ok', token, login: entry.login, avatar: entry.avatar ?? '', repo: starRepo, ...(retain ? { ackRequired: true } : {}) }), true
     }
 
     if (req.method === 'POST' && route === '/auth/ack') {
@@ -509,12 +557,12 @@ export function createAuthGate(env = {}, options = {}) {
       if (!LINK_PATTERN.test(link)) return json(res, 400, { error: { message: 'bad link code' } }), true
       const token = String(req.headers['x-ofm-user'] ?? '')
       const found = lookup(token)
-      const entry = pending.get(link)
-      if (found === null || found.user.starred !== true || (entry !== undefined && entry.token !== token)) {
+      const entry = pendingEntry(link)
+      if (found === null || found.user.starred !== true || (entry !== undefined && pendingToken(entry) !== token)) {
         return json(res, 401, { error: { message: 'invalid delivery confirmation' } }), true
       }
       // Idempotent after the matching delivery has already been removed.
-      pending.delete(link)
+      if (entry !== undefined) { delete store.pending[link]; save() }
       return json(res, 200, { ok: true }), true
     }
 
@@ -548,6 +596,10 @@ export function createAuthGate(env = {}, options = {}) {
       }
       const link = url.searchParams.get('link') ?? ''
       if (!LINK_PATTERN.test(link)) return page(res, 400, '链接无效', '<p>登录链接缺少或格式不正确，请回到插件设置页重新发起登录。</p>'), true
+      // Open the collectable window now: the plugin polls from the moment it
+      // opens the browser, and an unknown link must be distinguishable from
+      // "callback not there yet".
+      rememberPending(link, { status: 'waiting' })
       const state = signState({ link, exp: now() + STATE_TTL_MS })
       const authorize = new URL(GITHUB_AUTHORIZE)
       authorize.searchParams.set('client_id', clientId)

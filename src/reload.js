@@ -16,7 +16,8 @@
  *    and re-attach the loader entry so config writes and volatile updates keep
  *    landing on the live fiber;
  * 5. on any failure, restore the caches and the old registration — the swap
- *    ends with either the old version or the new one running, never neither.
+ *    reports whether the previous runtime could be restored. A restoration
+ *    failure remains an explicit failure rather than an availability promise.
  *
  * The reload runs from a plain timer, outside the fiber being disposed, so the
  * disposal of the caller's own effects cannot cancel the swap mid-way.
@@ -117,7 +118,7 @@ export function restoreCaches(internal, backup) {
  * Reload the calling plugin instance in place.
  *
  * @param {object} ctx - the context `apply` received
- * @param {{logger?: object, packageUrl?: string, entryUrl?: string}} [options]
+ * @param {{logger?: object, packageUrl?: string, entryUrl?: string, expectedVersion?: string}} [options]
  * @returns {Promise<{ok: true, version: string, fibers: number} | {ok: false, error: string, restored: boolean}>}
  */
 export function selfReload(ctx, options = {}) {
@@ -173,6 +174,9 @@ export function selfReload(ctx, options = {}) {
           throw new Error('reloaded module does not export apply()')
         }
       }
+      if (options.expectedVersion !== undefined && replacement.version !== options.expectedVersion) {
+        throw new Error(`activation version mismatch: expected ${options.expectedVersion}, got ${String(replacement.version ?? '(missing)')}`)
+      }
     } catch (error) {
       restoreCaches(internal, backup)
       return { ok: false, error: `re-import failed, old code still running (${error?.message ?? error})`, restored: true }
@@ -223,7 +227,11 @@ export function selfReload(ctx, options = {}) {
         await Promise.all(restored.map(fiber => fiber.await()))
         return { ok: false, error: `new code failed to start, previous version restored (${error?.message ?? error})`, restored: true }
       } catch (restoreError) {
-        return { ok: false, error: `new code failed and restore failed too: ${restoreError?.message ?? restoreError}`, restored: false }
+        return {
+          ok: false,
+          error: `new code failed to start (${error?.message ?? error}); runtime restore failed too (${restoreError?.message ?? restoreError})`,
+          restored: false,
+        }
       }
     }
   })()

@@ -104,6 +104,7 @@ window.__ModuleLoader__.load({
         'eac.done': '授权成功：@{login}，现在可以使用 EAC 模型了。',
         'eac.needStar': '已用 @{login} 登录，但还没有 star 仓库；请先 Star，再在授权页点「我已 star，重新检查」。',
         'eac.expired': '这次登录等待超时了，请重新发起。',
+        'eac.sessionExpired': '登录链接已失效（服务器不再认识它），请重新发起 GitHub 登录。',
         'eac.openManually': '浏览器没有自动打开，请手动访问下面的地址完成授权。',
         'eac.startFailed': '无法发起登录（{reason}）。',
         'eac.loggedIn': '已授权：@{login} · 上次复查 {when}',
@@ -265,7 +266,11 @@ window.__ModuleLoader__.load({
         'level.update': '更新',
         'level.warn': '注意',
         'level.urgent': '紧急',
-        'upgrade.current': '当前版本',
+        'upgrade.current': '运行版本',
+        'upgrade.installed': '磁盘版本',
+        'upgrade.mismatch': '运行版本与磁盘版本不一致，请先确认安装状态，再重载或重启。',
+        'upgrade.recovery': '上次升级未完整恢复。请关闭应用，使用保留的备份恢复安装目录，重新启动后检查更新。',
+        'upgrade.backup': '恢复备份',
         'upgrade.latest': '最新版本',
         'upgrade.checkedAt': '上次检查',
         'upgrade.never': '从未检查',
@@ -542,6 +547,7 @@ window.__ModuleLoader__.load({
         'eac.done': 'Authorized as @{login} — EAC models are unlocked.',
         'eac.needStar': 'Signed in as @{login}, but the repository is not starred yet. Star it, then press "I starred it — check again" on the authorization page.',
         'eac.expired': 'This login attempt timed out; please start again.',
+        'eac.sessionExpired': 'The login link is no longer valid (the server does not know it) — please start the GitHub login again.',
         'eac.openManually': 'The browser did not open automatically — visit the address below to finish.',
         'eac.startFailed': 'Could not start the login ({reason}).',
         'eac.loggedIn': 'Authorized: @{login} · last checked {when}',
@@ -678,7 +684,11 @@ window.__ModuleLoader__.load({
         'level.update': 'Update',
         'level.warn': 'Heads-up',
         'level.urgent': 'Urgent',
-        'upgrade.current': 'Installed',
+        'upgrade.current': 'Running',
+        'upgrade.installed': 'On disk',
+        'upgrade.mismatch': 'The running and on-disk versions differ. Check the installation before reloading or restarting.',
+        'upgrade.recovery': 'The last upgrade was not fully restored. Close the app, restore the installation from the retained backup, restart, then check for updates.',
+        'upgrade.backup': 'Recovery backup',
         'upgrade.latest': 'Latest',
         'upgrade.checkedAt': 'Last check',
         'upgrade.never': 'never',
@@ -1943,6 +1953,9 @@ window.__ModuleLoader__.load({
               refresh(); latest.current?.reload?.()
               return
             }
+            if (result.status === 'expired') {
+              updatePending(null); setNotice(t('eac.sessionExpired')); return
+            }
             if (result.status === 'unstarred') setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
             else setNotice('')
           } catch (error) {
@@ -2487,8 +2500,9 @@ window.__ModuleLoader__.load({
         setPhase('applying'); setError(''); setMessage(t('upgrade.phase.download'))
         try {
           const result = await post('/update/apply', {}, 600_000)
-          // The successor instance has already pushed `upgraded` by the time the
-          // request settles; this message only covers a stream that never arrived.
+          // Hot reload closes the old SSE connection. The response must finish
+          // our local phase even if `upgraded` arrives before reconnection.
+          setPhase('')
           setMessage(t('upgrade.phase.install'))
           if (result?.version !== undefined) setMessage(t('upgrade.doneRefresh').replace('{version}', result.version))
           status.reload()
@@ -2500,16 +2514,18 @@ window.__ModuleLoader__.load({
       }
       const notes = useMemo(() => parseSafeHtml(data?.notes ?? ''), [data?.notes])
       const upToDate = data !== undefined && data.latest !== '' && data.available === false
+        && data.applying !== true && data.recoveryRequired !== true && data.versionMismatch !== true
       return h(Panel, null,
         h('div', { className: 'ofm_upgradecards' },
           h('span', { className: 'ofm_pill strong' }, `${t('upgrade.current')}: ${data?.current || '…'}`),
+          data?.installedVersion !== undefined ? h('span', { className: 'ofm_pill' }, `${t('upgrade.installed')}: ${data.installedVersion || '…'}`) : null,
           data?.latest !== undefined && data.latest !== '' ? h('span', { className: 'ofm_pill' }, `${t('upgrade.latest')}: ${data.latest}`) : null,
           data?.available === true ? h('span', { className: 'ofm_pill' }, h('span', { className: 'ofm_dot warn' }), t('upgrade.available').replace('{version}', data.latest)) : null,
           upToDate ? h('span', { className: 'ofm_pill' }, h('span', { className: 'ofm_dot ok' }), t('upgrade.upToDate')) : null,
           h('span', { className: 'ofm_pill' }, `${t('upgrade.checkedAt')}: ${data?.checkedAt ? ago(data.checkedAt, t.locale) : t('upgrade.never')}`)),
         h('div', { className: 'ofm_row' },
           h(Button, { disabled: phase !== '' || status.status !== 'ready', onClick: check }, phase === 'checking' ? t('upgrade.checking') : t('upgrade.check')),
-          data?.available === true ? h(Button, { kind: 'primary', disabled: phase !== '' || data.applying === true, onClick: applyUpgrade }, phase === 'applying' ? t('upgrade.applying') : t('upgrade.apply')) : null,
+          data?.available === true ? h(Button, { kind: 'primary', disabled: phase !== '' || data.applying === true || data.recoveryRequired === true, onClick: applyUpgrade }, phase === 'applying' ? t('upgrade.applying') : t('upgrade.apply')) : null,
           h('a', {
             className: 'ofm_btn ofm_starlink',
             href: 'https://github.com/Ebony-Vinyl/dsh-our-free-model',
@@ -2517,8 +2533,12 @@ window.__ModuleLoader__.load({
             rel: 'noopener noreferrer',
           }, h('span', { 'aria-hidden': 'true' }, '\u2606'), t('upgrade.star'))),
         phase === 'applying' ? h('div', { className: 'ofm_prog' }, h('i')) : null,
+        data?.recoveryRequired === true ? h('div', { className: 'ofm_callout ofm_error' },
+          h('div', null, t('upgrade.recovery'),
+            data.recoveryBackup ? h('p', { className: 'ofm_note' }, `${t('upgrade.backup')}: ${data.recoveryBackup}`) : null)) : null,
+        data?.versionMismatch === true ? h('div', { className: 'ofm_callout' }, t('upgrade.mismatch')) : null,
         message !== '' ? h('p', { className: 'ofm_note' }, message) : null,
-        error !== '' ? h('div', { className: 'ofm_callout ofm_error' }, t('upgrade.failed').replace('{message}', error)) : null,
+        (error || data?.error) ? h('div', { className: 'ofm_callout ofm_error' }, t('upgrade.failed').replace('{message}', error || data.error)) : null,
         notes.length > 0 ? h('div', { className: 'ofm_sec', style: { gap: 4 } },
           h('span', { className: 'ofm_note' }, t('upgrade.notes')),
           h('div', { className: 'ofm_upnotes ofm_newsbody' }, ...htmlToReact(notes))) : null,
@@ -2529,7 +2549,10 @@ window.__ModuleLoader__.load({
           data.lastApplied.ok === false && data.lastApplied.error ? ` — ${data.lastApplied.error}` : '') : null,
         h('p', { className: 'ofm_note' }, (settings.updateCheckHours ?? 0) > 0 ? t('upgrade.auto').replace('{n}', String(settings.updateCheckHours)) : t('upgrade.autoOff')),
         h('div', { className: 'ofm_row' },
-          h(Button, { onClick: () => { setPhase('reloading'); setMessage(t('upgrade.phase.reload')); post('/reload').catch(() => {}).then(() => { setPhase('') }) } }, phase === 'reloading' ? t('reload.reloading') : t('reload.now')),
+          h(Button, { disabled: phase !== '' || data?.applying === true || data?.recoveryRequired === true, onClick: () => {
+            setPhase('reloading'); setError(''); setMessage(t('upgrade.phase.reload'))
+            post('/reload').catch(err => { setMessage(''); setError(String(err?.message ?? err)) }).finally(() => { setPhase('') })
+          } }, phase === 'reloading' ? t('reload.reloading') : t('reload.now')),
           h(Switch, { checked: settings.autoReloadWatch === true, label: t('reload.auto'), onChange: () => onApply({ autoReloadWatch: !(settings.autoReloadWatch === true) }) }),
           h('span', { className: 'ofm_note' }, t('reload.done').replace('{n}', String(settings.reloadCount ?? 0)))))
     }
@@ -3965,7 +3988,7 @@ window.__ModuleLoader__.load({
     exports.inject = inject
     exports.name = 'our-free-model'
     // Headless test seams use the same stub React as scripts/client-lint.mjs.
-    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, useEacLogin, EacAuth }
+    exports.__test = { parseSafeHtml, safeUrl, sanitizeStyle, htmlToDom, buildHeatCells, Heatmap, ChannelsPage, UpgradePanel, useEacLogin, EacAuth }
     return module.exports
   },
 })

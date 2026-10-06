@@ -74,6 +74,9 @@ try {
       readUser: () => null, writeUser: () => { assert.fail('unexpected write') }, onSaved() {} })
     assert.deepEqual(await bad.poll(link), { error })
   }
+  const expired = createEacLoginPoller({ credentialOf: () => credential, fetch: async () => new Response('{"status":"expired"}'),
+    readUser: () => null, writeUser: () => assert.fail('expired login must not save a token'), onSaved() {} })
+  assert.deepEqual(await expired.poll(link), { status: 'expired' })
   const late = deferred()
   const cancelled = createEacLoginPoller({ credentialOf: () => credential, fetch: async () => { await late.promise; return ok() },
     readUser: () => null, writeUser: () => assert.fail('late response must not log the user back in'), onSaved() {} })
@@ -174,6 +177,10 @@ assert.equal(login.pending, null); assert.equal(storage.size, 0)
 await login.login(); login = page.render(); clock += 10 * 60_000
 await firePoll(); login = page.render()
 assert.equal(login.pending, null); assert.equal(login.notice, 'eac.expired'); assert.equal(storage.size, 0)
+await login.login(); login = page.render()
+pollResult = () => new Response('{"status":"expired"}')
+await firePoll(); login = page.render()
+assert.equal(login.pending, null); assert.equal(login.notice, 'eac.sessionExpired'); assert.equal(storage.size, 0)
 page.unmount()
 const tree = EacAuth({ t, auth: { available: true, unverified: true }, eacLogin: { ...login, pending: null } })
 assert.ok(JSON.stringify(tree).includes('eac.pillUnknown'))

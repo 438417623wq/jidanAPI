@@ -64,12 +64,13 @@ New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 
 - **GitHub 出网走 `node:https`，不是全局 fetch**——实测本机部署的服务器上 undici（全局 fetch）对 GitHub 一律 `UND_ERR_CONNECT_TIMEOUT`，而同一台机器 `node:https` 毫秒级拿到应答（403/404 都是 GitHub 的真实回复）。`auth-github.mjs` 里的 `nodeFetch` 就是为此存在，换服务器也不需要改配置；离线套件用注入的桩，不受影响。
 - 看板 `/stats-data` 的 `auth` 字段报告已授权 / 已知 / 待领取数量与强制开关状态。
 
-新版插件使用 `/auth/poll?link=...&retain=1` 领取，确认本机已保存后以 `x-ofm-user` 调用 `POST /auth/ack?link=...`。网关在确认前保留令牌最多 15 分钟，响应丢失可以重领；旧插件仍一次领取，新插件可兼容旧网关（但旧网关无法保证重领）。待领取队列仍在内存中，重启后必须重新发起登录。升级请避开正在授权的会话，并保持以下单实例配置。
+新版插件使用 `/auth/poll?link=...&retain=1` 领取，确认本机已保存后以 `x-ofm-user` 调用 `POST /auth/ack?link=...`。网关在确认前保留令牌最多 15 分钟，响应丢失可以重领；旧插件继续幂等领取，新插件也兼容没有 ACK 的网关。待领取令牌沿用上游实现加密保存在 users.json 中，同一存储与密钥下重启仍可领取；旧版一次领取且不持久化的网关不能保证重领。升级请避开正在授权的会话，并保持以下单实例配置。
 
 ## ⚠️ 只能单实例运行（cluster / instances>1 会直接坏）
 
 网关是**单进程有状态**服务：签发的用户令牌索引、按 IP/按账号的限流与并发计数、
-看板统计、待领取的登录链接，全部活在进程内存里（`users.json` 只落用户表）。
+看板统计，全部活在进程内存里；用户表与待领取的登录链接落在 `users.json`
+（0600，待领令牌同样加密落盘——重启不再吞掉一个已完成等待领取的登录）。
 若以 **PM2 cluster 模式或多实例**（`instances: 2`）拉起，连接被轮询分发到多个
 各自持有一份内存的进程，症状是：
 
@@ -84,9 +85,20 @@ New API 面板本身不按 IP 记账，这些视图由网关提供。Cloudflare 
 要提容量，调 `POOL_SIZE` / `RATE_LIMIT_*` / `CONCURRENCY_PER_IP`，不要加实例；
 将来若真要多进程，必须先把用户表与限流状态挪进共享存储，而不是改 PM2 配置了事。
 
-> 2026-10-06 实测教训：该项目曾被以 cluster×2 + watch:true 拉起，用户登录成功
-> 但状态在「已授权/未授权」间跳变（两个进程的用户表各自独立，令牌只发到了
-> 其中一个）。改回 fork×1 并 `pm2 delete + pm2 start` 后立即恢复。
+> 2026-10-06 实测教训（两次事故，同一类根因）：
+>
+> 1. 该项目曾被以 cluster×2 + watch:true 拉起，用户登录成功但状态在
+>    「已授权/未授权」间跳变（两个进程的用户表各自独立，令牌只发到了其中一个）。
+>    改回 fork×1 后立即恢复。
+> 2. 同类配置在另一台守护进程里复活过一次：这台服务器上 **root 与 www 各有一个
+>    PM2 守护进程**（各带开机自启 systemd 单元），宝塔面板按项目的运行用户
+>    （www）管理其一，root shell 里的 `pm2` 命令操作的是另一个——两边各挂一份
+>    应用就会抢 17788 端口，输家进入 EADDRINUSE 重启循环；watch:true 再叠加
+>    `stats.json` 周期写入，变成不停重启的风暴。重启瞬间 nginx 报
+>    `connection refused` / `prematurely closed`，Cloudflare 回 520，赶上登录
+>    轮询就是「授权成功但应用一直未同步」。**处置：确认两个守护进程里谁持有
+>    该应用，把另一个清空并 `pm2 save`；面板项目设置（watch/cluster）是会被
+>    面板重新生成的源头，只改 `pm2_configs` 文件会在下次面板重启时被还原。**
 
 ## 部署
 
@@ -191,4 +203,4 @@ npx wrangler deploy        # 如需限速，先取消 wrangler.toml 里 bindings
 
 离线套件直接驱动本仓库的 `worker.js`（同一份代码，无逻辑漂移）：`node scripts/test-all.mjs --only vault`，覆盖验签通过/时间戳过期/坏签名/未知路径/白名单外模型/超限 body/流式转发全链路。
 
-授权闸门另有一整套离线验收：`node scripts/test-all.mjs --only eac-auth`（或 `node scripts/eac-auth-test.mjs`）——GitHub 全部打桩、中继是本机回环服务器，覆盖 start 跳转形状、state 篡改/过期、star 通过 / 未 star 重检、旧协议令牌只领取一次、新协议确认前重领及令牌匹配确认、users.json 不落明文、无令牌 / 未知令牌 / 已吊销令牌被拒、listing 不拦、取消 star 吊销、GitHub 不可达不误伤、退出登录、兼容期放行与按账号限流。
+授权闸门另有一整套离线验收：`node scripts/test-all.mjs --only eac-auth`（或 `node scripts/eac-auth-test.mjs`）——GitHub 全部打桩、中继是本机回环服务器，覆盖 start 跳转形状、state 篡改/过期、star 通过 / 未 star 重检、令牌幂等领取且重启后仍可领取、新协议保存后匹配确认、未知链接按过期答复、users.json 不落明文、无令牌 / 未知令牌 / 已吊销令牌被拒、listing 不拦、取消 star 吊销、GitHub 不可达不误伤、退出登录、兼容期放行与按账号限流。

@@ -16,6 +16,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
 import { parseVersion, compareVersions, parseManifest, fileUrlOf, PluginUpdater, stageRelease, verifyStaged, backupPackage, restoreBackup, installStaged, verifyInstalled, signManifest, verifyManifestSignature, stableStringify, PINNED_MANIFEST_PUBLIC_KEY } from '../src/updater.js'
+import { selfReload } from '../src/reload.js'
 const CONTROLLED_DEFAULTS = ['http://127.0.0.1:1/never.json']
 
 let failures = 0
@@ -449,6 +450,255 @@ await checkAsync('installStaged + verifyInstalled accept a good stage', async ()
   verifyInstalled(pkg, manifest)
   fs.rmSync(pkg, { recursive: true, force: true })
   fs.rmSync(stage, { recursive: true, force: true })
+})
+
+function fixtureUpdater(pkg, data, runningVersion = OLD) {
+  return new PluginUpdater({
+    pkgDir: pkg, dataDir: data, runningVersion, settings: () => ({}),
+    defaultSources: [`${base}/repo/feed/manifest.json`], manifestPublicKey: TEST_PUBLIC_KEY,
+  })
+}
+
+/** Host loader stand-in; the real selfReload still performs every transition. */
+function reloadHost(mode) {
+  const previous = { apply() {}, version: OLD }
+  const replacement = { apply() {}, version: NEW }
+  let running = previous
+  const parent = { registry: { plugin(callback) {
+    running = callback
+    return { ctx: { fiber: { await: async () => {
+      if (callback === replacement && ['startup-failure', 'restore-failure'].includes(mode)) throw new Error('replacement startup refused')
+      if (callback === previous && mode === 'restore-failure') throw new Error('previous runtime restore refused')
+    } } } }
+  } } }
+  const fiber = { uid: 1, parent, _config: {}, await: async () => {} }
+  return {
+    running: () => running,
+    ctx: {
+      fiber: { runtime: { callback: previous } },
+      registry: {
+        get: callback => callback === previous ? { fibers: [fiber] } : undefined,
+        delete: callback => { if (running === callback) running = undefined },
+      },
+      loader: {
+        internal: { loadCache: new Map() },
+        unwrapExports: value => value,
+        import: async () => {
+          if (mode === 'import-failure') throw new Error('replacement import refused')
+          return mode === 'stale-cache' ? previous : replacement
+        },
+      },
+    },
+  }
+}
+
+for (const mode of ['import-failure', 'startup-failure', 'restore-failure', 'stale-cache', 'success']) {
+  await checkAsync(`upgrade includes real hot reload outcome: ${mode}`, async () => {
+    const pkg = makePackage(OLD)
+    const data = makeDataDir()
+    const updater = fixtureUpdater(pkg, data)
+    const host = reloadHost(mode)
+    let successor
+    try {
+      const operation = updater.apply({ activate: async () => {
+        successor = fixtureUpdater(pkg, data, NEW)
+        assert.equal(successor.status().applying, true, 'the successor sees the same in-flight upgrade')
+        assert.equal(successor.status().lastApplied, undefined, 'no premature success record')
+        await assert.rejects(() => successor.apply(), /already running/)
+        return selfReload(host.ctx, { logger: {}, expectedVersion: NEW })
+      } })
+      if (mode === 'success') {
+        await operation
+        assert.equal(host.running().version, NEW)
+        assert.equal(updaterVersion(pkg), NEW)
+        assert.equal(successor.status().lastApplied.ok, true, 'the successor observes the committed history')
+        assert.equal(successor.status().lastApplied.activated, true)
+        assert.equal(successor.status().recoveryRequired, false)
+      } else {
+        await assert.rejects(() => operation, /replacement|restore failed|activation version mismatch/)
+        assert.equal(updaterVersion(pkg), OLD)
+        assert.equal(updater.status().lastApplied.ok, false)
+        assert.equal(updater.status().recoveryRequired, mode === 'restore-failure')
+        if (mode !== 'restore-failure') assert.equal(host.running().version, OLD)
+        assert.equal(updater.status().applying, false)
+      }
+    } finally {
+      fs.rmSync(pkg, { recursive: true, force: true })
+      fs.rmSync(data, { recursive: true, force: true })
+    }
+  })
+}
+
+for (const returnedVersion of [OLD, undefined]) {
+  await checkAsync(`activation cannot commit an unconfirmed target version (${returnedVersion ?? 'missing'})`, async () => {
+    const pkg = makePackage(OLD)
+    const data = makeDataDir()
+    const updater = fixtureUpdater(pkg, data)
+    try {
+      await assert.rejects(() => updater.apply({ activate: async () => ({ ok: true, version: returnedVersion }) }),
+        /activation version mismatch/)
+      assert.equal(updaterVersion(pkg), OLD)
+      assert.equal(updater.status().lastApplied.ok, false)
+      assert.equal(updater.status().phase, 'recovery-required', 'an unknown runtime cannot be declared restored')
+      assert.equal(updater.status().recoveryRequired, true)
+    } finally {
+      fs.rmSync(pkg, { recursive: true, force: true })
+      fs.rmSync(data, { recursive: true, force: true })
+    }
+  })
+}
+
+await checkAsync('reload and rollback failures remain visible across instances and restarts', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const updater = fixtureUpdater(pkg, data)
+  const host = reloadHost('import-failure')
+  const original = fs.copyFileSync
+  try {
+    fs.copyFileSync = (from, to, ...args) => {
+      if (String(from).startsWith(updater.backupDir + path.sep) && to === path.join(pkg, 'package.json')) {
+        throw Object.assign(new Error('EPERM: restoration refused'), { code: 'EPERM' })
+      }
+      return original(from, to, ...args)
+    }
+    await assert.rejects(() => updater.apply({ activate: () => selfReload(host.ctx, { logger: {} }) }),
+      /replacement import refused.*rollback also failed.*EPERM/)
+    const status = fixtureUpdater(pkg, data).status()
+    assert.equal(status.current, OLD)
+    assert.equal(status.installedVersion, NEW)
+    assert.equal(status.versionMismatch, true)
+    assert.equal(status.recoveryRequired, true)
+    assert.equal(status.applying, false, 'a terminated attempt is not permanently busy')
+    assert.equal(status.lastApplied.ok, false)
+    assert.equal(status.lastApplied.to, NEW)
+    assert.match(status.error, /rollback also failed/)
+    assert.equal(updaterVersion(updater.backupDir), OLD, 'the repair material is retained')
+    await assert.rejects(() => fixtureUpdater(pkg, data).apply(), /requires recovery/)
+  } finally {
+    fs.copyFileSync = original
+  }
+  // A manual restore followed by a fresh old runtime and a check is sufficient
+  // to clear the blocker, but only when every retained byte matches.
+  try {
+    restoreBackup(updater.backupDir, pkg)
+    const restarted = fixtureUpdater(pkg, data)
+    await restarted.check()
+    assert.equal(restarted.status().recoveryRequired, false)
+    assert.equal(restarted.status().phase, 'rolled-back')
+    await restarted.apply({ activate: async () => ({ ok: true, version: NEW }) })
+    assert.equal(restarted.status().lastApplied.ok, true)
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
+
+for (const denyRollback of [false, true]) {
+  await checkAsync(`partial installation failure verifies rollback (denied=${denyRollback})`, async () => {
+    const pkg = makePackage(OLD)
+    const data = makeDataDir()
+    const updater = fixtureUpdater(pkg, data)
+    const original = fs.copyFileSync
+    try {
+      fs.copyFileSync = (from, to, ...args) => {
+        if (to === path.join(pkg, 'client.js.ofm-new')
+          || (denyRollback && to === path.join(pkg, 'package.json') && String(from).startsWith(updater.backupDir + path.sep))) {
+          throw Object.assign(new Error('EPERM: injected file refusal'), { code: 'EPERM' })
+        }
+        return original(from, to, ...args)
+      }
+      await assert.rejects(() => updater.apply(), denyRollback ? /rollback also failed/ : /previous files restored/)
+      assert.equal(updaterVersion(pkg), denyRollback ? NEW : OLD)
+      assert.equal(updater.status().recoveryRequired, denyRollback)
+      assert.equal(updater.status().lastApplied.ok, false)
+      assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), oldFiles['index.js'])
+    } finally {
+      fs.copyFileSync = original
+      fs.rmSync(pkg, { recursive: true, force: true })
+      fs.rmSync(data, { recursive: true, force: true })
+    }
+  })
+}
+
+await checkAsync('failed backup creation preserves the existing verified backup and installed bytes', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const updater = fixtureUpdater(pkg, data)
+  backupPackage(pkg, updater.backupDir)
+  const original = fs.copyFileSync
+  try {
+    fs.copyFileSync = (from, to, ...args) => {
+      if (String(to).includes('rollback.pending-') && String(to).endsWith('client.js')) throw new Error('backup copy refused')
+      return original(from, to, ...args)
+    }
+    await assert.rejects(() => updater.apply(), /backup copy refused/)
+    assert.equal(updaterVersion(pkg), OLD)
+    assert.equal(updaterVersion(updater.backupDir), OLD)
+    assert.equal(fs.readFileSync(path.join(updater.backupDir, 'client.js'), 'utf8'), oldFiles['client.js'])
+    assert.equal(fs.existsSync(updater.stateFile), false, 'no install intent was issued')
+  } finally {
+    fs.copyFileSync = original
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
+
+await checkAsync('damaged rollback receipt or bytes never cause installed-file deletion', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const backup = path.join(data, 'rollback')
+  try {
+    backupPackage(pkg, backup)
+    fs.writeFileSync(path.join(pkg, 'index.js'), 'keep this edit\n')
+    fs.writeFileSync(path.join(backup, 'client.js'), 'damaged backup\n')
+    assert.throws(() => restoreBackup(backup, pkg), /rollback hash drift/)
+    assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), 'keep this edit\n')
+    fs.writeFileSync(path.join(backup, '.ofm-backup.json'), '{"files":[{"path":"../escape"}]}')
+    assert.throws(() => restoreBackup(backup, pkg), /invalid rollback receipt/)
+    assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), 'keep this edit\n')
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
+
+await checkAsync('rollback reports a denied obsolete-file deletion rather than false success', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const backup = path.join(data, 'rollback')
+  backupPackage(pkg, backup)
+  const obsolete = path.join(pkg, 'obsolete.js')
+  fs.writeFileSync(obsolete, 'not in the old installation\n')
+  const original = fs.rmSync
+  try {
+    fs.rmSync = (target, options) => {
+      if (target === obsolete) throw new Error('obsolete deletion refused')
+      return original(target, options)
+    }
+    assert.throws(() => restoreBackup(backup, pkg), /rollback incomplete.*obsolete/)
+  } finally {
+    fs.rmSync = original
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
+
+await checkAsync('interrupted or unreadable transaction state is blocked rather than reported as current', async () => {
+  const pkg = makePackage(NEW)
+  const data = makeDataDir()
+  try {
+    for (const text of [JSON.stringify({ phase: 'activating', from: OLD, to: NEW }), '{', 'null']) {
+      fs.writeFileSync(path.join(data, 'upgrade-state.json'), text)
+      const updater = fixtureUpdater(pkg, data, NEW)
+      assert.equal(updater.status().recoveryRequired, true)
+      assert.equal(updater.status().applying, false)
+      await assert.rejects(() => updater.apply(), /requires recovery/)
+      assert.equal(updaterVersion(pkg), NEW)
+    }
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
 })
 
 for (const closer of [server, corruptServer, badManifestServer]) closer.close()

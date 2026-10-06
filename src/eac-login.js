@@ -21,6 +21,7 @@ export function createEacLoginPoller({ credentialOf, fetch, readUser, writeUser,
       data = await response.json().catch(() => null)
     } catch { return { error: 'unreachable' } }
     if (startedGeneration !== generation) return { error: 'cancelled' }
+    if (data?.status === 'expired') return { status: 'expired' }
     if (data?.status === 'pending') return { status: 'pending' }
     if (data?.status === 'unstarred') return { status: 'unstarred', login: typeof data.login === 'string' ? data.login : '', repo: typeof data.repo === 'string' ? data.repo : '' }
     if (data?.status !== 'ok' || typeof data.token !== 'string' || data.token === '') return { error: 'malformed' }
