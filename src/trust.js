@@ -34,6 +34,42 @@ export function isLoopbackHost(value) {
 }
 
 /**
+ * The fence's view of one connection service, keyed under `admit` (issue #89).
+ *
+ * The composition may publish `connection` long after plugins have loaded, so
+ * index.js reads it per request through this late-binding view. Hosts before
+ * dsh 0.1.7 carry the same decision as `requestRejection`: the view maps that
+ * method onto `admit` instead of wrapping a property that does not exist —
+ * the wrapping call used to throw inside the fence and read as 503 admission
+ * unavailable on every request. A bare status travels as the `{rejection}`
+ * envelope `rejectionFor` unwraps: handed through bare, an object-shaped
+ * return reads as "no rejection" and switches the host's authentication off.
+ *
+ * Exported so the tests exercise the real view rather than a replica that can
+ * drift from it.
+ *
+ * @param {object|(() => object|undefined)} service - the harness `connection`
+ *   service, or a thunk resolving it per request (the composition may publish
+ *   it long after plugins have loaded)
+ * @returns {{admit: (req: object) => ({rejection: number}|undefined)|undefined}|{admit: undefined}}
+ */
+export function connectionAdmissionView(service) {
+  return {
+    get admit() {
+      const current = typeof service === 'function' ? service() : service
+      if (current === undefined) return undefined
+      if (typeof current.admit !== 'function' && typeof current.requestRejection === 'function') {
+        return req => {
+          const status = current.requestRejection(req)
+          return status === undefined ? undefined : { rejection: status }
+        }
+      }
+      return req => current.admit(req)
+    },
+  }
+}
+
+/**
  * Decide one request. Returns an HTTP status to reject with, or `undefined` to
  * let the handler run.
  *
@@ -46,12 +82,25 @@ export function isLoopbackHost(value) {
 export function rejectionFor(req, connection, onRejection) {
   let decision
   try {
+    // Hosts before dsh 0.1.7 publish the same decision under the older name
+    // `requestRejection` (issue #89): `admit` is undefined there, and the
+    // service *exists*, so an empty read must fall through to that method —
+    // treating it as a fault turned every request into 503 admission
+    // unavailable. The return value is a bare status on that spelling and an
+    // `{rejection}` envelope on `admit`.
     const admit = connection?.admit
     if (typeof admit === 'function') {
       const admission = admit.call(connection, req)
       const status = admission && typeof admission === 'object' ? admission.rejection : undefined
       if (status === undefined) return undefined
       decision = { status, source: 'connection', reason: 'host-rejected' }
+    } else {
+      const reject = connection?.requestRejection
+      if (typeof reject === 'function') {
+        const status = reject.call(connection, req)
+        if (status === undefined) return undefined
+        decision = { status, source: 'connection', reason: 'host-rejected' }
+      }
     }
   } catch {
     // Never bypass browser authentication when a mounted Host service fails.

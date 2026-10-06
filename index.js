@@ -43,7 +43,7 @@ import { AnnouncementFeed } from './src/feed.js'
 import { PluginUpdater, restoreBackup } from './src/updater.js'
 import { selfReload, watchPackage, isReloading } from './src/reload.js'
 import { createPushHub } from './src/push.js'
-import { rejectionFor, isLoopbackHost } from './src/trust.js'
+import { rejectionFor, isLoopbackHost, connectionAdmissionView } from './src/trust.js'
 import { resolveAttributionUserAgent } from './adapter/kernel.js'
 
 export const name = 'our-free-model'
@@ -1036,16 +1036,12 @@ export function apply(ctx, config) {
    *
    * The browser half publishes `connection` after plugins have loaded, so reading
    * it once here would freeze in "absent" and leave every request on the replica
-   * fence for the life of the process. The getter answers `undefined` — not a
-   * no-op function — while the service is missing, which is what makes the fence
-   * fall through to its own structural check instead of reading as "admitted".
+   * fence for the life of the process. The view takes the service *thunk* rather
+   * than the service, and its `admit` answers `undefined` — not a no-op function
+   * — while the service is missing, which is what makes the fence fall through to
+   * its own structural check instead of reading as "admitted".
    */
-  const fenceConnection = {
-    get admit() {
-      const current = optional('connection')
-      return current === undefined ? undefined : (req => current.admit(req))
-    },
-  }
+  const fenceConnection = connectionAdmissionView(() => optional('connection'))
   const logAdmissionRejection = surface => ({ status, source, reason }) => {
     // Fixed fields only: headers, request URLs and admission errors may contain
     // credentials. JSON API and SSE must report the same admission boundary.

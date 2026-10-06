@@ -8,7 +8,7 @@
  * Run: node scripts/trust-test.mjs
  */
 import assert from 'node:assert/strict'
-import { rejectionFor, structuralRejection } from '../src/trust.js'
+import { rejectionFor, structuralRejection, connectionAdmissionView } from '../src/trust.js'
 
 let failures = 0
 const check = (name, fn) => {
@@ -88,6 +88,26 @@ check('no connection service means fence only', () => {
   assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), undefined), undefined)
   assert.equal(rejectionFor(req({ host: 'evil.example' }), undefined), 403)
 })
+// Hosts before dsh 0.1.7 publish the decision under `requestRejection`, not
+// `admit` (issue #89): the method name is missing, the service is not, and a
+// fence that read the absence as a fault answered every request 503.
+check('a pre-0.1.7 connection service is consulted under its own name', () => {
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), { requestRejection: () => undefined }), undefined)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), { requestRejection: () => 401 }), 401)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), { requestRejection: () => 403 }), 403)
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), { requestRejection: () => 403 }), 403)
+})
+check('admit still outranks requestRejection when both exist', () => {
+  const connection = {
+    admit: () => ({ rejection: 401 }),
+    requestRejection: () => 403,
+  }
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connection), 401)
+})
+check('a throwing requestRejection never bypasses Host authentication', () => {
+  const connection = { requestRejection: () => { throw new Error('bug') } }
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connection), 503)
+})
 check('a desktop request still respects Host 401/403', () => {
   const desktop = req({ host: '127.0.0.1:8080', referer: 'dsh-app://app/' })
   for (const rejection of [401, 403]) {
@@ -135,6 +155,26 @@ check('and it consults the service from the moment it appears', () => {
   const view = { get admit() { return service === undefined ? undefined : (req => service.admit(req)) } }
   assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 403)
   service = { admit: () => ({ rejection: 401 }) }
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 401)
+})
+// The real view (src/trust.js connectionAdmissionView, used by index.js) maps
+// a pre-0.1.7 service's `requestRejection` onto `admit`, so the fence sees one
+// shape on every host (issue #89). The bare status must travel as an
+// `{rejection}` envelope: handed through bare, an object-shaped return reads
+// as "no rejection" and switches the host's authentication off.
+check('the real view answers for a service that only has requestRejection', () => {
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), connectionAdmissionView({ requestRejection: () => 403 })), 403)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ requestRejection: () => undefined })), undefined)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ requestRejection: () => 401 })), 401)
+  // A 0.1.7+ service keeps its envelope spelling through the same view.
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ admit: () => ({ rejection: 401 }) })), 401)
+})
+check('the view takes a thunk and consults it from the moment the service appears', () => {
+  let service
+  const view = connectionAdmissionView(() => service)
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 403)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), view), undefined)
+  service = { requestRejection: () => 401 }
   assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 401)
 })
 

@@ -121,7 +121,12 @@ export function repairToolPairing(messages) {
     }
     const blocks = blocksOf(message.content)
     const toolBlocks = blocks.filter(block => block?.type === 'tool-call')
-    const calls = toolBlocks.filter(block => answered.has(String(block.id ?? '')))
+    // A call with no name is not executable, and one that reached the host was
+    // answered `Error: unknown tool ""` — an *answered* call, so the answered-id
+    // test alone kept it in the history forever and every later turn 400'd on
+    // every model (issue #92). A nameless call is dropped like an unanswered
+    // one; its result then fails the kept-calls test below and goes with it.
+    const calls = toolBlocks.filter(block => answered.has(String(block.id ?? '')) && String(block.name ?? '') !== '')
     for (const call of calls) keptCalls.add(String(call.id))
     if (calls.length === toolBlocks.length) {
       // Untouched when nothing was dropped, including the all-text case.

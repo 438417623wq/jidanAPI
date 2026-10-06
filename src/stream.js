@@ -186,6 +186,13 @@ class BlockSink {
         // which makes the harness's assembler prune the call instead of
         // executing it and looping on the model's retry.
         try { JSON.parse(block.args === '' ? '{}' : block.args) } catch { this.brokenToolCall = true }
+        // So is a call that never learned its name (issue #92): a relayed model
+        // leaked its tool markup mid-text, the gateway half-parsed it into an
+        // empty-named call shell, and the harness executed the nameless call as
+        // `Error: unknown tool ""` — an *answered* poison pill repairToolPairing
+        // keeps forever, failing every later turn on every model. Downgrade the
+        // turn exactly like the unparseable-arguments case above.
+        if (typeof block.name !== 'string' || block.name === '') this.brokenToolCall = true
         this.emit({
           type: 'block-end', index: block.index,
           // A call that never learned its id or name still has to close with

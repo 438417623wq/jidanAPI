@@ -483,6 +483,25 @@ await checkAsync('a tool call that never learns its name still closes with a str
   assert.equal(end?.block?.id, 'call_y')
 })
 
+// Issue #92: a nameless call is unexecutable, and one that reached the host was
+// answered `Error: unknown tool ""` — an answered poison pill the pairing
+// repair kept forever. The stream must flag the turn so the adapter downgrades
+// it to max-tokens and the harness's assembler prunes the call; the wire shape
+// above (a string name) is unchanged, only the verdict is new.
+await checkAsync('a nameless tool call downgrades its turn to max-tokens (#92)', async () => {
+  const { state } = await readChat([
+    chatFrame({ tool_calls: [{ index: 0, id: 'call_bad', function: { name: '', arguments: '{}' } }] }),
+  ])
+  assert.equal(state.brokenToolCall, true, 'an empty wire name must mark the turn broken')
+  // A call that does learn its name — including one named after its arguments
+  // began — must not flag the turn.
+  const named = await readChat([
+    chatFrame({ tool_calls: [{ index: 0, id: 'call_ok', function: { arguments: '{"q"' } }] }),
+    chatFrame({ tool_calls: [{ index: 0, id: 'call_ok', function: { name: 'glob', arguments: ':1}' } }] }),
+  ])
+  assert.equal(named.state.brokenToolCall, false)
+})
+
 const fakeResponse = () => {
   const res = {
     writes: [],

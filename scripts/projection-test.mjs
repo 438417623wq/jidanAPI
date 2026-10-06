@@ -114,6 +114,31 @@ console.log('\n=== 2. the repair still removes what has no answer ===')
   const repairedOrphanText = toChatMessages(repairToolPairing(orphanTextAnswer), resolveImage, [])
   check('text survives but its unanswered call is stripped (no 400 either)', repairedOrphanText.map(m => m.role), ['user', 'assistant', 'user'])
   check('…and the kept assistant turn carries no tool_calls', repairedOrphanText.find(m => m.role === 'assistant')?.tool_calls, undefined)
+
+  // Issue #92: a relayed model leaked its tool markup mid-text, the gateway
+  // half-parsed it into an empty-named call, the host executed it as
+  // `Error: unknown tool ""` — and because that counts as answered, the
+  // nameless call rode in the history forever, 400ing every later turn on
+  // every model. The repair now drops a nameless call like an unanswered one.
+  const nameless = { type: 'tool-call', id: 'call_2295d0ae4046d985405fccbc', name: '', arguments: '{}' }
+  const namelessAnswer = [
+    { role: 'user', content: [{ type: 'text', text: 'hi' }] },
+    { role: 'assistant', content: [{ type: 'text', text: '<tool_call><function psh></function>' }, nameless] },
+    v4Result('call_2295d0ae4046d985405fccbc', 'Error: unknown tool ""', { isError: true }),
+    { role: 'user', content: [{ type: 'text', text: '继续' }] },
+  ]
+  const repairedNameless = toChatMessages(repairToolPairing(namelessAnswer), resolveImage, [])
+  check('a nameless call is dropped even though it was answered (#92)', repairedNameless.filter(m => m.role === 'assistant' && m.tool_calls?.length > 0).length, 0)
+  check('…and its `unknown tool ""` result goes with it', repairedNameless.filter(m => m.role === 'tool').length, 0)
+  check('…while the surrounding turns survive untouched', repairedNameless.map(m => m.role), ['user', 'assistant', 'user'])
+  const claudeNameless = toClaudeMessages(repairToolPairing(namelessAnswer), resolveImage, [])
+  check('Messages wire: the nameless tool_use is gone too', claudeNameless.messages.flatMap(m => m.content).filter(b => b.type === 'tool_use').length, 0)
+  check('Messages wire: its tool_result is gone as well', claudeNameless.messages.flatMap(m => m.content).filter(b => b.type === 'tool_result').length, 0)
+  const responsesNameless = toResponseInput(repairToolPairing(namelessAnswer), resolveImage, [])
+  check('Responses wire: neither function_call nor output remains', [
+    responsesNameless.filter(i => i.type === 'function_call').length,
+    responsesNameless.filter(i => i.type === 'function_call_output').length,
+  ], [0, 0])
 }
 
 console.log('\n=== 3. parallel calls: every result survives, in order, keyed correctly ===')
