@@ -52,7 +52,6 @@ window.__ModuleLoader__.load({
         'hint.unknown': '尚未探测，默认保持可达。',
         'hint.hidden': '探测显示网关点名了它却不路由它，因此已从模型选择器中移除；某一次探测重新通过，它会自己回来。',
         'hint.sharedBudget': '该模型思考不可关闭：思考与可见回答共用同一份额度，档位越低留给正文的越少。',
-        'group.notAdvertised': '不在选择器中',
         'tag.vision': '视觉',
         'tag.text': '纯文本',
         'tag.thinking': '可调思考',
@@ -108,7 +107,7 @@ window.__ModuleLoader__.load({
         'eac.logout': '退出登录',
         'eac.noLane': '当前运行环境未解锁 EAC 协付车道，无法进行 GitHub 授权。',
         'eac.lockedTitle': '需要 GitHub 授权并 star 仓库后使用',
-        'eac.lockedNote': '未授权：请在上方「EAC 渠道授权」区完成 GitHub 登录并 star 仓库。',
+        'eac.lockedNote': '未授权：点下方按钮用 GitHub 登录并 star 仓库，或到「EAC 渠道授权」区完成。',
         'section.forward': '本地转发（OpenAI 兼容）',
         'section.forwardHint': '让其它本地工具用一个 base URL 调用这些模型。',
         'section.egress': '出口代理（订阅分流）',
@@ -462,7 +461,6 @@ window.__ModuleLoader__.load({
         'hint.unknown': 'Not probed yet, so it stays reachable.',
         'hint.hidden': 'The gateway names it but refuses to route it, so it is out of the model picker. It returns by itself as soon as a probe gets through.',
         'hint.sharedBudget': 'Thinking cannot be switched off on this model, so thinking and the visible answer share one ceiling — a lower rung leaves the answer less room.',
-        'group.notAdvertised': 'Not in the picker',
         'tag.vision': 'Vision',
         'tag.text': 'Text only',
         'tag.thinking': 'Tunable thinking',
@@ -543,7 +541,7 @@ window.__ModuleLoader__.load({
         'eac.logout': 'Sign out',
         'eac.noLane': 'The EAC co-paid lane is not unlocked in this composition, so GitHub authorization is unavailable.',
         'eac.lockedTitle': 'Needs GitHub authorization and a star',
-        'eac.lockedNote': 'Not authorized: sign in with GitHub and star the repository in the EAC section above.',
+        'eac.lockedNote': 'Not authorized: sign in with GitHub and star the repository with the button below, or from the EAC authorization section.',
         'heat.title': 'Token heatmap',
         'heat.legend': 'Less',
         'heat.legendMore': 'More',
@@ -1675,7 +1673,7 @@ window.__ModuleLoader__.load({
 
     // ── model roster ──────────────────────────────────────────────────────────
     function ModelCard(props) {
-      const { model: m, t, onBench, bench, locked } = props
+      const { model: m, t, onBench, bench, locked, eacLogin } = props
       const stateKey = `state.${m.availability}`
       const dim = m.availability !== 'available'
       const rung = (m.budgets ?? []).find(row => row.isDefault === true)
@@ -1694,7 +1692,13 @@ window.__ModuleLoader__.load({
           h('span', { className: 'ofm_tag' }, `${t('tag.output')} ${kilo(m.maxOutput)}`),
           rung === undefined ? null : h('span', { className: 'ofm_tag', title: t('tag.rungTitle').replace('{ladder}', m.budgets.map(row => `${row.name} ${kilo(row.tokens)}`).join(' · ')) },
             `${t('tag.rung')} ${kilo(rung.tokens)}`)),
-        m.channel === 'eac' && locked === true ? h('p', { className: 'ofm_note' }, t('eac.lockedNote')) : null,
+        m.channel === 'eac' && locked === true
+          ? h(Fragment, null,
+            h('p', { className: 'ofm_note' }, t('eac.lockedNote')),
+            eacLogin === undefined ? null : h('div', { className: 'ofm_row' },
+              h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+                eacLogin.busy ? t('eac.starting') : t('eac.login'))))
+          : null,
         m.availability === 'region-blocked' ? h('p', { className: 'ofm_note' }, t('hint.region'))
           : m.availability === 'unknown' ? h('p', { className: 'ofm_note' }, t('hint.unknown'))
             : m.availability === 'unavailable' ? h('p', { className: 'ofm_note', title: m.detail ?? '' }, t('hint.hidden'))
@@ -1708,7 +1712,7 @@ window.__ModuleLoader__.load({
     }
 
     function Roster(props) {
-      const { summary, t, onBench, benches, auth, only } = props
+      const { summary, t, onBench, benches, auth, eacLogin, only } = props
       // `only` splits the same roster across the two model pages: the EAC page
       // shows the co-paid entries, the free page everything else. Filtering
       // here (rather than in each page) keeps one definition of what a route
@@ -1718,7 +1722,6 @@ window.__ModuleLoader__.load({
           : summary.catalog.filter(m => m.channel !== 'eac')
       const available = roster.filter(m => m.route === 'our-free-model' || (only === 'eac' && m.channel === 'eac'))
       const limited = roster.filter(m => m.route === 'our-free-model-region')
-      const other = roster.filter(m => m.route === null && m.channel !== 'eac')
       // 只有拿到过明确判定（网关答过 /eac/status）且未授权时才上锁：状态未知
       // 不该显示一把凭空的锁，网关不可达时本地记录仍算已授权。
       const locked = auth !== undefined && auth.available === true && auth.authorized !== true
@@ -1727,7 +1730,7 @@ window.__ModuleLoader__.load({
           h('div', { className: 'ofm_row' }, h('span', { className: 'ofm_sec_title', style: { fontSize: 12.5 } }, title),
             hint === undefined ? null : h('span', { className: 'ofm_sec_hint' }, hint)),
           h('div', { className: 'ofm_grid' }, list.map(m => h(ModelCard, {
-            key: m.id, model: m, t, onBench, locked: m.channel === 'eac' && locked,
+            key: m.id, model: m, t, onBench, locked: m.channel === 'eac' && locked, eacLogin,
             bench: { running: benches[m.id]?.running === true, ...benches[m.id]?.result === undefined ? {} : { result: benches[m.id].result } },
           }))))
       // The lane closed at the gate is the one "no EAC models" case the page can
@@ -1735,11 +1738,12 @@ window.__ModuleLoader__.load({
       // the group never renders and nothing else on the page names the reason.
       const laneNote = summary.laneAvailable === false && !summary.catalog.some(m => m.channel === 'eac')
         ? h('p', { className: 'ofm_note' }, t('roster.noLane')) : null
+      // 暂不可用的模型不再单独成组展示（用户要求移除「不在选择器中」区块）：
+      // 它们的状态仍在上方统计芯片与每张卡的徽章里如实可见。
       return h(Fragment, null,
         laneNote,
         group(t('state.available'), available),
-        group(t('state.region-blocked'), limited, t('hint.region')),
-        group(t('group.notAdvertised'), other, t('hint.hidden')))
+        group(t('state.region-blocked'), limited, t('hint.region')))
     }
 
     // ── dashboard ─────────────────────────────────────────────────────────────
@@ -1864,8 +1868,11 @@ window.__ModuleLoader__.load({
     // 三种状态如实呈现——未登录 / 已登录但未 star / 已授权——并且登录全程无需
     // 复制粘贴：后端把授权页交给系统浏览器，前端轮询网关领取令牌。令牌本身从不
     // 到达浏览器，这里只显示登录名与判定结果。
-    function EacAuth(props) {
-      const { t, summary, auth, onAuth } = props
+    //
+    // 登录流（发起、轮询、busy/notice）住在 SettingsPage 级的 hook 里：页头的
+    // 未授权按钮、上锁模型卡的「去授权」和这个面板必须共享同一个进行中的会话，
+    // 各挂一份轮询会互相抢令牌的领取权。
+    function useEacLogin({ t, summary, onAuth }) {
       const [busy, setBusy] = useState(false)
       const [notice, setNotice] = useState('')
       const [pending, setPending] = useState(null)
@@ -1919,9 +1926,15 @@ window.__ModuleLoader__.load({
         setBusy(true)
         try {
           await post('/eac/logout')
-          setNotice(''); setPending(null); refresh(); summary?.reload?.()
+          setNotice(''); setPending(null); refresh(); latest.current?.reload?.()
         } catch { /* 本地记录已被后端清除，这里不必再报错 */ } finally { setBusy(false) }
       }
+      return { busy, notice, pending, copied, setCopied, refresh, login, logout }
+    }
+
+    function EacAuth(props) {
+      const { t, auth, eacLogin } = props
+      const { busy, notice, pending, copied, setCopied, refresh, login, logout } = eacLogin
 
       if (auth === undefined) return h('p', { className: 'ofm_note' }, t('loading'))
       if (auth.available !== true) return h('p', { className: 'ofm_note' }, t('eac.noLane'))
@@ -3398,6 +3411,9 @@ window.__ModuleLoader__.load({
         const timer = setInterval(load, 60_000)
         return () => { alive = false; clearInterval(timer) }
       }, [])
+      // 登录流只有这一份：EAC 面板、页头的未授权按钮、上锁模型卡的「去授权」
+      // 共享同一个进行中的会话（同一轮询、同一条提示），见 useEacLogin。
+      const eacLogin = useEacLogin({ t, summary, onAuth: setEacAuth })
 
       const apply = async patch => {
         setBusy(true)
@@ -3436,7 +3452,7 @@ window.__ModuleLoader__.load({
       // read as a permanently green slice of this gauge.
       const counts = data.catalog.filter(m => !m.channel).reduce((acc, m) => ({ ...acc, [m.availability]: (acc[m.availability] ?? 0) + 1 }), {})
       return h(Shell, {
-        t: tagged, data, counts, summary, stats, eacAuth, setEacAuth,
+        t: tagged, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin,
         busy, setBusy, apply, bench, benches, ctx: props.ctx,
       })
     }
@@ -3455,7 +3471,7 @@ window.__ModuleLoader__.load({
     const TABS = ['free', 'eac', 'channels']
 
     function Shell(props) {
-      const { t, data, counts, summary, stats, eacAuth, setEacAuth, busy, setBusy, apply, bench, benches, ctx } = props
+      const { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, setBusy, apply, bench, benches, ctx } = props
       const [tab, setTab] = useState(() => {
         try {
           const saved = window.localStorage?.getItem(TAB_KEY)
@@ -3515,8 +3531,8 @@ window.__ModuleLoader__.load({
             : tab === 'gateway'
               ? h(GatewayPage, { t, ctx })
               : tab === 'eac'
-                ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, busy, apply, bench, benches, refresh, reprobe })
-                : h(FreePage, { t, data, counts, summary, stats, eacAuth, busy, apply, bench, benches, refresh, reprobe })
+                ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
+                : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
 
       return h('div', { className: 'ofm_root ofm_shell' },
         h('div', { className: 'ofm_aurora', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
@@ -3525,8 +3541,11 @@ window.__ModuleLoader__.load({
     }
 
     function FreePage(props) {
-      const { t, data, counts, summary, stats, eacAuth, busy, apply, bench, benches, refresh, reprobe } = props
-      const total = data.catalog.length
+      const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe } = props
+      // The denominator is the free lane's own roster — the only slice the
+      // verdicts describe. Dividing by the whole catalog (which also carries
+      // the never-probed EAC and Kilo entries) read a 6-of-10 lane as ~17%.
+      const total = data.catalog.filter(m => !m.channel).length
       const ok = counts.available ?? 0
       // The tank reads the free lane's own health: the share of the declared
       // roster this machine can actually reach. Same thresholds as the pool
@@ -3570,7 +3589,7 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ofm_row' },
                 h(Button, { disabled: busy, onClick: refresh }, summary.status === 'loading' ? t('probing') : t('refresh')),
                 h(Button, { disabled: busy, onClick: reprobe }, t('reprobe')))))),
-        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, only: 'free' })),
+        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'free' })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t })
             : h('p', { className: 'ofm_note' }, t('loading'))),
@@ -3582,7 +3601,7 @@ window.__ModuleLoader__.load({
     }
 
     function EacPage(props) {
-      const { t, data, summary, eacAuth, setEacAuth, busy, bench, benches, refresh, reprobe } = props
+      const { t, data, summary, eacAuth, setEacAuth, eacLogin, busy, bench, benches, refresh, reprobe } = props
       const { pool, poolError } = usePool()
       const reading = pool === undefined || pool === null ? null : poolReading(pool)
       const levelText = reading === null ? '' : reading.level === 'over' ? t('pool.levelOver') : reading.level === 'busy' ? t('pool.levelBusy') : t('pool.levelOk')
@@ -3612,6 +3631,12 @@ window.__ModuleLoader__.load({
                   : h('span', { className: `ofm_poolbadge ${reading.level}` },
                     h('span', { className: 'ofm_pooldot' }),
                     `${levelText} · ${t('pool.live')} ${pool.inflight}`),
+                // 未授权时把登录入口放到页头：撞到「没授权」的用户第一眼看到的
+                // 位置就该有钥匙，而不是要先找到下方的授权区。
+                eacAuth?.available === true && eacAuth?.authorized !== true
+                  ? h(Button, { kind: 'primary', disabled: eacLogin.busy, onClick: eacLogin.login },
+                    eacLogin.busy ? t('eac.starting') : t('eac.login'))
+                  : null,
                 h(StarButton, { t })),
               reading === null ? null : h(Fragment, null,
                 h('div', { className: 'ofm_poolstats' },
@@ -3627,8 +3652,8 @@ window.__ModuleLoader__.load({
               h('div', { className: 'ofm_row' },
                 h(Button, { disabled: busy, onClick: refresh }, summary.status === 'loading' ? t('probing') : t('refresh')),
                 h(Button, { disabled: busy, onClick: reprobe }, t('reprobe')))))),
-        h(Section, { title: t('section.eac'), hint: t('section.eacHint') }, h(EacAuth, { t, summary, auth: eacAuth, onAuth: setEacAuth })),
-        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, only: 'eac' })),
+        h(Section, { title: t('section.eac'), hint: t('section.eacHint') }, h(EacAuth, { t, auth: eacAuth, eacLogin })),
+        h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'eac' })),
         h(Section, { title: t('section.news'), hint: t('section.newsHint') }, h(NewsPanel, { t })))
     }
 
