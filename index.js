@@ -1043,7 +1043,21 @@ export function apply(ctx, config) {
   const fenceConnection = {
     get admit() {
       const current = optional('connection')
-      return current === undefined ? undefined : (req => current.admit(req))
+      // Hosts before dsh 0.1.7 carry the same decision as `requestRejection`
+      // (issue #89): expose that method under this view's `admit` instead of
+      // wrapping a property that does not exist — the wrapping call used to
+      // throw inside the fence and read as 503 admission unavailable on every
+      // request. A bare status return is the envelope `rejectionFor` unwraps.
+      if (current === undefined) return undefined
+      if (typeof current.admit !== 'function' && typeof current.requestRejection === 'function') {
+        // `requestRejection` answers a bare status; the fence unwraps an
+        // `{rejection}` envelope — rewrap so a bare 403 is not read as admitted.
+        return req => {
+          const status = current.requestRejection(req)
+          return status === undefined ? undefined : { rejection: status }
+        }
+      }
+      return req => current.admit(req)
     },
   }
   const logAdmissionRejection = surface => ({ status, source, reason }) => {

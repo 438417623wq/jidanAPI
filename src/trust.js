@@ -46,12 +46,25 @@ export function isLoopbackHost(value) {
 export function rejectionFor(req, connection, onRejection) {
   let decision
   try {
+    // Hosts before dsh 0.1.7 publish the same decision under the older name
+    // `requestRejection` (issue #89): `admit` is undefined there, and the
+    // service *exists*, so an empty read must fall through to that method —
+    // treating it as a fault turned every request into 503 admission
+    // unavailable. The return value is a bare status on that spelling and an
+    // `{rejection}` envelope on `admit`.
     const admit = connection?.admit
     if (typeof admit === 'function') {
       const admission = admit.call(connection, req)
       const status = admission && typeof admission === 'object' ? admission.rejection : undefined
       if (status === undefined) return undefined
       decision = { status, source: 'connection', reason: 'host-rejected' }
+    } else {
+      const reject = connection?.requestRejection
+      if (typeof reject === 'function') {
+        const status = reject.call(connection, req)
+        if (status === undefined) return undefined
+        decision = { status, source: 'connection', reason: 'host-rejected' }
+      }
     }
   } catch {
     // Never bypass browser authentication when a mounted Host service fails.
