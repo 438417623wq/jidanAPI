@@ -8,7 +8,7 @@
  * Run: node scripts/trust-test.mjs
  */
 import assert from 'node:assert/strict'
-import { rejectionFor, structuralRejection } from '../src/trust.js'
+import { rejectionFor, structuralRejection, connectionAdmissionView } from '../src/trust.js'
 
 let failures = 0
 const check = (name, fn) => {
@@ -157,29 +157,25 @@ check('and it consults the service from the moment it appears', () => {
   service = { admit: () => ({ rejection: 401 }) }
   assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 401)
 })
-// The view maps a pre-0.1.7 service's `requestRejection` onto `admit`, so the
-// fence sees one shape on every host (index.js fenceConnection, issue #89).
-// The bare status must travel as an `{rejection}` envelope: handed through
-// bare, an object-shaped return reads as "no rejection" and switches the
-// Host's authentication off.
-check('the view answers for a service that only has requestRejection', () => {
-  const viewOf = service => ({
-    get admit() {
-      if (service === undefined) return undefined
-      if (typeof service.admit !== 'function' && typeof service.requestRejection === 'function') {
-        return req => {
-          const status = service.requestRejection(req)
-          return status === undefined ? undefined : { rejection: status }
-        }
-      }
-      return req => service.admit(req)
-    },
-  })
-  assert.equal(rejectionFor(req({ host: 'evil.example' }), viewOf({ requestRejection: () => 403 })), 403)
-  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), viewOf({ requestRejection: () => undefined })), undefined)
-  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), viewOf({ requestRejection: () => 401 })), 401)
+// The real view (src/trust.js connectionAdmissionView, used by index.js) maps
+// a pre-0.1.7 service's `requestRejection` onto `admit`, so the fence sees one
+// shape on every host (issue #89). The bare status must travel as an
+// `{rejection}` envelope: handed through bare, an object-shaped return reads
+// as "no rejection" and switches the host's authentication off.
+check('the real view answers for a service that only has requestRejection', () => {
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), connectionAdmissionView({ requestRejection: () => 403 })), 403)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ requestRejection: () => undefined })), undefined)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ requestRejection: () => 401 })), 401)
   // A 0.1.7+ service keeps its envelope spelling through the same view.
-  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), viewOf({ admit: () => ({ rejection: 401 }) })), 401)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), connectionAdmissionView({ admit: () => ({ rejection: 401 }) })), 401)
+})
+check('the view takes a thunk and consults it from the moment the service appears', () => {
+  let service
+  const view = connectionAdmissionView(() => service)
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 403)
+  assert.equal(rejectionFor(req({ host: '127.0.0.1:8080' }), view), undefined)
+  service = { requestRejection: () => 401 }
+  assert.equal(rejectionFor(req({ host: 'evil.example' }), view), 401)
 })
 
 if (failures === 0) console.log('trust-test: OK')

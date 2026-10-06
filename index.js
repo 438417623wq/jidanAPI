@@ -43,7 +43,7 @@ import { AnnouncementFeed } from './src/feed.js'
 import { PluginUpdater, restoreBackup } from './src/updater.js'
 import { selfReload, watchPackage, isReloading } from './src/reload.js'
 import { createPushHub } from './src/push.js'
-import { rejectionFor, isLoopbackHost } from './src/trust.js'
+import { rejectionFor, isLoopbackHost, connectionAdmissionView } from './src/trust.js'
 import { resolveAttributionUserAgent } from './adapter/kernel.js'
 
 export const name = 'our-free-model'
@@ -1036,30 +1036,12 @@ export function apply(ctx, config) {
    *
    * The browser half publishes `connection` after plugins have loaded, so reading
    * it once here would freeze in "absent" and leave every request on the replica
-   * fence for the life of the process. The getter answers `undefined` — not a
-   * no-op function — while the service is missing, which is what makes the fence
-   * fall through to its own structural check instead of reading as "admitted".
+   * fence for the life of the process. The view takes the service *thunk* rather
+   * than the service, and its `admit` answers `undefined` — not a no-op function
+   * — while the service is missing, which is what makes the fence fall through to
+   * its own structural check instead of reading as "admitted".
    */
-  const fenceConnection = {
-    get admit() {
-      const current = optional('connection')
-      // Hosts before dsh 0.1.7 carry the same decision as `requestRejection`
-      // (issue #89): expose that method under this view's `admit` instead of
-      // wrapping a property that does not exist — the wrapping call used to
-      // throw inside the fence and read as 503 admission unavailable on every
-      // request. A bare status return is the envelope `rejectionFor` unwraps.
-      if (current === undefined) return undefined
-      if (typeof current.admit !== 'function' && typeof current.requestRejection === 'function') {
-        // `requestRejection` answers a bare status; the fence unwraps an
-        // `{rejection}` envelope — rewrap so a bare 403 is not read as admitted.
-        return req => {
-          const status = current.requestRejection(req)
-          return status === undefined ? undefined : { rejection: status }
-        }
-      }
-      return req => current.admit(req)
-    },
-  }
+  const fenceConnection = connectionAdmissionView(() => optional('connection'))
   const logAdmissionRejection = surface => ({ status, source, reason }) => {
     // Fixed fields only: headers, request URLs and admission errors may contain
     // credentials. JSON API and SSE must report the same admission boundary.
