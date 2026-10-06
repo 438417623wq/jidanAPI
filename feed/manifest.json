@@ -1,7 +1,7 @@
 {
   "version": "2.0.0",
   "base": "../",
-  "publishedAt": "2026-10-06T15:07:26.869Z",
+  "publishedAt": "2026-10-06T15:29:36.217Z",
   "notes": "",
   "files": [
     {
@@ -16,8 +16,8 @@
     },
     {
       "path": "client.js",
-      "size": 313628,
-      "sha256": "79b765288bbcaa5bcb5fc5f7fc9e55fcdc76c4328bfc232688926ab8ed349ab3"
+      "size": 315289,
+      "sha256": "02d7b6f4cc891e39bcea2d2f67826d9efdfe9174e36924040b3cba226a00efd3"
     },
     {
       "path": "cordis.patch.yml",
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 119141,
-      "sha256": "9ebba5277629f4004b70e0f19ad94777b6a749f011204fbac8cf3d4b7e1fb798"
+      "size": 120258,
+      "sha256": "7967029dc97d2ac37d8a6fdce593dc42b274f2153104c09ce63cc90dc0b013b1"
     },
     {
       "path": "LICENSE",
@@ -136,8 +136,8 @@
     },
     {
       "path": "src/reload.js",
-      "size": 11290,
-      "sha256": "a2d9503e57c2132632b031770331c2aae8b0a3984bace19134e4ef38adcab04a"
+      "size": 11729,
+      "sha256": "3c9acb8261ce12bb3a672ada36c4fbf2811ba6565d0fa1f1151e0a3d0344dc33"
     },
     {
       "path": "src/store.js",
@@ -156,8 +156,8 @@
     },
     {
       "path": "src/updater.js",
-      "size": 29779,
-      "sha256": "15e33b14836db36bc1c634f44b3ab0186966a17167ff35dc43546aff4654f23f"
+      "size": 38390,
+      "sha256": "5380b9acd9a501f5d6b03e849a7dcf3968921f2305ea474d7a3705a2e2a907d9"
     },
     {
       "path": "src/upstream.js",
@@ -200,5 +200,5 @@
       "sha256": "6419471effa631519def7797d76d7ede38b9fcfa9a83c2148c8ef5d43355b43d"
     }
   ],
-  "signature": "8k4u2NqGckLXhC68jtGDGQOpfi5Ik/tjcWqreFJHy65IPQmiUTKlj2kCUfQFcUHb0Z2urWOxTHtwTc+2EiKxAQ=="
+  "signature": "k6KurFt5+82//nQz7xjjD3D+kMXeeGtpputfmvY08go3Sx5aPUq2TO2JgS5p6M85r6OEHa5T+j/GLiMg/qDTBQ=="
 }
