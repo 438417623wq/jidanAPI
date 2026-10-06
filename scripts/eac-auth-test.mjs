@@ -97,10 +97,10 @@ function makeGithubStub() {
   return { impl, state, calls }
 }
 
-async function startGateway(github, patch = {}) {
+async function startGateway(github, patch = {}, upstreamPort = relay.port) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'eac-auth-'))
   const env = {
-    UPSTREAM_URL: `http://127.0.0.1:${relay.port}/v1`,
+    UPSTREAM_URL: `http://127.0.0.1:${upstreamPort}/v1`,
     UPSTREAM_API_KEY: 'sk-relay-test',
     SIGNING_SECRETS: SIGNING,
     MOUNT_PREFIX: '/eac',
@@ -134,7 +134,8 @@ function signedHeaders(method, pathname, body) {
 const chatBody = JSON.stringify({ model: MODEL, messages: [{ role: 'user', content: 'hi' }], stream: true })
 
 // ── 0. the plugin side of the wire ───────────────────────────────────────────
-{  const captured = []
+{
+  const captured = []
   lane.fetch = async (url, init) => { captured.push({ url, headers: init.headers }); return { ok: true, status: 200, headers: { get: () => null }, body: null, text: async () => '{"data":[]}' } }
   const credential = { mode: 'worker', base: 'https://gw.example/eac/v1', signingSecret: SIGNING }
   laneUser.token = 'user-token-abc'
@@ -304,6 +305,73 @@ try {
   } finally {
     ceiling.server.authGate.close()
     await new Promise(resolve => ceiling.server.close(resolve))
+  }
+}
+
+// ── 7b. a rejected turn must not spend a concurrency slot ───────────────────
+// The per-account ceiling exists so a shared token cannot multiply itself by
+// moving IPs. Its rejection path runs *after* the per-IP gate has already taken
+// the request's slot, so a rejection that skips the release leaks one per-IP
+// slot per hit: a handful of account-429s from other machines would lock the
+// victim's own IP out with zero real turns in flight. Pinned here: every
+// account-ceiling refusal says so, and after the held turn drains, a fresh
+// turn from the same IP passes with nothing stuck in the counters.
+{
+  let releaseHeld = () => {}
+  const held = new Promise(resolve => { releaseHeld = resolve })
+  let relaySeen = 0
+  const holdRelay = http.createServer((req, res) => {
+    if (req.url === '/v1/chat/completions') {
+      relaySeen += 1
+      void held.then(() => {
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.write(`data: ${JSON.stringify({ id: 'cmpl', model: MODEL, choices: [{ delta: { content: 'OK' } }] })}\n\n`)
+        res.write('data: [DONE]\n\n')
+        res.end()
+      })
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ data: [{ id: MODEL }] }))
+  })
+  await new Promise(resolve => holdRelay.listen(0, '127.0.0.1', resolve))
+  const holdPort = holdRelay.address().port
+
+  const githubLeak = makeGithubStub()
+  githubLeak.state.starred = true
+  const leak = await startGateway(
+    githubLeak,
+    { REQUIRE_USER_TOKEN: '1', CONCURRENCY_PER_IP: '3', TOKEN_CONCURRENCY_PER_USER: '1' },
+    holdPort)
+  try {
+    const started = await get(`${leak.base}/auth/github/start?link=${'e'.repeat(32)}`)
+    const state = new URL(started.headers.get('location')).searchParams.get('state')
+    await get(`http://127.0.0.1:${new URL(leak.base).port}/eac/auth/github/callback?code=c4&state=${encodeURIComponent(state)}`)
+    const token = (await (await get(`${leak.base}/auth/poll?link=${'e'.repeat(32)}`)).json()).token
+    const headers = { ...signedHeaders('POST', '/eac/v1/chat/completions', chatBody), 'x-ofm-user': token }
+    const chatPath = '/eac/v1/chat/completions'
+
+    const heldTurn = post(`${leak.base}/v1/chat/completions`, headers, chatBody)
+    // The held turn must be parked inside the gateway (slot taken, upstream
+    // waiting) before the rejections fire, or they would race it for the
+    // account's single slot.
+    while (relaySeen < 1) await new Promise(resolve => setTimeout(resolve, 20))
+    for (let i = 0; i < 5; i += 1) {
+      const rejected = await post(`${leak.base}/v1/chat/completions`, headers, chatBody)
+      const payload = await rejected.json()
+      check(`rejection ${i + 1} names the account ceiling, not a phantom IP one`,
+        [rejected.status, /this account/.test(payload.error?.message ?? ''), /this IP/.test(payload.error?.message ?? '')],
+        [429, true, false])
+    }
+    releaseHeld()
+    check('the held turn finishes with its slot intact', (await heldTurn).status, 200)
+
+    const fresh = await post(`${leak.base}/v1/chat/completions`, headers, chatBody)
+    check('and a fresh turn from the same IP passes — no leaked slots', fresh.status, 200)
+  } finally {
+    leak.server.authGate.close()
+    await new Promise(resolve => leak.server.close(resolve))
+    await new Promise(resolve => holdRelay.close(resolve))
   }
 }
 

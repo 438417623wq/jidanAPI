@@ -44,6 +44,7 @@ const suites = [
   ['feed', 'feed-test.mjs', []],
   ['updater', 'updater-test.mjs', []],
   ['forward', 'forward-test.mjs', []],
+  ['chan-relay', 'chan-relay-test.mjs', []],
   ['egress', 'egress-test.mjs', []],
   ['effort', 'effort-test.mjs', []],
   ['projection', 'projection-test.mjs', []],
@@ -58,6 +59,7 @@ const suites = [
   ['catalog', 'catalog-test.mjs', mode === 'contributor' ? ['--contributor'] : []],
   ['vault', 'vault-test.mjs', []],
   ['eac-auth', 'eac-auth-test.mjs', []],
+  ['kilo', 'kilo-test.mjs', []],
   ['offline', 'offline-test.mjs', []],
 ].filter(([name]) => (mode === 'contributor' ? !['manifest', 'release'].includes(name)
   : mode === 'release' ? releaseSuites.has(name) : true)

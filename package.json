@@ -1,9 +1,9 @@
 {
   "name": "dsh-our-free-model",
-  "version": "1.5.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "Our Free Model — 在 dsh 里装上这个插件即可，无需登录、注册或填 API Key，就能使用包括 DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型，桌面端另有 EAC 协付渠道，完全免费不限量；模型清单随上游更新、地区可用性自动探测、思考强度真实生效，另附 Token 热力图与吞吐看板和 OpenAI 格式本地转发端口。",
+  "description": "Our Free Model — 在 dsh 里装上这个插件即可，无需登录、注册或填 API Key，就能使用包括 DeepSeek V4.1 Flash、Kimi K3 在内的前沿模型，桌面端另有 EAC 协付渠道；2.0 起整体吸收 dsh-codearts-auth（Jet Hub），接入 CodeArts、CodeBuddy、WorkBuddy、LobsterAI、Qoder、TRAE、Cline、Loomy、Raccoon、MiniMax、ZCode、Gemini、OpenCode 十四个白嫖渠道（登录、账号池、积分领取、本地 OpenAI 网关与局域网转发、数据看板与运行日志），六页毛玻璃界面统一呈现。",
   "main": "./index.js",
   "exports": {
     ".": "./index.js",
@@ -16,6 +16,7 @@
     "test:contributor": "node scripts/test-all.mjs --mode contributor",
     "test:release": "node scripts/test-all.mjs --mode release",
     "manifest": "node scripts/build-manifest.mjs",
+    "channel-pack": "node scripts/build-channel-pack.mjs",
     "manifest:check": "node scripts/build-manifest.mjs --check",
     "selftest": "node scripts/host-selftest.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json"
@@ -25,6 +26,10 @@
     "client.js",
     "adapter",
     "src",
+    "vendor/jet-hub/pack.js",
+    "vendor/jet-hub/qoder-auth-wasm.wasm",
+    "vendor/jet-hub/NOTICE.md",
+    "vendor/jet-hub/LICENSE",
     "locale",
     "icon.svg",
     "cordis.patch.yml",
@@ -50,6 +55,13 @@
     }
   },
   "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-commands": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-credentials": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.1.2-rc.1 || ^0.1.7-rc.2 || ^0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
   "devDependencies": {
     "typescript": "^5.9.2"
   }

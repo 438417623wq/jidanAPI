@@ -122,6 +122,17 @@ function timingSafeEqual(a, b) {
 const sha256hex = text => crypto.createHash('sha256').update(text, 'utf8').digest('hex')
 const b64url = buffer => Buffer.from(buffer).toString('base64url')
 
+/** These pages interpolate logins and error strings into HTML; everything that
+ *  crosses that boundary goes through here, whatever its expected charset. */
+function escapeHtml(text) {
+  return String(text ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
 function htmlPage(title, body) {
   return `<!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8">
@@ -540,24 +551,24 @@ export function createAuthGate(env = {}, options = {}) {
           const githubUser = await fetchGithubUser(ghToken)
           const verdict = await checkStar(ghToken)
           if (verdict.error !== undefined && verdict.fatal !== true) {
-            return page(res, 502, 'GitHub 暂时不可用', `<p>无法确认 star 状态（${verdict.error}），请稍后重试。</p>`)
+            return page(res, 502, 'GitHub 暂时不可用', `<p>无法确认 star 状态（${escapeHtml(verdict.error)}），请稍后重试。</p>`)
           }
           if (verdict.starred !== true) {
             const ticket = crypto.randomBytes(24).toString('base64url')
             tickets.set(ticket, { link, login: githubUser.login, gh: ghToken, githubId: githubUser.id, avatar: githubUser.avatar, exp: now() + TICKET_TTL_MS })
             rememberPending(link, { status: 'unstarred', login: githubUser.login })
             return page(res, 200, '还差一步：给仓库点个 Star',
-              `<p>已用 GitHub 账号 <code>${githubUser.login}</code> 登录成功，但还没有 star 仓库。</p>
+              `<p>已用 GitHub 账号 <code>${escapeHtml(githubUser.login)}</code> 登录成功，但还没有 star 仓库。</p>
                <p>请先点下面的按钮去 star，然后回来点「我已 star，重新检查」——不需要重新登录。</p>
                <a class="btn" href="${starLink()}" target="_blank" rel="noreferrer">⭐ 去 Star</a>
                <a class="btn alt" href="${prefix}/auth/github/recheck?t=${ticket}">我已 star，重新检查</a>`)
           }
           grant(link, githubUser, ghToken)
           return page(res, 200, '✅ 授权成功，请返回应用',
-            `<p>GitHub 账号 <code>${githubUser.login}</code> 已登录，且已 star 仓库。</p>
+            `<p>GitHub 账号 <code>${escapeHtml(githubUser.login)}</code> 已登录，且已 star 仓库。</p>
              <p>插件会在几秒内自动完成授权，现在可以关闭这个页面并回到应用。</p>`)
         } catch (error) {
-          return page(res, 502, '授权失败', `<p>${String(error?.message ?? error).slice(0, 200)}</p><p>请回到插件设置页重新发起登录。</p>`)
+          return page(res, 502, '授权失败', `<p>${escapeHtml(String(error?.message ?? error).slice(0, 200))}</p><p>请回到插件设置页重新发起登录。</p>`)
         }
       })(), true
     }
@@ -570,18 +581,18 @@ export function createAuthGate(env = {}, options = {}) {
       return void (async () => {
         const verdict = await checkStar(ticket.gh)
         if (verdict.error !== undefined && verdict.fatal !== true) {
-          return page(res, 502, 'GitHub 暂时不可用', `<p>无法确认 star 状态（${verdict.error}），请稍后再试。</p>`)
+          return page(res, 502, 'GitHub 暂时不可用', `<p>无法确认 star 状态（${escapeHtml(verdict.error)}），请稍后再试。</p>`)
         }
         if (verdict.starred !== true) {
           return page(res, 200, '还没有检测到 Star',
-            `<p>账号 <code>${ticket.login}</code> 的 star 还没生效（GitHub 侧偶尔有几秒延迟）。</p>
+            `<p>账号 <code>${escapeHtml(ticket.login)}</code> 的 star 还没生效（GitHub 侧偶尔有几秒延迟）。</p>
              <a class="btn" href="${starLink()}" target="_blank" rel="noreferrer">⭐ 去 Star</a>
              <a class="btn alt" href="${prefix}/auth/github/recheck?t=${url.searchParams.get('t')}">再检查一次</a>`)
         }
         tickets.delete(url.searchParams.get('t'))
         grant(ticket.link, { id: ticket.githubId, login: ticket.login, avatar: ticket.avatar }, ticket.gh)
         return page(res, 200, '✅ 已确认 Star，授权成功',
-          `<p>账号 <code>${ticket.login}</code> 已 star 仓库，插件会在几秒内自动完成授权，可以关闭这个页面了。</p>`)
+          `<p>账号 <code>${escapeHtml(ticket.login)}</code> 已 star 仓库，插件会在几秒内自动完成授权，可以关闭这个页面了。</p>`)
       })(), true
     }
 

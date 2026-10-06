@@ -13,3 +13,4 @@
 *.jpg binary
 *.gif binary
 *.ico binary
+*.wasm binary

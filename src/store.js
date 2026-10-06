@@ -171,6 +171,12 @@ export const SETTINGS_INITIAL = {
    *  'client'` dials one http/https/socks5/socks5h URL directly. Off by
    *  default — requests go straight out until this is turned on. */
   egress: { enabled: false, mode: 'subscription', url: '', mihomoPath: '' },
+  /** Expose the absorbed channels' OpenAI gateway (the pack's loopback
+   *  listener) to other machines under this plugin's own key. Off by default:
+   *  a LAN listener is a door, and doors stay shut until asked for. */
+  chanGateway: {
+    relay: { enabled: false, host: '127.0.0.1', port: 18326, key: '' },
+  },
   /** Cap a turn's output so a slow lane cannot run away. */
   defaultMaxTokens: 32768,
   /** 所有模型默认允许一次纯推理检查点续写，false 可关闭。 */

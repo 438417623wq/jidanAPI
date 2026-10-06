@@ -501,6 +501,13 @@ export function createGatewayServer(hostEnv = {}, options = {}) {
         return json(res, 413, { error: { message: 'request body too large' } })
       }
 
+      // Concurrency bookkeeping for one request, declared where the catch below
+      // can see it: once a slot is taken, every way this request can leave early
+      // — a refusal, a thrown gateway call, the client walking away — must give
+      // it back, or the IP/account counts ratchet up until a restart.
+      let concReleased = false
+      let releaseConc = () => {}
+
       try {
         const bodyText = req.method === 'POST' || req.method === 'PUT' ? Buffer.concat(chunks).toString('utf8') : ''
         const isChat = req.method === 'POST' && url.pathname.endsWith('/chat/completions')
@@ -535,26 +542,28 @@ export function createGatewayServer(hostEnv = {}, options = {}) {
           }
         }
 
-        // ── per-IP concurrency gate on chat turns ─────────────────────────
-        if (isChat && concLimit > 0) {
-          const current = (inflight.get(ipHash) ?? 0) + 1
-          if (current > concLimit) {
-            analytics.record({ hash: ipHash, chat: true, status: 429, tokensIn: 0, tokensOut: 0, model, rejected: true })
-            return json(res, 429, { error: { message: 'concurrency limit reached for this IP (' + concLimit + ' in-flight)' } })
-          }
-          inflight.set(ipHash, current)
-          analytics.concurrency(ipHash, current, current)
+        // ── concurrency gates on chat turns: check both, then take both ────
+        // Per-IP first, then the per-account ceiling a shared token cannot
+        // escape by moving IPs. Both verdicts are computed before either slot
+        // is taken (no await in between, so the event loop cannot interleave),
+        // which is what keeps a rejection from consuming a slot the request
+        // never releases.
+        const ipNext = isChat && concLimit > 0 ? (inflight.get(ipHash) ?? 0) + 1 : null
+        const acctNext = isChat && accountKey !== null && tokenConcLimit > 0 ? (tokenInflight.get(accountKey) ?? 0) + 1 : null
+        if (ipNext !== null && ipNext > concLimit) {
+          analytics.record({ hash: ipHash, chat: true, status: 429, tokensIn: 0, tokensOut: 0, model, rejected: true })
+          return json(res, 429, { error: { message: 'concurrency limit reached for this IP (' + concLimit + ' in-flight)' } })
         }
-        // The per-account ceiling a shared token cannot escape by moving IPs.
-        if (isChat && accountKey !== null && tokenConcLimit > 0) {
-          const current = (tokenInflight.get(accountKey) ?? 0) + 1
-          if (current > tokenConcLimit) {
-            analytics.record({ hash: ipHash, chat: true, status: 429, tokensIn: 0, tokensOut: 0, model, rejected: true })
-            return json(res, 429, { error: { message: `concurrency limit reached for this account (${tokenConcLimit} in-flight)` } })
-          }
-          tokenInflight.set(accountKey, current)
+        if (acctNext !== null && acctNext > tokenConcLimit) {
+          analytics.record({ hash: ipHash, chat: true, status: 429, tokensIn: 0, tokensOut: 0, model, rejected: true })
+          return json(res, 429, { error: { message: `concurrency limit reached for this account (${tokenConcLimit} in-flight)` } })
         }
-        const releaseConc = () => {
+        if (ipNext !== null) {
+          inflight.set(ipHash, ipNext)
+          analytics.concurrency(ipHash, ipNext, ipNext)
+        }
+        if (acctNext !== null) tokenInflight.set(accountKey, acctNext)
+        releaseConc = () => {
           if (!isChat || concReleased) return
           concReleased = true
           if (concLimit > 0) {
@@ -606,7 +615,6 @@ export function createGatewayServer(hostEnv = {}, options = {}) {
         })
 
         const scanner = createUsageScanner()
-        let concReleased = false
         if (!earlySent) {
           res.writeHead(response.status, (() => { const out = {}; response.headers.forEach((v, n) => { out[n] = v }); return out })())
         }
@@ -650,6 +658,9 @@ export function createGatewayServer(hostEnv = {}, options = {}) {
         })
         res.on('close', () => { stopKeepalive(); if (!res.writableEnded) releaseConc() })
       } catch (error) {
+        // The gates may already be holding this request's slots; a thrown
+        // gateway call is exactly the path that used to leak them.
+        releaseConc()
         analytics.record({ hash: ipHash, chat: req.method === 'POST' && url.pathname.endsWith('/chat/completions'), status: 500, tokensIn: 0, tokensOut: 0, model: null, rejected: true })
         if (earlySent) emitInStreamError({ error: { message: 'gateway request failed' } })
         else {

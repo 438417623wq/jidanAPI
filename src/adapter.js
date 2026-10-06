@@ -21,11 +21,12 @@ import { applyFingerprint, baseModelId, endpointFor, mintRequestId, sessionForCo
 import { toChatMessages, toClaudeMessages, toResponseInput, toToolDefs, repairToolPairing } from './messages.js'
 import { CODE, UpstreamError, postStreamed } from './http.js'
 import { postSealedStreamed } from './eac.js'
+import { postKiloStreamed } from './kilo.js'
 import { finishReason, readStream, windowTokens } from './stream.js'
 import { DEFAULT_LEVEL, MIN_BUDGET, budgetFor, defaultEffortFor, effortPatchFor, effortsFor, resolveLevel } from './effort.js'
 import { createChannel } from './channel.js'
 import { recoveryPolicy, canRecover, canRecoverSilentStop, recoveryMessages, continuationMessages, checkpointFits, addUsage, createBlockTracker } from './recovery.js'
-import { isEacEntry } from './catalog.js'
+import { isEacEntry, isKiloEntry } from './catalog.js'
 
 export const ROUTE_MAIN = 'our-free-model'
 export const ROUTE_REGION = 'our-free-model-region'
@@ -212,7 +213,10 @@ export class FreeModelAdapter {
     }
 
     const sealed = isEacEntry(entry)
-    const wire = sealed ? 'chat' : wireFor(entry.id)
+    const kilo = isKiloEntry(entry)
+    // Both absorbed channels speak the Chat wire regardless of what their ids
+    // resemble; only the free lane splits endpoints per model.
+    const wire = sealed || kilo ? 'chat' : wireFor(entry.id)
     const style = STYLE_FOR_WIRE[wire]
     const warnings = []
     const resolveImage = this.deps.resolveImage
@@ -250,14 +254,15 @@ export class FreeModelAdapter {
       if (typeof options.temperature === 'number' && Number.isFinite(options.temperature)) payload.temperature = options.temperature
       if (wire !== 'responses' && Array.isArray(options.stop) && options.stop.length > 0) payload.stop = options.stop
       if (recovering) payload.tool_choice = wire === 'messages' ? { type: 'none' } : 'none'
-      // The co-paid lane's thinking is the model's own effort field, applied as
-      // a JSON merge patch on the request body (ZCode's declaration shape); the
-      // free lane keeps its token-budget behaviour untouched.
-      if (sealed) {
+      // Both absorbed channels carry a declared thinking menu whose level is
+      // the real control on the wire: the selected level rides the request as
+      // the model's own effort field (a JSON merge patch, ZCode's declaration
+      // shape). The free lane keeps its token-budget behaviour untouched.
+      if (sealed || kilo) {
         const patch = effortPatchFor(options.reasoningEffort, entry)
         if (patch !== null) Object.assign(payload, patch)
-        applySealedPacingHint(payload)
       }
+      if (sealed) applySealedPacingHint(payload)
       return payload
     }
 
@@ -271,9 +276,9 @@ export class FreeModelAdapter {
       const attemptStarted = Date.now()
       const recovering = attempt === 1
       const payload = payloadFor(attemptMessages, attemptBudget, recovering, recovering ? [] : warnings)
-      // The co-paid relay has no tool-name gate; its models see the caller's
-      // tools exactly as declared, so the fingerprint pass is free-lane only.
-      const renameMap = sealed ? new Map() : applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
+      // The absorbed channels have no tool-name gate; their models see the
+      // caller's tools exactly as declared, so the fingerprint pass is free-lane only.
+      const renameMap = sealed || kilo ? new Map() : applyFingerprint(payload, wire === 'messages' ? 'claude' : style === 'flat')
       const controller = new AbortController()
       const onAbort = () => controller.abort(options.signal?.reason)
       options.signal?.addEventListener('abort', onAbort, { once: true })
@@ -288,7 +293,9 @@ export class FreeModelAdapter {
       const channel = createChannel()
       const request = (sealed
         ? postSealedTurn(this.deps, payload, controller.signal, value => channel.push(value))
-        : postStreamed({
+        : kilo
+          ? postKiloStreamed({ body: payload, signal: controller.signal, onData: value => channel.push(value) })
+          : postStreamed({
           path: endpointFor(entry.id), body: payload, session,
           requestId: attempt === 0 ? recoveryId : mintRequestId(),
           attributionUserAgent: snapshot.attributionUserAgent,
@@ -570,10 +577,17 @@ function toFailure(error) {
 function describe(entry, settings) {
   const parts = [entry.vision ? 'vision + text input' : 'text input', `${Math.round(entry.contextWindow / 1024)}K context`]
   if (entry.reasoning === true) {
-    const rung = Math.round(budgetFor(DEFAULT_LEVEL, entry, undefined, settings?.defaultMaxTokens) / 1024)
-    parts.push(entry.canDisableThinking === false
-      ? `thinking always on · ${rung}K default ceiling, shared with the answer`
-      : 'tunable thinking budget')
+    // A declared menu is the model's own level list on the wire — naming the
+    // levels is the honest detail line; "budget" would describe the free lane's
+    // ladder, which is exactly what a menu model does not use.
+    if (Array.isArray(entry.efforts) && entry.efforts.length > 0) {
+      parts.push(`thinking levels: ${entry.efforts.join(' / ')}`)
+    } else {
+      const rung = Math.round(budgetFor(DEFAULT_LEVEL, entry, undefined, settings?.defaultMaxTokens) / 1024)
+      parts.push(entry.canDisableThinking === false
+        ? `thinking always on · ${rung}K default ceiling, shared with the answer`
+        : 'tunable thinking budget')
+    }
   }
   return parts.join(' · ')
 }
