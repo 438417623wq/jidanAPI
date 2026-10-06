@@ -359,11 +359,21 @@ export function verifyStaged(stageDir, manifest) {
  * release. An installed copy never has them; a git-clone or linked development
  * copy always does, and it is the same directory the upgrader operates on.
  * `catalog` travels with ecosystem packs rather than with a release, and
- * `worker`/`vendor` ship for self-hosters — a sweep that treats them as "files
+ * `worker` and vendor development sources ship for self-hosters — a sweep that treats them as "files
  * the new release dropped" would delete the pack's readiness records out from
  * under the harness's bundle validation on the first in-app upgrade.
  */
 const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_modules', 'catalog', 'worker', 'vendor']
+// Actual published runtime assets must participate in backup and rollback,
+// including when an upgrade crosses the 1.x/2.x boundary. Keep vendor source
+// trees protected; package.json is overwritten during installation, so it
+// cannot be the sole authority for identifying old runtime files to clean up.
+const VENDOR_RUNTIME_FILES = [
+  'vendor/jet-hub/pack.js',
+  'vendor/jet-hub/qoder-auth-wasm.wasm',
+  'vendor/jet-hub/NOTICE.md',
+  'vendor/jet-hub/LICENSE',
+]
 
 /**
  * Walk a directory into relative file paths, skipping release scratch files and
@@ -386,6 +396,10 @@ export function listPackageFiles(dir) {
     }
   }
   if (fs.existsSync(dir)) visit(dir, '')
+  for (const rel of VENDOR_RUNTIME_FILES) {
+    const target = path.join(dir, ...rel.split('/'))
+    if (fs.existsSync(target) && fs.lstatSync(target).isFile()) out.push(rel)
+  }
   return out
 }
 
