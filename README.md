@@ -11,9 +11,9 @@
   <img alt="适配内核" src="https://img.shields.io/badge/dsh-0.1.5--0.1.7--rc.2-2f6f4f?style=flat-square">
   <img alt="状态" src="https://img.shields.io/badge/status-beta-f0a441?style=flat-square">
   <p><strong>趋势榜 · 2026-10-06 记录</strong></p>
-  <!-- 固定当天核实的名次，避免动态徽章改变历史记录；两个平台统一样式，点击查看榜单。 -->
-  <a href="https://trendshift.io/?language=JavaScript"><img alt="Trendshift JavaScript 日榜第 4 名，记录于 2026-10-06" src="https://img.shields.io/badge/Trendshift-JavaScript%20%234-8b5cf6?style=for-the-badge" height="28"></a>
-  <a href="https://gittrend.io/trending/ai-infrastructure"><img alt="GitTrend AI Infrastructure 日榜第 4 名，记录于 2026-10-06，榜单更新于 2026-10-05" src="https://img.shields.io/badge/GitTrend-AI%20Infra%20%234-2563eb?style=for-the-badge" height="28"></a>
+  <!-- 自制静态卡片记录核实的名次，图片随仓库托管；点击查看对应榜单。 -->
+  <a href="https://trendshift.io/?language=JavaScript"><img alt="Trendshift JavaScript 日榜第 4 名，记录于 2026-10-06" src="docs/images/trendshift-daily-2026-10-06.svg" width="300" height="118"></a>
+  <a href="https://gittrend.io/trending/ai-infrastructure"><img alt="GitTrend AI Infrastructure 日榜第 4 名，记录于 2026-10-06，榜单更新于 2026-10-05" src="docs/images/gittrend-daily-2026-10-06.svg" width="300" height="118"></a>
   <p><sub>JavaScript 日榜与 AI Infrastructure 日榜均为第 4 名。GitTrend 榜单数据更新于 2026-10-05。</sub></p>
 
 </div>
