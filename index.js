@@ -45,7 +45,7 @@ import { mintRequestId, sessionForConversation } from './src/upstream.js'
 import { DEFAULT_LEVEL, budgetLadder } from './src/effort.js'
 import { windowTokens } from './src/stream.js'
 import { AnnouncementFeed } from './src/feed.js'
-import { PluginUpdater, restoreBackup } from './src/updater.js'
+import { PluginUpdater } from './src/updater.js'
 import { selfReload, watchPackage, isReloading } from './src/reload.js'
 import { createPushHub } from './src/push.js'
 import { rejectionFor, isLoopbackHost, connectionAdmissionView } from './src/trust.js'
@@ -66,6 +66,10 @@ function readPackageVersion() {
     return ''
   }
 }
+
+// Bind the version to this module generation. Re-registering cached old exports
+// after a failed reload must not pick up the new package.json still on disk.
+export const version = readPackageVersion()
 
 /**
  * Open a URL in the system browser, best effort. The settings page shows the
@@ -150,7 +154,7 @@ export function apply(ctx, config) {
   const home = resolveDshHome()
   const dataDir = path.join(home, DATA_DIR_NAME)
   fs.mkdirSync(dataDir, { recursive: true })
-  const packageVersion = readPackageVersion()
+  const packageVersion = version
 
   // A hot reload re-enters apply with fresh stores; the generation counter lives
   // on globalThis so the new instance knows it replaced a predecessor, and does
@@ -412,6 +416,7 @@ export function apply(ctx, config) {
     dataDir,
     settings: () => settings.get(),
     log: message => logger.info?.(message),
+    runningVersion: packageVersion,
   })
   /** Update versions we have already pushed a notification for. */
   let updateNotifiedFor = typeof settings.get().updateNotifiedFor === 'string' ? settings.get().updateNotifiedFor : ''
@@ -429,6 +434,19 @@ export function apply(ctx, config) {
   let refreshUpdatePush = undefined
   /** Set when this generation is disposed; late async callbacks must stand down. */
   let disposed = false
+
+  // The successor offers a notification callback, but only the caller that
+  // confirmed selfReload() and committed the outcome may invoke it. Booting a
+  // replacement is not yet evidence that every fiber started successfully.
+  const pendingUpgrade = globalThis[Symbol.for('our-free-model.pending-upgrade')]
+  if (pendingUpgrade?.version === packageVersion) {
+    pendingUpgrade.notify = () => {
+      if (disposed) return
+      settings.update({ installedVersion: packageVersion })
+      settings.flush()
+      push.emit('upgraded', { version: packageVersion, clientChanged: true })
+    }
+  }
 
   /** The immutable snapshot every adapter call binds to. */
   const state = () => ({
@@ -1257,32 +1275,39 @@ export function apply(ctx, config) {
   // ── hot reload + in-app upgrade ─────────────────────────────────────────────
   /**
    * Swap the running plugin for the code on disk. Called for explicit reloads
-   * and at the end of an upgrade; the updater's rollback directory is the disk
-   * safety net when the new code cannot start.
+   * for development. A failed ordinary reload only restores runtime state;
+   * it must never overwrite current edits with an unrelated upgrade backup.
    */
   async function reloadFromDisk() {
-    const result = await selfReload(ctx, { logger, packageUrl: PKG_URL, entryUrl: ENTRY_URL })
+    const status = updater.status()
+    if (status.applying) throw new Error('an upgrade is already running')
+    if (status.recoveryRequired) throw new Error('restore the retained upgrade backup before reloading')
+    const result = await selfReload(ctx, { logger, packageUrl: PKG_URL.href, entryUrl: ENTRY_URL })
     if (result.ok) return result
-    // The registry is back on the old code; make the disk match it.
-    try { restoreBackup(updater.backupDir, PKG_DIR) } catch { /* best effort */ }
     throw new Error(result.error)
   }
 
   async function applyUpgrade(version) {
     if (managed) throw httpError(409, MANAGED_MESSAGE)
     if (isReloading()) throw new Error('a reload is already in progress')
-    const result = await updater.apply({ version })
-    // The next apply() picks this up and pushes `upgraded` once it is live.
-    globalThis[Symbol.for('our-free-model.pending-upgrade')] = result.version
+    const pendingKey = Symbol.for('our-free-model.pending-upgrade')
+    let pending
     try {
-      await reloadFromDisk()
-    } catch (error) {
-      // The successor will never boot, so it can never consume the marker —
-      // clear it or the next cold start would announce a phantom upgrade.
-      globalThis[Symbol.for('our-free-model.pending-upgrade')] = undefined
-      throw error
+      const result = await updater.apply({
+        version,
+        activate: async installed => {
+          pending = { version: installed.version }
+          globalThis[pendingKey] = pending
+          return selfReload(ctx, { logger, packageUrl: PKG_URL.href, entryUrl: ENTRY_URL, expectedVersion: installed.version })
+        },
+      })
+      // Notification uses the successor's stores and hub. The predecessor's
+      // effects have already been disposed by the swap.
+      try { pending?.notify?.() } catch (error) { logger.warn?.(`our-free-model: upgrade notification failed (${error?.message ?? error})`) }
+      return { ...result, reloaded: true }
+    } finally {
+      if (globalThis[pendingKey] === pending) globalThis[pendingKey] = undefined
     }
-    return { ...result, reloaded: true }
   }
 
   /**
@@ -1296,7 +1321,8 @@ export function apply(ctx, config) {
       watcher = watchPackage(PKG_DIR, {
         logger,
         onChange: () => {
-          if (isReloading()) return
+          const status = updater.status()
+          if (isReloading() || status.applying || status.recoveryRequired) return
           logger.info?.('our-free-model: watched files changed; hot-reloading')
           void reloadFromDisk().catch(error => logger.warn?.(`our-free-model: hot reload failed (${error?.message ?? error})`))
         },
@@ -1633,14 +1659,6 @@ export function apply(ctx, config) {
       syncWatcher()
       emitTopology()
       push.emit('hello', helloPayload())
-      // An upgrade that ended in a hot reload reports from its successor.
-      const pending = globalThis[Symbol.for('our-free-model.pending-upgrade')]
-      if (pending !== undefined) {
-        globalThis[Symbol.for('our-free-model.pending-upgrade')] = undefined
-        settings.update({ installedVersion: pending })
-        settings.flush()
-        push.emit('upgraded', { version: pending, clientChanged: true })
-      }
     })().catch(error => logger.warn?.(`our-free-model: startup refresh failed (${error?.message ?? error})`))
   }, 'our-free-model: boot refresh')
 
@@ -2096,6 +2114,10 @@ function createApiRoutes(deps) {
       if (method === 'POST' && routePath === '/reload') {
         // A managed install does not swap its own bytes; the pack owns them.
         if (deps.managedDistribution === true) return send(409, { error: 'this installation is managed; updates are handled by the pack that installed it' })
+        const status = deps.update.status()
+        if (status.applying || status.recoveryRequired) return send(409, {
+          error: status.applying ? 'an upgrade is already running' : 'restore the retained upgrade backup before reloading',
+        })
         // Answer first, then swap: the response rides an already-accepted
         // socket, but the client should not wait on the reload finishing. The
         // swap closure is `deps.hotReload`, applied inside `apply` — this
