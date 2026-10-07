@@ -31,13 +31,9 @@ import crypto from 'node:crypto'
 
 const REPO = 'Ebony-Vinyl/dsh-our-free-model'
 
-/** Manifest locations, in preference order — jsDelivr first, for the same
- *  reachability reason as the feed (see src/feed.js): raw.githubusercontent.com
- *  is TLS-interfered on the networks this plugin most serves. jsDelivr is a
- *  third-party trust domain, which used to make it the weakest link of this
- *  channel; the Ed25519 signature on every manifest is now the actual trust
- *  root (see {@link PINNED_MANIFEST_PUBLIC_KEY}), so a mirror that lies fails
- *  verification instead of shipping code. */
+/** Discovery locations, in preference order. Official mutable refs are resolved
+ *  to a full commit before fetching either the manifest or its files. Mirrors
+ *  remain untrusted: only the existing Ed25519 signature authorizes content. */
 export const DEFAULT_MANIFEST_SOURCES = [
   `https://raw.githubusercontent.com/${REPO}/main/feed/manifest.json`,
   `https://cdn.jsdelivr.net/gh/${REPO}@main/feed/manifest.json`,
@@ -112,7 +108,7 @@ export function verifyManifestSignature(payload, publicKeyBase64) {
   }
 }
 
-/** Mirror of the feed's cache-buster: a minute-stamp keeps upgrades fresh. */
+/** Cache hint only: query strings cannot refresh jsDelivr's branch resolution. */
 export function bustCdnCache(url, now = Date.now()) {
   try {
     const parsed = new URL(url)
@@ -238,6 +234,44 @@ export function fileUrlOf(manifestUrl, manifest, relativePath) {
   return new URL(manifest.base + relativePath.split('/').map(encodeURIComponent).join('/'), manifestUrl).href
 }
 
+/** Pin an official discovery URL without changing the signed manifest format.
+ *  A resolution is reused across mirrors in this check, so a moving branch
+ *  cannot select different snapshots when raw fails and the CDN takes over.
+ *  Custom/local sources and already immutable SHA URLs retain their semantics.
+ *  The resolver supplies a location, never authority to install its contents. */
+async function snapshotManifestSource(source, fetchImpl, signal, revisions) {
+  const url = new URL(source)
+  if (url.protocol !== 'https:' || url.port || url.username || url.password) return source
+  const rawPrefix = `/${REPO}/`
+  const cdnPrefix = `/gh/${REPO}@`
+  const prefix = url.hostname === 'raw.githubusercontent.com' ? rawPrefix
+    : url.hostname === 'cdn.jsdelivr.net' ? cdnPrefix : null
+  if (prefix === null || !url.pathname.startsWith(prefix)) return source
+  const match = /^([^/]+)\/feed\/manifest\.json$/.exec(url.pathname.slice(prefix.length))
+  if (match === null) return source
+  const ref = match[1]
+  if (/^[a-f0-9]{40}$/.test(ref)) return source
+  // Never insert arbitrary URL/path syntax in a resolver request.
+  if (!/^[A-Za-z0-9._-]+$/.test(ref)) throw new Error('unsupported update source ref')
+  let revision = revisions.get(ref)
+  if (revision === undefined) {
+    const response = await fetchImpl(`https://api.github.com/repos/${REPO}/commits/${encodeURIComponent(ref)}`, {
+      redirect: 'error', signal,
+      headers: { accept: 'application/vnd.github+json', 'user-agent': 'our-free-model-updater' },
+    })
+    if (!response.ok) throw new Error(`snapshot resolution failed for ${ref}: HTTP ${response.status}`)
+    const text = await response.text()
+    if (text.length > MAX_MANIFEST_BYTES) throw new Error('snapshot resolution response too large')
+    revision = JSON.parse(text)?.sha
+    if (typeof revision !== 'string' || !/^[a-f0-9]{40}$/.test(revision)) {
+      throw new Error(`snapshot resolution did not return a full commit SHA for ${ref}`)
+    }
+    revisions.set(ref, revision)
+  }
+  url.pathname = `${prefix}${revision}/feed/manifest.json`
+  return url.href
+}
+
 /**
  * Fetch the first source that answers with a manifest this installation accepts.
  *
@@ -253,12 +287,16 @@ export function fileUrlOf(manifestUrl, manifest, relativePath) {
  */
 export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl = fetch, verifyKey = PINNED_MANIFEST_PUBLIC_KEY } = {}) {
   const failures = []
+  const revisions = new Map()
   for (const source of sources) {
     try {
-      const response = await fetchImpl(bustCdnCache(source), {
+      // One deadline covers resolution, manifest headers and body for this leg.
+      const signal = AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined
+      const snapshot = await snapshotManifestSource(source, fetchImpl, signal, revisions)
+      const response = await fetchImpl(bustCdnCache(snapshot), {
         redirect: 'error',
         headers: { accept: 'application/json' },
-        signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
+        signal,
       })
       if (!response.ok) { failures.push(`${source} -> HTTP ${response.status}`); continue }
       const text = await response.text()
@@ -268,7 +306,7 @@ export async function downloadManifest(sources, { timeoutMs = 15000, fetchImpl =
         failures.push(`${source} -> manifest signature missing or not made with the release key`)
         continue
       }
-      return { manifest, source, signed: true }
+      return { manifest, source: snapshot, signed: true }
     } catch (error) {
       failures.push(`${source} -> ${error?.message ?? error}`)
     }
@@ -297,6 +335,21 @@ function isTransientDownloadError(error) {
   return /fetch failed|network|ECONN|ETIMEDOUT|EAI_AGAIN|terminated|socket/i.test(String(error?.message ?? error))
 }
 
+/** jsDelivr's primary edge can redirect documentation files to raw, which is
+ *  unavailable on some client networks. Try its gcore edge at the exact same
+ *  SHA/path, never an arbitrary Location or a mutable branch. Size/hash checks
+ *  remain outside the transport fallback and cannot authorize another body. */
+function stagedFileSources(manifestUrl, manifest, relativePath) {
+  const file = fileUrlOf(manifestUrl, manifest, relativePath)
+  const url = new URL(file)
+  const prefix = `/gh/${REPO}@`
+  if (url.protocol !== 'https:' || url.hostname !== 'cdn.jsdelivr.net' || url.port
+    || url.username || url.password || !url.pathname.startsWith(prefix)
+    || !/^[a-f0-9]{40}\//.test(url.pathname.slice(prefix.length))) return [file]
+  url.hostname = 'gcore.jsdelivr.net'
+  return [file, url.href]
+}
+
 export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl = fetch, concurrency = 4, onProgress = () => {}, timeoutMs = 30000 }) {
   fs.rmSync(stageDir, { recursive: true, force: true })
   fs.mkdirSync(stageDir, { recursive: true })
@@ -308,15 +361,24 @@ export async function stageRelease({ manifest, manifestUrl, stageDir, fetchImpl 
     while (cursor < manifest.files.length) {
       const file = manifest.files[cursor++]
       const target = path.join(stageDir, ...file.path.split('/'))
+      const sources = stagedFileSources(manifestUrl, manifest, file.path)
       let lastError
       for (let attempt = 1; attempt <= STAGE_ATTEMPTS; attempt += 1) {
         try {
-          const response = await fetchImpl(bustCdnCache(fileUrlOf(manifestUrl, manifest, file.path)), {
-            redirect: 'error',
-            signal: AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined,
-          })
-          if (!response.ok) throw new Error(`HTTP ${response.status}`)
-          const body = Buffer.from(await response.arrayBuffer())
+          const signal = AbortSignal.timeout ? AbortSignal.timeout(timeoutMs) : undefined
+          let body
+          for (let mirror = 0; mirror < sources.length; mirror++) {
+            try {
+              const response = await fetchImpl(bustCdnCache(sources[mirror]), { redirect: 'error', signal })
+              if (!response.ok) throw new Error(`HTTP ${response.status}`)
+              body = Buffer.from(await response.arrayBuffer())
+              break
+            } catch (error) {
+              const status = /^HTTP (\d{3})$/.exec(String(error?.message ?? ''))?.[1]
+              const canFallback = status ? /^(3\d\d|404|429|5\d\d)$/.test(status) : isTransientDownloadError(error)
+              if (!canFallback || mirror === sources.length - 1 || signal?.aborted) throw error
+            }
+          }
           if (body.length !== file.size) throw new Error(`size ${body.length} != manifest ${file.size}`)
           const digest = crypto.createHash('sha256').update(body).digest('hex')
           if (digest !== file.sha256) throw new Error('sha256 mismatch')

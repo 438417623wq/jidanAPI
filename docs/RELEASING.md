@@ -106,12 +106,39 @@ revision 再提交，HEAD 又前移——逻辑上无解。改比"最近一次�
 本身都不需要刷新。发布 tag 打在第 2 步之后（发布物不含 `catalog/`，两步的制品字节
 相同，但 HEAD 处于全绿状态）。
 
+## 固定提交取件与旧客户端过渡（issue #120）
+
+新版升级器将默认更新 URL 用于发现版本；实际下载前通过 GitHub 官方
+`/repos/Ebony-Vinyl/dsh-our-free-model/commits/<ref>` 解析完整 40 位 commit SHA，
+再从 `raw.githubusercontent.com/<repo>/<sha>/feed/manifest.json` 或
+`cdn.jsdelivr.net/gh/<repo>@<sha>/feed/manifest.json` 下载签名清单。
+清单的相对 `base` 从这个固定 URL 解析，全部文件因此来自同一提交。
+raw 取件失败转 CDN 时复用本次已解析的 SHA；点击升级会重新解析，防止使用数小时前的结果。
+
+现有公钥、清单字段和签名格式保持兼容；解析接口仅提供下载位置，不授权代码。
+清单验签、文件大小与 SHA-256、暂存回读及回滚照常执行。解析失败、限流或超时会报错，
+不退回可变分支取件。每个镜像的一次解析及清单读取共用 15 秒预算；每次检查、应用升级
+需要 GitHub API 可达且有公开接口配额。固定 SHA 的 `--source` 和本地测试源无需该接口。
+
+固定 SHA 的主 jsDelivr 文件取件遇到连接失败、重定向、404、429 或 5xx 时，
+可切换至 `gcore.jsdelivr.net` 的同一 SHA 和路径，两次取件共用单次超时预算。
+不跟随响应给出的任意 `Location`，不对 401/403 做镜像回退，也不对大小或摘要错误回退。
+每份下载字节仍须符合签名清单；固定提交以外的源不启用此文件回退。
+
+已安装 1.x/旧 2.0 客户端仍使用 `@main` 取件，不能靠新客户端代码修复它们的当前升级。
+发布时仍需整树 purge，并针对失败路径逐个 purge；用旧升级器跑完整取件校验，
+确认过渡升级可用后，用户才能获得新的固定提交流程。`live-audit.mjs` 默认核验新版路径，
+现在会显示实际 snapshot URL；旧路径应使用旧安装或旧提交中的该脚本单独核验。
+
+签名清单仍须与其所在发布提交的全部文件一致。固定 SHA 解决 CDN 分支缓存和下载过程中
+分支移动的问题，不能修复未重签的代码变更；持钥维护者仍须按上述发布步骤生成签名及目录记录。
+不得放宽 vendor 文件校验；当前 2.0.0 清单只包含四个 vendor 发布文件，并非其全部开发源码。
+
 ## 关于源顺序与网络现实
 
-真正的顺序是 `raw.githubusercontent(main) → jsDelivr(@main) → raw(master)`，全部失败时
-降级到上一次的缓存并如实标注错误。以代码为准：`src/feed.js` 与 `src/updater.js` 里
-`DEFAULT_*_SOURCES` 的**数组顺序**就是它（这两个文件的注释写着"jsDelivr 优先"，是旧版本
-留下的说法，与数组不符）。
+发现源的顺序是 `raw.githubusercontent(main) → jsDelivr(@main) → raw(master)`。
+新版升级器先固定提交再取件，全部失败时报错并保留现有安装；公告仍使用原有缓存回退。
+以 `src/feed.js` 与 `src/updater.js` 的 `DEFAULT_*_SOURCES` 数组及下载实现为准。
 
 raw 排在前面是因为它**权威、不缓存**：推上去立刻能读到。但它在部分网络（实测本机 CN
 出口 + Watt Toolkit 类加速工具）根本走不通——`git push` 正常，而 raw 对新文件返回假
@@ -287,13 +314,39 @@ Only commits that touch the release content move the pointer: `docs/`,
 (the published artifact excludes `catalog/`, so both commits produce identical
 artifact bytes — but HEAD sits at all-green there).
 
+## Immutable downloads and migration from old clients (issue #120)
+
+The updater resolves each official discovery ref through GitHub's commits API
+before downloading its signed manifest. It returns the SHA-based manifest URL;
+all file URLs resolve relative to that snapshot. A raw-to-CDN fallback reuses
+the same SHA within a check. Apply performs a fresh check. The resolver only
+selects a location: the existing Ed25519 signature and every file's size/hash
+remain mandatory. The manifest format and pinned public key do not change.
+
+Resolution and manifest reading share a 15-second budget per source. If GitHub
+API resolution fails, is rate limited or times out, the update fails without
+falling back to mutable refs. Updates now require public GitHub API access and
+quota; explicit full-SHA URLs and custom/local test sources need no resolver.
+
+Installed old clients still fetch mutable refs. Purge the current publication
+and verify all files with an old updater before relying on that migration.
+The new live audit reports and uses the resolved URL; it does not prove the
+old path works. Immutable downloads do not fix unsigned source changes:
+maintainers must still re-sign and align the catalog before publishing. Vendor
+runtime files retain full integrity checks.
+
+Fixed-SHA CDN files may use the gcore edge at the same SHA/path after transport,
+redirect, 404, 429 or 5xx failures. Both requests share the attempt's deadline;
+arbitrary redirects, authorization refusals, size errors and hash errors do
+not trigger this fallback. Mutable and custom file sources are not remapped.
+
 ## Source order and network reality
 
-The actual order is `raw.githubusercontent(main) → jsDelivr(@main) → raw(master)`,
-falling back to the last cached copy with the error reported honestly when all
-fail. Take the **array order** in `src/feed.js` and `src/updater.js` as the truth:
-their comments still say "jsDelivr first", which is an older claim the arrays do
-not match.
+Discovery order is `raw.githubusercontent(main) → jsDelivr(@main) → raw(master)`.
+The new updater pins a commit before downloading; on failure it reports the
+error and retains the installation. Announcements retain their existing cache
+fallback. Consult the source arrays and download implementation in `src/feed.js`
+and `src/updater.js`.
 
 raw leads because it is authoritative and uncached — push, and it is immediately
 readable. But on some networks (measured: a CN egress with a Watt Toolkit-style
