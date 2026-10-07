@@ -69,13 +69,23 @@ jobs:
       - name: The release suite gates the push
         run: node scripts/test-all.mjs --mode release
       - name: Commit and push the refreshed records
+        env:
+          # GITHUB_TOKEN is a ruleset outsider: main demands PRs and green
+          # checks from it. The push token belongs to a bypass holder, so the
+          # push lands as theirs; a fine-grained PAT scoped to this repo is
+          # the intended long-term value for this secret.
+          PUSH_TOKEN: ${{ secrets.OFM_RELEASE_PUSH_TOKEN }}
         run: |
           if git diff --quiet -- feed/manifest.json catalog/integrity.json catalog/dsh-plugin.json catalog/provenance.json; then
             echo "the committed manifest describes this tree — nothing to push"
             exit 0
           fi
+          if [ -z "$PUSH_TOKEN" ]; then
+            echo '::error::OFM_RELEASE_PUSH_TOKEN is not set — the re-signed records cannot reach main'
+            exit 1
+          fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add feed/manifest.json catalog/integrity.json catalog/dsh-plugin.json catalog/provenance.json
           git commit -m "catalog: re-sign the manifest over ${GITHUB_SHA::7}"
-          git push origin HEAD:main
+          git push "https://x-access-token:${PUSH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
