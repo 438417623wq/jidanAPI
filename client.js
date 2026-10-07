@@ -84,9 +84,6 @@ window.__ModuleLoader__.load({
         'pool.reasonUnreachable': '网关暂不可达',
         'pool.reasonUnknown': '原因未知',
         'pool.capacityUnknown': 'Star 数据暂不可用',
-        'tank.allLabel': '综合渠道',
-        'tank.allCalls': '全渠道使用人次',
-        'tank.allNote': '13 个账号渠道账本（约 90 天）+ 免费车道累计 · 水位常满',
         'section.eac': 'EAC 渠道授权',
         'section.eacHint': 'EAC（协付）模型需要 GitHub 登录并 star 仓库；免费车道的模型不受影响。',
         'eac.pillOk': '已授权',
@@ -530,9 +527,6 @@ window.__ModuleLoader__.load({
         'pool.reasonUnreachable': 'gateway unreachable',
         'pool.reasonUnknown': 'unknown cause',
         'pool.capacityUnknown': 'star data unavailable',
-        'tank.allLabel': 'All channels',
-        'tank.allCalls': 'Total calls served',
-        'tank.allNote': 'The 13 account channels’ ledger (~90 days) plus the free lane, cumulative · the water stays full',
         'section.eac': 'EAC lane authorization',
         'section.eacHint': 'EAC (co-paid) models need a GitHub login and a star; the free lane is unaffected.',
         'eac.pillOk': 'authorized',
@@ -3146,30 +3140,6 @@ window.__ModuleLoader__.load({
       return { ...state, reload: load }
     }
 
-    /**
-     * The all-channels tank's one number: everything this plugin has served.
-     * The pack's per-request ledger answers for the 13 account channels (its
-     * daily aggregates keep roughly 90 days) and the host's own stats answer
-     * for the free lane (lifetime); a side that cannot answer renders as "—" —
-     * the tank never invents a partial sum. Polled at the dashboard's cadence
-     * so the counter visibly moves while the page stays open.
-     */
-    function useAllChannelUsage(props) {
-      const { available, rpc } = useChannelRpc(props.ctx)
-      const [packRequests, setPackRequests] = useState(null)
-      useEffect(() => {
-        if (!available) return undefined
-        let alive = true
-        const load = () => rpc('usage.tokenLedgerHistory', { sinceDays: 90 }, 60_000)
-          .then(history => { if (alive) setPackRequests(Number.isFinite(history?.totals?.requests) ? history.totals.requests : null) })
-          .catch(() => { if (alive) setPackRequests(null) })
-        load()
-        const timer = setInterval(load, 60_000)
-        return () => { alive = false; clearInterval(timer) }
-      }, [available, rpc])
-      return packRequests
-    }
-
     /** KPI cards: one reading per card, exactly like the gateway consoles. */
     function KpiCard(props) {
       const { label, value, sub, tone } = props
@@ -3638,7 +3608,7 @@ window.__ModuleLoader__.load({
               ? h(GatewayPage, { t, ctx })
               : tab === 'eac'
                 ? h(EacPage, { t, data, counts, summary, stats, eacAuth, setEacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
-                : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe, ctx })
+                : h(FreePage, { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe })
 
       return h('div', { className: 'ofm_root ofm_shell' },
         h('div', { className: 'ofm_aurora', 'aria-hidden': 'true' }, h('i'), h('i'), h('i')),
@@ -3647,7 +3617,7 @@ window.__ModuleLoader__.load({
     }
 
     function FreePage(props) {
-      const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe, ctx } = props
+      const { t, data, counts, summary, stats, eacAuth, eacLogin, busy, apply, bench, benches, refresh, reprobe } = props
       // The denominator is the free lane's own roster — the only slice the
       // verdicts describe. Dividing by the whole catalog (which also carries
       // the never-probed EAC and Kilo entries) read a 6-of-10 lane as ~17%.
@@ -3664,12 +3634,6 @@ window.__ModuleLoader__.load({
       // below two thirds — the pool gauge's own cut-offs measure queue pressure
       // and would paint a perfectly usable lane amber.
       const level = ratio >= 0.6 ? 'ok' : ratio >= 0.3 ? 'busy' : 'over'
-      // The second tank's number: the plugin's combined call count. The pack
-      // ledger answers for the 13 account channels, the host stats for the
-      // free lane; either side unknown renders as "—" instead of a guess.
-      const packRequests = useAllChannelUsage({ ctx })
-      const ownRequests = stats.status === 'ready' && Number.isFinite(stats.data?.requests) ? stats.data.requests : null
-      const allCalls = packRequests === null || ownRequests === null ? null : packRequests + ownRequests
       return h('div', { className: 'ofm_page' },
         h('header', { className: 'ofm_hero ofm_glass' },
           h('div', { className: 'ofm_pagehead' },
@@ -3700,18 +3664,7 @@ window.__ModuleLoader__.load({
                 h('span', { className: 'ofm_note' }, t('meta.description'))),
               h('div', { className: 'ofm_row' },
                 h(Button, { disabled: busy, onClick: refresh }, summary.status === 'loading' ? t('probing') : t('refresh')),
-                h(Button, { disabled: busy, onClick: reprobe }, t('reprobe'))),
-            h(Tank, { pct: 100, level: 'ok', size: 'xl', label: t('tank.allLabel') }),
-            h('div', { className: 'ofm_tankside' },
-              h('div', { className: 'ofm_pooltop' },
-                h('span', { className: 'ofm_poolbadge ok' },
-                  h('span', { className: 'ofm_pooldot' }),
-                  t('tank.allLabel'))),
-              h('div', { className: 'ofm_poolstats' },
-                h('div', { className: 'ofm_stat' },
-                  h('b', null, allCalls === null ? '—' : fmtInt(allCalls)), h('span', null, t('tank.allCalls')))),
-              h('div', { className: 'ofm_poolmeta' },
-                h('span', { className: 'ofm_note' }, t('tank.allNote'))))))),
+                h(Button, { disabled: busy, onClick: reprobe }, t('reprobe')))))),
         h(Section, { title: t('section.models'), hint: t('section.modelsHint') }, h(Roster, { summary: data, t, onBench: bench, benches, auth: eacAuth, eacLogin, only: 'free' })),
         h(Section, { title: t('section.dash'), hint: t('section.dashHint') },
           stats.status === 'ready' && stats.data !== undefined ? h(Dashboard, { stats: stats.data, summary: data, t })
