@@ -341,10 +341,13 @@ export function apply(ctx, config) {
       if (credential === null || credential.mode !== 'worker') return { error: 'no-lane' }
       const link = crypto.randomBytes(24).toString('base64url')
       const url = `${eacAuthRootOf(credential)}/auth/github/start?link=${link}`
+      const prepared = await eacLoginPoller.prepare(link)
+      if (prepared.error !== undefined) return prepared
       return { url, link, opened: openExternal(url) }
     },
     /** Collect the token the browser flow just produced. */
     poll: link => eacLoginPoller.poll(link),
+    cancel: link => eacLoginPoller.cancel(link),
     /** Revoke server-side, then forget locally. Local removal is the part that
      * must always happen — a gateway that cannot be reached must not leave the
      * user logged in on this machine. */
@@ -2029,6 +2032,10 @@ function createApiRoutes(deps) {
         const polled = await deps.eacAuth.poll(url.searchParams.get('link') ?? '')
         const status = polled.error === undefined ? 200 : polled.error === 'bad-link' ? 400 : polled.error === 'no-lane' ? 404 : 502
         return send(status, polled)
+      }
+      if (method === 'POST' && routePath === '/eac/login/cancel') {
+        const cancelled = deps.eacAuth.cancel(url.searchParams.get('link') ?? '')
+        return send(cancelled.error === undefined ? 200 : 400, cancelled)
       }
       if (method === 'GET' && routePath === '/eac/status') {
         return send(200, await deps.eacAuth.status())

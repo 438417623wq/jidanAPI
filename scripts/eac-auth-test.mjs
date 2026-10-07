@@ -312,9 +312,21 @@ try {
   }
   try {
     const link = 'r'.repeat(32), otherLink = 's'.repeat(32)
+    const { createEacLoginPoller } = await import('../src/eac-login.js')
+    const { directFetch } = await import('../src/eac.js')
+    const preparing = createEacLoginPoller({
+      credentialOf: () => ({ mode: 'worker', base: `${retained.base}/v1` }),
+      readUser: () => null, writeUser: () => { throw Error('preparation must not save a user') },
+      onSaved() {}, fetch: directFetch,
+    })
+    check('Host registers manual browser login through the actual gateway', await preparing.prepare(link), { ok: true })
+    check('the registered link is pending before the system browser opens', await preparing.poll(link), { status: 'pending' })
     const first = await authorize(link)
     const retry = await (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()
     check('retained delivery repeats the same token after a lost response', [first.status, first.ackRequired, retry.token === first.token], ['ok', true, true])
+    await get(`${retained.base}/auth/github/start?link=${link}`)
+    const reopened = await (await get(`${retained.base}/auth/poll?link=${link}&retain=1`)).json()
+    check('reopening a registered browser entry does not erase completed delivery', [reopened.status, reopened.token === first.token], ['ok', true])
     const restarted = await startGateway(gh, { __dir: retained.dir, REQUIRE_USER_TOKEN: '1' })
     try {
       const recovered = await (await get(`${restarted.base}/auth/poll?link=${link}&retain=1`)).json()
@@ -409,7 +421,9 @@ try {
   try {
     const link = 't'.repeat(32)
     await authorize(link)
-    clock += 15 * 60_000 + 1
+    clock += 14 * 60_000
+    await get(`${base}/auth/github/start?link=${link}`)
+    clock += 60_000 + 1
     check('retained delivery expires after 15 minutes', (await (await get(`${base}/auth/poll?link=${link}&retain=1`)).json()).status, 'expired')
     await authorize('u'.repeat(32))
     gh.state.starred = false
