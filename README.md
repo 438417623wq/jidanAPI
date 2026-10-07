@@ -10,11 +10,9 @@
   <img alt="无构建步骤" src="https://img.shields.io/badge/build%20step-none-7da1de?style=flat-square">
   <img alt="适配内核" src="https://img.shields.io/badge/dsh-0.1.5--0.1.7--rc.2-2f6f4f?style=flat-square">
   <img alt="状态" src="https://img.shields.io/badge/status-beta-f0a441?style=flat-square">
-  <p><strong>趋势榜 · 2026-10-06 记录</strong></p>
-  <!-- 自制静态卡片记录核实的名次，图片随仓库托管；点击查看对应榜单。 -->
-  <a href="https://trendshift.io/?language=JavaScript"><img alt="Trendshift JavaScript 日榜第 4 名，记录于 2026-10-06" src="docs/images/trendshift-daily-2026-10-06.svg" width="300" height="118"></a>
-  <a href="https://gittrend.io/trending/ai-infrastructure"><img alt="GitTrend AI Infrastructure 日榜第 4 名，记录于 2026-10-06，榜单更新于 2026-10-05" src="docs/images/gittrend-daily-2026-10-06.svg" width="300" height="118"></a>
-  <p><sub>JavaScript 日榜与 AI Infrastructure 日榜均为第 4 名。GitTrend 榜单数据更新于 2026-10-05。</sub></p>
+  <br>
+  <a href="https://trendshift.io/repositories/261203"><img alt="GITHUB TRENDING 第 1 名，日榜仓库" src="docs/images/trendshift-daily-fixed.svg" width="250" height="55"></a>
+  <a href="https://trendshift.io/repositories/261203"><img alt="GITHUB TRENDING 第 2 名，周榜仓库" src="docs/images/trendshift-weekly-fixed.svg" width="250" height="55"></a>
 
 </div>
 
