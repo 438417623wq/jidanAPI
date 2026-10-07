@@ -52,14 +52,18 @@ jobs:
       - name: Rebuild and re-sign the manifest when the tree has drifted
         env:
           FORCE: ${{ inputs.force }}
-          OFM_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_PRIVATE_KEY }}
+          # build-manifest.mjs takes a key *path* (OFM_MANIFEST_KEY) while the
+          # secret holds the PEM itself — stage it into the ephemeral runner.
+          RELEASE_KEY_PEM: ${{ secrets.RELEASE_MANIFEST_PRIVATE_KEY }}
         run: |
           if [ "$FORCE" = "true" ] || ! node scripts/build-manifest.mjs --check; then
-            if [ -z "$OFM_MANIFEST_KEY" ]; then
+            if [ -z "$RELEASE_KEY_PEM" ]; then
               echo '::error::RELEASE_MANIFEST_PRIVATE_KEY is not set — add the release signing PEM as a repository secret'
               exit 1
             fi
-            node scripts/build-manifest.mjs
+            KEY_FILE="$RUNNER_TEMP/release-key.pem"
+            printf '%s' "$RELEASE_KEY_PEM" > "$KEY_FILE"
+            OFM_MANIFEST_KEY="$KEY_FILE" node scripts/build-manifest.mjs
             node scripts/refresh-revision.mjs
           fi
       - name: The release suite gates the push
