@@ -147,7 +147,7 @@ const { createGatewayServer, resetAnalytics, poolProbe } = await import('../work
   }
   for (const relative of files) {
     // The vendored channel pack is third-party code carried byte-for-byte from
-    // its own repository (see vendor/jet-hub/NOTICE.md). Scanning it for *our*
+    // its own repository (see vendor/channel-pack/NOTICE.md). Scanning it for *our*
     // lane's fragments cannot find a leak — it never knew the lane — and does
     // fire on coincidences: one upstream comment names the public host
     // chatai.dpdns.org, whose suffix happens to contain the fragment. The rule

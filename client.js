@@ -316,7 +316,7 @@ window.__ModuleLoader__.load({
         'chan.title': '白嫖模型接入',
         'chan.sub': '把各家的免费额度接进来：登录一次，模型就出现在对话框的模型选择器里。凭据只写入本机凭据库，页面永远拿不到明文。',
         'chan.pack.failed': '渠道包未挂载：{reason}（免费车道与 EAC 不受影响）',
-        'chan.pack.hint': '渠道包由本插件内置（vendor/jet-hub），随插件一起升级。',
+        'chan.pack.hint': '渠道包由本插件内置（vendor/channel-pack），随插件一起升级。',
         'chan.state.on': '已接入',
         'chan.state.off': '未接入',
         'chan.state.closed': '已关闭',
@@ -734,7 +734,7 @@ window.__ModuleLoader__.load({
         'chan.title': 'Free channel access',
         'chan.sub': 'Bring each vendor\'s free quota in: sign in once and its models appear in the composer\'s model picker. Credentials are written to the local credential store only — this page never sees them.',
         'chan.pack.failed': 'Channel pack not mounted: {reason} (the free and EAC lanes are unaffected)',
-        'chan.pack.hint': 'The pack ships inside this plugin (vendor/jet-hub) and upgrades with it.',
+        'chan.pack.hint': 'The pack ships inside this plugin (vendor/channel-pack) and upgrades with it.',
         'chan.state.on': 'Connected',
         'chan.state.off': 'Not connected',
         'chan.state.closed': 'Turned off',
@@ -2558,8 +2558,8 @@ window.__ModuleLoader__.load({
     }
 
     // ── 白嫖模型接入页 ────────────────────────────────────────────────────────
-    // Real channel logos carried over from the upstream Jet Hub client (see
-    // vendor/jet-hub/NOTICE.md) — the same artwork users know from those
+    // Real channel logos carried over from the upstream Channel Pack client (see
+    // vendor/channel-pack/NOTICE.md) — the same artwork users know from those
     // products, embedded so no network fetch is involved. Channels without an
     // entry fall back to their two-letter tile.
     const CHANNEL_ICONS = {
@@ -2602,7 +2602,7 @@ window.__ModuleLoader__.load({
     const CREDIT_PROVIDERS = new Set(['codearts', 'buddy', 'workbuddy', 'lobsterai', 'qoder', 'qodercn', 'loomy', 'minimax'])
 
     /**
-     * The host RPC the pack registered at `/api/jet-hub`.
+     * The host RPC the pack registered at `/api/channel-pack`.
      *
      * The pack's own browser half used the shell's connection service; this page
      * does the same instead of proxying through our JSON API, so channel traffic
@@ -2623,7 +2623,7 @@ window.__ModuleLoader__.load({
           const controller = new AbortController()
           const timer = setTimeout(() => controller.abort(), timeoutMs)
           try {
-            const result = await connection.rpc.call('/api', 'jet-hub', { method, payload }, controller.signal)
+            const result = await connection.rpc.call('/api', 'channel-pack', { method, payload }, controller.signal)
             if (result?.ok === true) return result.value
             if (result?.ok === false) throw new Error(result.error?.message ?? result.error?.code ?? 'rpc-failed')
             return result

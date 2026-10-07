@@ -374,10 +374,10 @@ const REPOSITORY_SCAFFOLDING = ['feed', 'scripts', 'docs', 'promo', 'node_module
 // trees protected; package.json is overwritten during installation, so it
 // cannot be the sole authority for identifying old runtime files to clean up.
 const VENDOR_RUNTIME_FILES = [
-  'vendor/jet-hub/pack.js',
-  'vendor/jet-hub/qoder-auth-wasm.wasm',
-  'vendor/jet-hub/NOTICE.md',
-  'vendor/jet-hub/LICENSE',
+  'vendor/channel-pack/pack.js',
+  'vendor/channel-pack/qoder-auth-wasm.wasm',
+  'vendor/channel-pack/NOTICE.md',
+  'vendor/channel-pack/LICENSE',
 ]
 
 /**

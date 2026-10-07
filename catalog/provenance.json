@@ -19,12 +19,12 @@
     "verifiedBy": "scripts/catalog-test.mjs (adapter isolation gate, which exempts vendor/)"
   },
   "vendoredChannelPack": {
-    "path": "vendor/jet-hub/pack.js",
+    "path": "vendor/channel-pack/pack.js",
     "upstreamRepository": "https://gitee.com/iJetLi/deepseek-harness-codearts",
     "upstreamRevision": "345f0a07b22713c0ae189ca7d8b97ec4f64626c6",
-    "license": "MIT (vendor/jet-hub/LICENSE, unchanged)",
+    "license": "MIT (vendor/channel-pack/LICENSE, unchanged)",
     "contract": "A third-party dsh plugin carried verbatim and bundled into one file by scripts/build-channel-pack.mjs. It registers the fourteen free-channel providers (CodeArts, CodeBuddy, WorkBuddy, LobsterAI, Qoder, Qoder CN, TRAE, Cline, Loomy, Raccoon, MiniMax, ZCode, Gemini, OpenCode) and therefore imports the kernel itself; that import is upstream's design, not this plugin's seam. Mounted on its own fiber: a composition without credentials/commands/llm loses the channels and keeps the free lane. Credentials it obtains go to the host credential store, never to this plugin's files or to the browser.",
-    "provenanceNotes": "vendor/jet-hub/NOTICE.md records what was taken, what was left out (upstream's own browser half) and how to rebuild the bundle."
+    "provenanceNotes": "vendor/channel-pack/NOTICE.md records what was taken, what was left out (upstream's own browser half) and how to rebuild the bundle."
   },
   "distribution": {
     "selfUpdate": "default; in-app updater verifies feed/manifest.json SHA-256 digests before installing",

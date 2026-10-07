@@ -166,7 +166,7 @@ for (const rel of ['package.json', ...(pkg.files ?? [])]) {
   }
 }
 // `vendor/` is the absorbed free-channel pack: a third-party dsh plugin carried
-// byte-for-byte (provenance in vendor/jet-hub/NOTICE.md). It registers its own
+// byte-for-byte (provenance in vendor/channel-pack/NOTICE.md). It registers its own
 // provider adapters against the kernel, so it names @deepseek-ai modules
 // itself; the rule this check enforces — one adapter seam for *our* code — is
 // kept for everything else.

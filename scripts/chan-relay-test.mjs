@@ -138,7 +138,7 @@ try {
   check('profileContext.home outranks a different DSH_HOME',
     chanGatewayCredential({ profileContext: { home: profileHome }, env })?.key, 'profile-key')
   check('the channel state override outranks profileContext.home',
-    chanGatewayCredential({ profileContext: { home: profileHome }, env: { ...env, DSH_JET_HUB_STATE_DIR: ` ${overrideHome} ` } })?.key, 'override-key')
+    chanGatewayCredential({ profileContext: { home: profileHome }, env: { ...env, DSH_CHANNEL_PACK_STATE_DIR: ` ${overrideHome} ` } })?.key, 'override-key')
   check('the env API key still outranks all directory sources',
     chanGatewayCredential({ profileContext: { home: profileHome }, env: { ...env, DSH_OPENAI_GATEWAY_API_KEY: 'override-api-key' } })?.key, 'override-api-key')
   check('a profile with no key must not use another home credential',

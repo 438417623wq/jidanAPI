@@ -368,10 +368,10 @@ await checkAsync('channel runtime bytes are backed up and restored without sweep
   const data = makeDataDir()
   const backup = path.join(data, 'rollback')
   const assets = {
-    'vendor/jet-hub/pack.js': Buffer.from('export const pack = "old";\n'),
-    'vendor/jet-hub/qoder-auth-wasm.wasm': Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
-    'vendor/jet-hub/NOTICE.md': Buffer.from('old notice\n'),
-    'vendor/jet-hub/LICENSE': Buffer.from('old license\n'),
+    'vendor/channel-pack/pack.js': Buffer.from('export const pack = "old";\n'),
+    'vendor/channel-pack/qoder-auth-wasm.wasm': Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]),
+    'vendor/channel-pack/NOTICE.md': Buffer.from('old notice\n'),
+    'vendor/channel-pack/LICENSE': Buffer.from('old license\n'),
   }
   try {
     for (const [rel, bytes] of Object.entries(assets)) {
@@ -379,7 +379,7 @@ await checkAsync('channel runtime bytes are backed up and restored without sweep
       fs.mkdirSync(path.dirname(file), { recursive: true })
       fs.writeFileSync(file, bytes)
     }
-    const source = path.join(pkg, 'vendor/jet-hub/src/index.ts')
+    const source = path.join(pkg, 'vendor/channel-pack/src/index.ts')
     fs.mkdirSync(path.dirname(source), { recursive: true })
     fs.writeFileSync(source, 'development source\n')
     backupPackage(pkg, backup)
@@ -387,7 +387,7 @@ await checkAsync('channel runtime bytes are backed up and restored without sweep
       assert.deepEqual(fs.readFileSync(path.join(backup, rel)), bytes, `${rel} is backed up byte-for-byte`)
       fs.writeFileSync(path.join(pkg, rel), 'new incompatible runtime')
     }
-    assert.equal(fs.existsSync(path.join(backup, 'vendor/jet-hub/src/index.ts')), false)
+    assert.equal(fs.existsSync(path.join(backup, 'vendor/channel-pack/src/index.ts')), false)
     restoreBackup(backup, pkg)
     for (const [rel, bytes] of Object.entries(assets)) assert.deepEqual(fs.readFileSync(path.join(pkg, rel)), bytes)
     assert.equal(fs.readFileSync(source, 'utf8'), 'development source\n')
@@ -410,14 +410,14 @@ await checkAsync('rollback from a failed 1.x to 2.x swap removes newly added cha
   try {
     const backup = path.join(data, 'rollback')
     backupPackage(pkg, backup)
-    fs.mkdirSync(path.join(pkg, 'vendor/jet-hub'), { recursive: true })
-    fs.writeFileSync(path.join(pkg, 'vendor/jet-hub/pack.js'), 'new pack')
-    fs.writeFileSync(path.join(pkg, 'vendor/jet-hub/qoder-auth-wasm.wasm'), Buffer.from([0, 1, 2]))
+    fs.mkdirSync(path.join(pkg, 'vendor/channel-pack'), { recursive: true })
+    fs.writeFileSync(path.join(pkg, 'vendor/channel-pack/pack.js'), 'new pack')
+    fs.writeFileSync(path.join(pkg, 'vendor/channel-pack/qoder-auth-wasm.wasm'), Buffer.from([0, 1, 2]))
     fs.writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ version: '2.0.0' }))
     restoreBackup(backup, pkg)
     assert.equal(updaterVersion(pkg), OLD)
-    assert.equal(fs.existsSync(path.join(pkg, 'vendor/jet-hub/pack.js')), false)
-    assert.equal(fs.existsSync(path.join(pkg, 'vendor/jet-hub/qoder-auth-wasm.wasm')), false)
+    assert.equal(fs.existsSync(path.join(pkg, 'vendor/channel-pack/pack.js')), false)
+    assert.equal(fs.existsSync(path.join(pkg, 'vendor/channel-pack/qoder-auth-wasm.wasm')), false)
   } finally {
     fs.rmSync(pkg, { recursive: true, force: true })
     fs.rmSync(data, { recursive: true, force: true })

@@ -17,7 +17,7 @@
 ## 决策
 
 1. 采用追加的可选挂载配置关闭 OpenCode，省略配置时保留上游行为；只隐藏卡片不足以阻止自动建槽，删除已有数据不符合用户要求。
-2. 中继每次读取 `profileContext`，按 `DSH_JET_HUB_STATE_DIR`、`profileContext.home`、`DSH_HOME`、默认 home 的顺序解析；不改变 OFM 自身数据位置。
+2. 中继每次读取 `profileContext`，按 `DSH_CHANNEL_PACK_STATE_DIR`、`profileContext.home`、`DSH_HOME`、默认 home 的顺序解析；不改变 OFM 自身数据位置。
 3. 精确纳入当前发布的四个 vendor 文件，避免取消整棵 vendor 目录的脚手架保护。
 4. 直接从受版本管理的 TypeScript 源码打包，避免依赖未入库的旧 lib；记录本地适配差异并验证生成包。
 5. Kilo 合法清单是当前完整免费池的权威，包括 `data: []` 和全收费列表。网络、HTTP、JSON 或清单结构失败不代表空池，保留旧缓存；沿用现有持久化与目录刷新机制，不新增请求、账号或数据迁移。
@@ -29,7 +29,7 @@
 - `node scripts/chan-relay-test.mjs`：25 项通过，包括不同 home 的密钥隔离、环境覆盖与鉴权围栏。
 - `node scripts/updater-test.mjs`：通过，包括 pack/WASM 原始字节恢复、1.x 升级失败清理新 vendor 文件及开发源码保留。
 - `tsc --noEmit -p tsconfig.json`：通过；仓库现有配置仅检查 adapter 接缝，不代表整个 vendored TypeScript 已完成类型检查。
-- `node --check index.js`、`node --check client.js`、`node --check vendor/jet-hub/pack.js` 和 `git diff --check`：通过。
+- `node --check index.js`、`node --check client.js`、`node --check vendor/channel-pack/pack.js` 和 `git diff --check`：通过。
 - 已从真实源码重新构建 pack，构建依赖位于隔离临时目录，仓库内的临时依赖已清理。
 
 ### 本次 Kilo 空池修复

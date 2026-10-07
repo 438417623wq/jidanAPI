@@ -47,9 +47,9 @@ function openAiError(res, status, code, message) {
   res.end(JSON.stringify({ error: { message, type: code, code } }))
 }
 
-/** Match the vendored resolveJetHubHome order, without moving OFM's data. */
+/** Match the vendored resolveChannelPackHome order, without moving OFM's data. */
 export function chanGatewayHome({ profileContext, env = process.env } = {}) {
-  const override = String(env.DSH_JET_HUB_STATE_DIR ?? '').trim()
+  const override = String(env.DSH_CHANNEL_PACK_STATE_DIR ?? '').trim()
   if (override !== '') return override
   if (typeof profileContext?.home === 'string' && profileContext.home.length > 0) return profileContext.home
   const envHome = String(env.DSH_HOME ?? '').trim()

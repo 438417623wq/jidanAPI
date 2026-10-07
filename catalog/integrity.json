@@ -183,22 +183,22 @@
       "sha256": "6f9d5dce4af5dc504991af32b46cd3b76dd0c587fcacb35cc6245a518201c021"
     },
     {
-      "path": "vendor/jet-hub/LICENSE",
+      "path": "vendor/channel-pack/LICENSE",
       "size": 1060,
       "sha256": "0f62f49c7c75f82fe6d88eebfbdd1b647a89e42ab765ee470d0496af40ec0b25"
     },
     {
-      "path": "vendor/jet-hub/NOTICE.md",
+      "path": "vendor/channel-pack/NOTICE.md",
       "size": 3419,
       "sha256": "2e746fa98cf3302539462ecd0d518c80af20653430d3b1e017e8cfbab8d59ed8"
     },
     {
-      "path": "vendor/jet-hub/pack.js",
+      "path": "vendor/channel-pack/pack.js",
       "size": 2869210,
       "sha256": "6e56038caa406179a5aa02b214766971b232e275dc74efa8c16b9412a2aa69d1"
     },
     {
-      "path": "vendor/jet-hub/qoder-auth-wasm.wasm",
+      "path": "vendor/channel-pack/qoder-auth-wasm.wasm",
       "size": 298606,
       "sha256": "6419471effa631519def7797d76d7ede38b9fcfa9a83c2148c8ef5d43355b43d"
     }

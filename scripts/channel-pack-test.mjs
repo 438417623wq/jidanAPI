@@ -16,7 +16,7 @@ const hooks = registerHooks({
     return nextResolve(specifier, context)
   },
 })
-process.env.DSH_JET_HUB_STATE_DIR = scratch
+process.env.DSH_CHANNEL_PACK_STATE_DIR = scratch
 process.env.DSH_HOME = scratch
 process.env.DSH_OPENAI_GATEWAY_ENABLED = '0'
 const savedFetch = globalThis.fetch
@@ -60,10 +60,10 @@ const state = {
   }],
   disabledModels: {},
 }
-fs.mkdirSync(path.join(scratch, 'jet-hub'))
-fs.writeFileSync(path.join(scratch, 'jet-hub/state.json'), JSON.stringify(state))
+fs.mkdirSync(path.join(scratch, 'channel-pack'))
+fs.writeFileSync(path.join(scratch, 'channel-pack/state.json'), JSON.stringify(state))
 try {
-  const { apply } = await import('../vendor/jet-hub/pack.js')
+  const { apply } = await import('../vendor/channel-pack/pack.js')
   apply(ctx, { disableOpencode: true })
   await new Promise(resolve => setImmediate(resolve))
   assert.equal(adapters.has('opencode'), false, 'disabled account provider is not registered')
@@ -72,13 +72,13 @@ try {
   assert.equal(fetched.some(url => url.includes('opencode') || url.includes('models.dev')), false, 'no OpenCode capability/catalog warmup')
   assert.deepEqual(ctx.accountPool.listAccountsByProvider('opencode'), state.accounts, 'historical account data survives')
 
-  const route = routes.find(row => row.path === '/api/jet-hub')
+  const route = routes.find(row => row.path === '/api/channel-pack')
   assert.ok(route, 'real RPC route is registered')
   const call = async (method, payload) => {
-    const response = await route.fetch(new Request('http://localhost/api/jet-hub', {
+    const response = await route.fetch(new Request('http://localhost/api/channel-pack', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ type: 'client-request', rpcId: 'test', method: 'jet-hub', payload: { method, payload } }),
+      body: JSON.stringify({ type: 'client-request', rpcId: 'test', method: 'channel-pack', payload: { method, payload } }),
     }))
     return (await response.json()).result
   }

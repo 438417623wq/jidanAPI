@@ -1340,7 +1340,7 @@ export function apply(ctx, config) {
    * (有道), Qoder / Qoder CN (阿里系), TRAE (字节), Cline, Loomy (讯飞), Raccoon
    * (商汤), MiniMax Code, ZCode (智谱) and Gemini (Google) — are
    * carried with local integration adaptations from the plugin that shipped them, vendored under
-   * `vendor/jet-hub` (provenance in `vendor/jet-hub/NOTICE.md`). Mounting the
+   * `vendor/channel-pack` (provenance in `vendor/channel-pack/NOTICE.md`). Mounting the
    * pack keeps every login flow, account pool, credit claim, model blacklist
    * and its local OpenAI gateway working as they were validated upstream,
    * instead of being re-implemented here and drifting.
@@ -1361,7 +1361,7 @@ export function apply(ctx, config) {
     // load this plugin's free lane. `pack.js` is the bundled form of the
     // vendored tree (see scripts/build-channel-pack.mjs) — one file, so the
     // release manifest stays inside its file cap.
-    void import('./vendor/jet-hub/pack.js').then(pack => {
+    void import('./vendor/channel-pack/pack.js').then(pack => {
       if (stopped) return
       pack.apply(scoped, { disableOpencode: true })
       channelPack = { state: 'ready', error: '' }
