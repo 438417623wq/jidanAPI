@@ -1,0 +1,77 @@
+name: release-sign
+
+# main is the live update source: whatever sits there is what every in-app
+# upgrader downloads and verifies against feed/manifest.json. A merge that
+# changes shipped files without re-signing leaves the digests describing a
+# tree that no longer exists — every user's upgrade then fails verification
+# (fail-closed, nothing corrupt installs) until the manifest is rebuilt.
+# This workflow closes that gap on its own: on every push to main it checks
+# the committed manifest against the tree, and when the two have drifted it
+# rebuilds and re-signs with the release key (an Actions secret, never
+# readable), refreshes the catalog revision, and pushes only after the full
+# release suite passes. Idempotent: on a consistent tree it writes nothing,
+# so the run triggered by its own push is a no-op.
+#
+# The pull_request case needs no counterpart. A PR that ships changed files
+# runs release-readiness red until the records exist, and that is by design —
+# the red check is what routes the merge to whoever holds the bypass, after
+# which this workflow signs the result. Handing PR branches a signed manifest
+# would instead require pushing bot commits into contributor branches, which
+# collides with the unattributed-changes approval rule on main.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: rebuild and re-sign even when --check passes (exercises the full loop)
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-sign-main
+  cancel-in-progress: false
+
+jobs:
+  sign:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: refresh-revision walks git log over the release content,
+      # and fetch-depth: 1 would answer HEAD for any path list.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      # No install step and no dependencies: the suites are plain Node scripts.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Rebuild and re-sign the manifest when the tree has drifted
+        env:
+          FORCE: ${{ inputs.force }}
+          OFM_MANIFEST_KEY: ${{ secrets.RELEASE_MANIFEST_PRIVATE_KEY }}
+        run: |
+          if [ "$FORCE" = "true" ] || ! node scripts/build-manifest.mjs --check; then
+            if [ -z "$OFM_MANIFEST_KEY" ]; then
+              echo '::error::RELEASE_MANIFEST_PRIVATE_KEY is not set — add the release signing PEM as a repository secret'
+              exit 1
+            fi
+            node scripts/build-manifest.mjs
+            node scripts/refresh-revision.mjs
+          fi
+      - name: The release suite gates the push
+        run: node scripts/test-all.mjs --mode release
+      - name: Commit and push the refreshed records
+        run: |
+          if git diff --quiet -- feed/manifest.json catalog/integrity.json catalog/dsh-plugin.json catalog/provenance.json; then
+            echo "the committed manifest describes this tree — nothing to push"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add feed/manifest.json catalog/integrity.json catalog/dsh-plugin.json catalog/provenance.json
+          git commit -m "catalog: re-sign the manifest over ${GITHUB_SHA::7}"
+          git push origin HEAD:main
