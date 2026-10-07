@@ -14,8 +14,8 @@
     },
     {
       "path": "client.js",
-      "size": 317415,
-      "sha256": "2e135df9284f59e8300a5a5b955e162d51236cc5187cb12b97f3440fabccb0c2"
+      "size": 318833,
+      "sha256": "abad86382421ba618fbef0915d98abccd0804a5b82764563cc26a397aa2eb6d0"
     },
     {
       "path": "cordis.patch.yml",
@@ -29,8 +29,8 @@
     },
     {
       "path": "index.js",
-      "size": 119104,
-      "sha256": "4f583bfdfee64830da997786ff3403d26c7b0d8d3754ced867fc80f221e699e0"
+      "size": 119499,
+      "sha256": "fce6303157040dc78ae380340a354264290eca4b6cd60dd722c9c1ea753c1e74"
     },
     {
       "path": "LICENSE",
@@ -74,8 +74,8 @@
     },
     {
       "path": "src/eac-login.js",
-      "size": 3436,
-      "sha256": "bdc1d6808d09c2d176507edfb9759faa2ce2c8f5afb18ce18e9177f137cf6d11"
+      "size": 6331,
+      "sha256": "b6016dba70d2ecc2867d9869e8b63e86595711283eefbf639675f3cfc4cd8fe2"
     },
     {
       "path": "src/eac-user.js",
@@ -119,8 +119,8 @@
     },
     {
       "path": "src/messages.js",
-      "size": 18443,
-      "sha256": "76d52e626744e93ef7e36d114387a84046963c8f8446983554f95197e9f3bdd9"
+      "size": 19031,
+      "sha256": "cfda211cfd40b34a4f11cd3a451e59df5d9ac761ded735e3d06b7ea5974eed5f"
     },
     {
       "path": "src/probe.js",
