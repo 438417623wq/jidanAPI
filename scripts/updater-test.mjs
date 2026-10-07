@@ -15,7 +15,7 @@ import os from 'node:os'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import assert from 'node:assert/strict'
-import { parseVersion, compareVersions, parseManifest, fileUrlOf, PluginUpdater, stageRelease, verifyStaged, backupPackage, restoreBackup, installStaged, verifyInstalled, signManifest, verifyManifestSignature, stableStringify, PINNED_MANIFEST_PUBLIC_KEY } from '../src/updater.js'
+import { parseVersion, compareVersions, parseManifest, fileUrlOf, downloadManifest, PluginUpdater, stageRelease, verifyStaged, backupPackage, restoreBackup, installStaged, verifyInstalled, signManifest, verifyManifestSignature, stableStringify, PINNED_MANIFEST_PUBLIC_KEY } from '../src/updater.js'
 import { selfReload } from '../src/reload.js'
 const CONTROLLED_DEFAULTS = ['http://127.0.0.1:1/never.json']
 
@@ -114,6 +114,196 @@ const newManifest = manifestFor(newFiles)
 // bytes for index.js, so the staged copy can never hash-verify.
 const corruptManifest = manifestFor(newFiles)
 
+// Issue #120: emulate GitHub/CDN URLs through an entirely offline fetch seam.
+// The mutable ref can move or serve stale bytes; only a resolved SHA is stable.
+const SNAPSHOT = 'a'.repeat(40)
+const NEXT_SNAPSHOT = 'b'.repeat(40)
+const REPOSITORY = 'Ebony-Vinyl/dsh-our-free-model'
+const rawSource = `https://raw.githubusercontent.com/${REPOSITORY}/main/feed/manifest.json`
+const cdnSource = `https://cdn.jsdelivr.net/gh/${REPOSITORY}@main/feed/manifest.json`
+const resolverUrl = `https://api.github.com/repos/${REPOSITORY}/commits/main`
+const rawSnapshot = rawSource.replace('/main/', `/${SNAPSHOT}/`)
+const cdnSnapshot = cdnSource.replace('@main/', `@${SNAPSHOT}/`)
+
+function snapshotFetch({ source = rawSnapshot, resolver = { sha: SNAPSHOT }, resolverStatus = 200, manifest = newManifest } = {}) {
+  const calls = []
+  const fetchImpl = async (url, options) => {
+    const parsed = new URL(url)
+    parsed.search = ''
+    const clean = parsed.href
+    calls.push({ url: clean, options })
+    if (clean === resolverUrl) return new Response(JSON.stringify(resolver), { status: resolverStatus })
+    if (clean === source) return new Response(JSON.stringify(manifest))
+    const prefix = new URL('../', source).href
+    if (clean.startsWith(prefix)) {
+      const body = newFiles[decodeURIComponent(clean.slice(prefix.length))]
+      if (body !== undefined) return new Response(body)
+    }
+    return new Response('not found', { status: 404 })
+  }
+  return { fetchImpl, calls }
+}
+
+for (const [name, source, snapshot] of [['raw', rawSource, rawSnapshot], ['CDN', cdnSource, cdnSnapshot]]) {
+  await checkAsync(`${name} stages every file from the manifest's fixed commit, even when main moves`, async () => {
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-snapshot-'))
+    const fixture = snapshotFetch({ source: snapshot })
+    try {
+      const result = await downloadManifest([source], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY })
+      assert.equal(result.source, snapshot)
+      assert.equal(result.signed, true)
+      await stageRelease({ manifest: result.manifest, manifestUrl: result.source, stageDir: data, fetchImpl: fixture.fetchImpl })
+      verifyStaged(data, result.manifest)
+      assert.equal(fixture.calls.length, 6, 'one resolution, one manifest and four files')
+      assert.equal(fixture.calls.some(call => call.url === source), false, 'mutable manifest is never fetched')
+      assert.equal(fixture.calls.every(call => call.options.redirect === 'error'), true)
+      assert.equal(fixture.calls.filter(call => call.url === resolverUrl).length, 1)
+    } finally { fs.rmSync(data, { recursive: true, force: true }) }
+  })
+}
+
+await checkAsync('raw failure falls back to CDN at the same SHA without re-resolving a moving main', async () => {
+  const fixture = snapshotFetch({ source: cdnSnapshot })
+  const result = await downloadManifest([rawSource, cdnSource], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY })
+  assert.equal(result.source, cdnSnapshot)
+  assert.equal(fixture.calls.filter(call => call.url === resolverUrl).length, 1)
+  assert.equal(fixture.calls.some(call => call.url === rawSnapshot), true)
+  assert.equal(fixture.calls.some(call => call.url === rawSource || call.url === cdnSource), false)
+})
+
+for (const source of [rawSnapshot, cdnSnapshot, 'https://mirror.example/repo/feed/manifest.json', 'http://127.0.0.1:18999/feed/manifest.json']) {
+  await checkAsync(`immutable and custom sources need no resolver (${new URL(source).hostname})`, async () => {
+    const fixture = snapshotFetch({ source })
+    const result = await downloadManifest([source], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY })
+    assert.equal(result.source, source)
+    assert.equal(fixture.calls.length, 1)
+  })
+}
+
+for (const resolver of [{}, { sha: 'main' }, { sha: 'a'.repeat(7) }, { sha: '../escape' }, { sha: `https://evil.example/${SNAPSHOT}` }]) {
+  await checkAsync(`an invalid snapshot fails closed (${JSON.stringify(resolver)})`, async () => {
+    const fixture = snapshotFetch({ resolver })
+    await assert.rejects(() => downloadManifest([cdnSource], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY }), /full commit SHA/)
+    assert.equal(fixture.calls.length, 1, 'no mutable manifest or file is fetched')
+  })
+}
+
+for (const status of [403, 429, 503]) {
+  await checkAsync(`resolver HTTP ${status} refuses a mutable download`, async () => {
+    const fixture = snapshotFetch({ resolverStatus: status })
+    await assert.rejects(() => downloadManifest([cdnSource], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY }), new RegExp(`snapshot resolution failed.*HTTP ${status}`))
+    assert.equal(fixture.calls.length, 1)
+  })
+}
+
+await checkAsync('resolver timeout remains bounded and does not fall back to mutable files', async () => {
+  let calls = 0
+  const fetchImpl = (url, { signal }) => {
+    calls++
+    return new Promise((resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    })
+  }
+  // AbortSignal.timeout is unref'ed; keep this isolated fixture alive.
+  const timer = setInterval(() => {}, 1000)
+  try {
+    await assert.rejects(() => downloadManifest([cdnSource], { fetchImpl, timeoutMs: 20 }), /timed out|timeout/i)
+    assert.equal(calls, 1)
+  } finally { clearInterval(timer) }
+})
+
+await checkAsync('a resolved snapshot still requires a valid release signature', async () => {
+  const manifest = { ...newManifest, version: '9.0.0' }
+  const fixture = snapshotFetch({ source: cdnSnapshot, manifest })
+  await assert.rejects(() => downloadManifest([cdnSource], { fetchImpl: fixture.fetchImpl, verifyKey: TEST_PUBLIC_KEY }), /signature/)
+  assert.equal(fixture.calls.length, 2, 'unsigned authority cannot authorize any file')
+})
+
+for (const error of [new TypeError('fetch failed'), new Error('HTTP 301'), new Error('HTTP 404')]) {
+  await checkAsync(`an unavailable fixed CDN file falls back to gcore at the same SHA (${error.message})`, async () => {
+    const fixture = snapshotFetch({ source: cdnSnapshot })
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-cdn-fallback-'))
+    const calls = []
+    const fetchImpl = async (url, opts) => {
+      const parsed = new URL(url)
+      const target = parsed.pathname.endsWith('/src/new-deep.js')
+      calls.push({ url: String(url), opts })
+      if (target && parsed.hostname === 'cdn.jsdelivr.net') {
+        if (error.message.startsWith('HTTP')) return new Response(null, { status: Number(error.message.slice(5)) })
+        throw error
+      }
+      if (target && parsed.hostname === 'gcore.jsdelivr.net') {
+        assert.match(parsed.pathname, new RegExp(`@${SNAPSHOT}/src/new-deep\\.js$`))
+        return new Response(newFiles['src/new-deep.js'])
+      }
+      return fixture.fetchImpl(url, opts)
+    }
+    try {
+      await stageRelease({ manifest: parseManifest(newManifest), manifestUrl: cdnSnapshot, stageDir: data, fetchImpl })
+      verifyStaged(data, parseManifest(newManifest))
+      assert.equal(calls.length, 5, 'only the failed file uses a second mirror')
+      assert.equal(calls.every(call => call.opts.redirect === 'error'), true)
+      const pair = calls.filter(call => call.url.includes('/src/new-deep.js'))
+      assert.equal(pair[0].opts.signal, pair[1].opts.signal, 'mirror requests share one deadline')
+    } finally { fs.rmSync(data, { recursive: true, force: true }) }
+  })
+}
+
+for (const badBody of ['wrong size', newFiles['src/new-deep.js'].replace('true', 'xxxx')]) {
+  await checkAsync('fixed CDN integrity failure never falls back or retries', async () => {
+    const fixture = snapshotFetch({ source: cdnSnapshot })
+    const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-cdn-reject-'))
+    const calls = []
+    const fetchImpl = async (url, opts) => {
+      calls.push(String(url))
+      if (new URL(url).pathname.endsWith('/src/new-deep.js')) return new Response(badBody)
+      return fixture.fetchImpl(url, opts)
+    }
+    try {
+      await assert.rejects(() => stageRelease({ manifest: parseManifest(newManifest), manifestUrl: cdnSnapshot, stageDir: data, fetchImpl }), /size|sha256/)
+      assert.equal(calls.length, 4)
+      assert.equal(calls.some(url => url.includes('gcore')), false)
+      assert.equal(fs.existsSync(data), false)
+    } finally { fs.rmSync(data, { recursive: true, force: true }) }
+  })
+}
+
+await checkAsync('gcore cannot authorize corrupt bytes after a transport fallback', async () => {
+  const fixture = snapshotFetch({ source: cdnSnapshot })
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-cdn-corrupt-'))
+  let alternateCalls = 0
+  const fetchImpl = async (url, opts) => {
+    const parsed = new URL(url)
+    if (parsed.pathname.endsWith('/src/new-deep.js')) {
+      if (parsed.hostname === 'cdn.jsdelivr.net') throw new TypeError('fetch failed')
+      alternateCalls++
+      return new Response('untrusted bytes')
+    }
+    return fixture.fetchImpl(url, opts)
+  }
+  try {
+    await assert.rejects(() => stageRelease({ manifest: parseManifest(newManifest), manifestUrl: cdnSnapshot, stageDir: data, fetchImpl }), /size/)
+    assert.equal(alternateCalls, 1)
+    assert.equal(fs.existsSync(data), false)
+  } finally { fs.rmSync(data, { recursive: true, force: true }) }
+})
+
+await checkAsync('CDN authorization refusal cannot trigger a mirror fallback', async () => {
+  const fixture = snapshotFetch({ source: cdnSnapshot })
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-cdn-denied-'))
+  const calls = []
+  const fetchImpl = async (url, opts) => {
+    calls.push(String(url))
+    if (new URL(url).pathname.endsWith('/src/new-deep.js')) return new Response(null, { status: 403 })
+    return fixture.fetchImpl(url, opts)
+  }
+  try {
+    await assert.rejects(() => stageRelease({ manifest: parseManifest(newManifest), manifestUrl: cdnSnapshot, stageDir: data, fetchImpl }), /HTTP 403/)
+    assert.equal(calls.length, 4)
+    assert.equal(calls.some(url => url.includes('gcore')), false)
+  } finally { fs.rmSync(data, { recursive: true, force: true }) }
+})
+
 const server = serveFrom({ 'repo/feed/manifest.json': JSON.stringify(newManifest), 'repo/index.js': newFiles['index.js'], 'repo/package.json': newFiles['package.json'], 'repo/client.js': newFiles['client.js'], 'repo/src/new-deep.js': newFiles['src/new-deep.js'] })
 const corruptServer = serveFrom({ 'repo/feed/manifest.json': JSON.stringify(corruptManifest), 'repo/index.js': 'tampered\n', 'repo/package.json': newFiles['package.json'], 'repo/client.js': newFiles['client.js'], 'repo/src/new-deep.js': newFiles['src/new-deep.js'] })
 const badManifestServer = serveFrom({ 'repo/feed/manifest.json': '{"version": "oops"}' })
@@ -135,6 +325,38 @@ function makeDataDir() {
   return dir
 }
 const updaterVersion = pkg => JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8')).version
+
+await checkAsync('apply re-resolves after check and installs only the new immutable snapshot', async () => {
+  const pkg = makePackage(OLD)
+  const data = makeDataDir()
+  const updatedFiles = { ...newFiles, 'index.js': '// second reviewed snapshot\n' }
+  const updatedManifest = manifestFor(updatedFiles)
+  let resolutions = 0
+  const requests = []
+  const fetchImpl = async (url, options) => {
+    requests.push(String(url))
+    if (url === resolverUrl) return new Response(JSON.stringify({ sha: ++resolutions === 1 ? SNAPSHOT : NEXT_SNAPSHOT }))
+    const prefix = `https://raw.githubusercontent.com/${REPOSITORY}/${resolutions === 1 ? SNAPSHOT : NEXT_SNAPSHOT}/`
+    if (url === prefix + 'feed/manifest.json') return new Response(JSON.stringify(resolutions === 1 ? newManifest : updatedManifest))
+    const rel = String(url).slice(prefix.length)
+    return new Response((resolutions === 1 ? newFiles : updatedFiles)[rel] ?? 'bad ref', { status: String(url).startsWith(prefix) ? 200 : 404 })
+  }
+  try {
+    const updater = new PluginUpdater({ pkgDir: pkg, dataDir: data, settings: () => ({}), fetchImpl, defaultSources: [rawSource], manifestPublicKey: TEST_PUBLIC_KEY })
+    await updater.check()
+    assert.equal(updater.manifestUrl, rawSnapshot)
+    await updater.apply({ version: NEW })
+    assert.equal(resolutions, 2, 'apply obtains a fresh snapshot, not the old check result')
+    assert.equal(updater.manifestUrl, rawSource.replace('/main/', `/${NEXT_SNAPSHOT}/`))
+    assert.equal(fs.readFileSync(path.join(pkg, 'index.js'), 'utf8'), updatedFiles['index.js'])
+    assert.equal(requests.some(url => url === rawSource), false)
+    assert.equal(requests.filter(url => url.includes(`/${SNAPSHOT}/`)).length, 1, 'old snapshot supplies no file to apply')
+    assert.equal(updater.status().lastApplied.ok, true)
+  } finally {
+    fs.rmSync(pkg, { recursive: true, force: true })
+    fs.rmSync(data, { recursive: true, force: true })
+  }
+})
 
 await checkAsync('stageRelease downloads and verifies', async () => {
   const data = makeDataDir()
