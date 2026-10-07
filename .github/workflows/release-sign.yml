@@ -42,9 +42,14 @@ jobs:
     steps:
       # Full history: refresh-revision walks git log over the release content,
       # and fetch-depth: 1 would answer HEAD for any path list.
+      # persist-credentials: false keeps the checkout from planting a
+      # GITHUB_TOKEN http extraheader — that header would override the push
+      # token's credentials and the push would land as an actor the ruleset
+      # rightly refuses.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
+          persist-credentials: false
       # No install step and no dependencies: the suites are plain Node scripts.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
