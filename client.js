@@ -208,6 +208,7 @@ window.__ModuleLoader__.load({
         'forward.lanWarn': '开启后，能连到这台机器的任何人都可以用这个 Key 花掉本机的免费额度。请只在信任的网络里开启，必要时用防火墙限制来源。',
         'forward.lanUrl': '局域网地址',
         'forward.lanNoAddress': '没有检测到局域网 IPv4 地址',
+        'forward.lanAlso': '其它地址：{list}',
         'pref.enabled': '启用免费模型',
         'pref.exposeRegion': '展示地区受限模型',
         'pref.interval': '自动探测间隔（分钟）',
@@ -627,6 +628,7 @@ window.__ModuleLoader__.load({
         'forward.lanWarn': 'While this is on, anyone who can reach this machine can spend its free quota with that key. Enable it only on a network you trust, and narrow the sources with a firewall if you can.',
         'forward.lanUrl': 'Network URL',
         'forward.lanNoAddress': 'No network IPv4 address was detected',
+        'forward.lanAlso': 'Also reachable at {list}',
         'pref.enabled': 'Enable free models',
         'pref.exposeRegion': 'Show region-limited models',
         'pref.interval': 'Auto-probe interval (minutes)',
@@ -2241,7 +2243,22 @@ window.__ModuleLoader__.load({
         return () => { alive = false }
       }, [lan?.running])
       const lanPort = lan?.actualPort ?? lan?.port ?? 0
-      const lanHost = (lan?.addresses ?? [])[0] ?? ''
+      // Which address a peer should dial is a property of this machine's
+      // interfaces, and they move under the panel: a laptop that changed networks,
+      // woke from sleep, or brought a VPN up holds a different set than it did a
+      // minute ago — and the stale one is exactly the one the user copies to the
+      // other machine. So while the relay is on this polls the addresses
+      // themselves, at the same 15 s cadence the outlet's node reading uses,
+      // instead of trusting the snapshot that shipped with the settings.
+      const lanLive = useAsync(() => api('/forward/lan/addresses'), [lan?.running])
+      const reloadLanAddresses = lanLive.reload
+      useEffect(() => {
+        if (lan?.running !== true) return undefined
+        const timer = setInterval(() => reloadLanAddresses(), 15_000)
+        return () => clearInterval(timer)
+      }, [lan?.running, reloadLanAddresses])
+      const lanHosts = lanLive.data?.addresses ?? lan?.addresses ?? []
+      const lanHost = lanHosts[0] ?? ''
       const lanUrl = lanHost === '' ? t('forward.lanNoAddress') : `http://${lanHost}:${lanPort}/v1`
       const lanToggle = current => ({ ...current, lan: { ...(current?.lan ?? {}), enabled: !(current?.lan?.enabled === true) } })
 
@@ -2286,6 +2303,7 @@ window.__ModuleLoader__.load({
               h('span', { className: 'ofm_note' }, t('forward.lanUrl')),
               h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200 } }, lanUrl),
               h(Button, { kind: 'ghost', onClick: () => doCopy('lanUrl', lanUrl) }, copied === 'lanUrl' ? t('forward.copied') : t('forward.copy'))),
+            lanHosts.length > 1 ? h('div', { className: 'ofm_note' }, t('forward.lanAlso').replace('{list}', lanHosts.slice(1).join('    '))) : null,
             h('div', { className: 'ofm_row' },
               h('span', { className: 'ofm_note' }, t('forward.lanKey')),
               h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, letterSpacing: lanShown ? 0 : 1 } }, lanKey === '' ? '…' : lanShown ? lanKey : '•'.repeat(24)),
