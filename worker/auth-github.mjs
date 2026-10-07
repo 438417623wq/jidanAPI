@@ -599,7 +599,9 @@ export function createAuthGate(env = {}, options = {}) {
       // Open the collectable window now: the plugin polls from the moment it
       // opens the browser, and an unknown link must be distinguishable from
       // "callback not there yet".
-      rememberPending(link, { status: 'waiting' })
+      // Host pre-registers this link before opening the browser. Reopening the
+      // URL must not erase a completed callback or extend the pending window.
+      if (pendingEntry(link) === undefined) rememberPending(link, { status: 'waiting' })
       const state = signState({ link, exp: now() + STATE_TTL_MS })
       const authorize = new URL(GITHUB_AUTHORIZE)
       authorize.searchParams.set('client_id', clientId)

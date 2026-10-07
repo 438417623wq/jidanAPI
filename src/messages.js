@@ -162,8 +162,15 @@ function callIdOf(message) {
  */
 export function toChatMessages(messages, resolveImage, warnings) {
   const out = []
+  const followUp = []
+  const flushFollowUp = () => {
+    if (followUp.length > 0) out.push({ role: 'user', content: followUp.splice(0) })
+  }
   for (const message of messages ?? []) {
     const results = toolResultsOf(message)
+    // A parallel call batch spans several V4 tool messages (or V3 wrappers).
+    // Every result must precede image/user content, including across messages.
+    if (results.length === 0) flushFollowUp()
     let blocks = blocksOf(message.content)
     if (results.length > 0) {
       // `role: 'tool'` carries text only, so an image a tool returned travels as
@@ -180,10 +187,7 @@ export function toChatMessages(messages, resolveImage, warnings) {
         const text = textOf(result.content)
         out.push({ role: 'tool', tool_call_id: result.callId, content: text || (images.length > 0 ? '(see attached image)' : '(no output)') })
         if (images.length > 0) {
-          out.push({
-            role: 'user',
-            content: [{ type: 'text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images],
-          })
+          followUp.push({ type: 'text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images)
         }
       }
       blocks = blocks.filter(block => block?.type !== 'tool-result')
@@ -210,7 +214,8 @@ export function toChatMessages(messages, resolveImage, warnings) {
           if (fallback) out.push({ role: 'user', content: fallback })
           break
         }
-        out.push({
+        if (results.length > 0) followUp.push(...parts)
+        else out.push({
           role: 'user',
           content: parts.length === 1 && parts[0].type === 'text' ? parts[0].text : parts,
         })
@@ -238,6 +243,7 @@ export function toChatMessages(messages, resolveImage, warnings) {
       default: break
     }
   }
+  flushFollowUp()
   return out
 }
 
@@ -323,8 +329,13 @@ export function toClaudeMessages(messages, resolveImage, warnings) {
 /** Project harness messages onto the OpenAI Responses input item list. */
 export function toResponseInput(messages, resolveImage, warnings) {
   const out = []
+  const followUp = []
+  const flushFollowUp = () => {
+    if (followUp.length > 0) out.push({ type: 'message', role: 'user', content: followUp.splice(0) })
+  }
   for (const message of messages ?? []) {
     const results = toolResultsOf(message)
+    if (results.length === 0) flushFollowUp()
     if (results.length > 0) {
       for (const result of results) {
         const images = []
@@ -342,10 +353,7 @@ export function toResponseInput(messages, resolveImage, warnings) {
         // `output` is text on this wire, so a returned image travels as the user
         // item after it rather than being dropped on the floor.
         if (images.length > 0) {
-          out.push({
-            type: 'message', role: 'user',
-            content: [{ type: 'input_text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images],
-          })
+          followUp.push({ type: 'input_text', text: `The result of tool call ${result.callId} is ${images.length} image(s), attached below.` }, ...images)
         }
       }
     }
@@ -375,8 +383,12 @@ export function toResponseInput(messages, resolveImage, warnings) {
         else if (warnings) warnings.push('image-dropped')
       }
     }
-    if (parts.length > 0) out.push({ type: 'message', role: 'user', content: parts })
+    if (parts.length > 0) {
+      if (results.length > 0) followUp.push(...parts)
+      else out.push({ type: 'message', role: 'user', content: parts })
+    }
   }
+  flushFollowUp()
   // Reasoning items from earlier turns carry encrypted content only the issuing
   // account can open; the pooled免密 credential rotates accounts, so echoing them
   // back is a guaranteed 400. They are dropped on the way out by construction.

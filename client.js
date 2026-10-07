@@ -94,6 +94,7 @@ window.__ModuleLoader__.load({
         'eac.pollFailed': '领取授权失败（{reason}），正在自动重试；无需重新授权。',
         'eac.saveFailed': '授权已完成，但本机无法保存登录记录。请检查 DSH_HOME 目录权限；修复后将自动重试。',
         'eac.cancel': '取消此次登录',
+        'eac.cancelFailed': '无法确认取消登录，请稍后重试。',
         'eac.pillUnverified': '网关暂不可达',
         'eac.intro': 'EAC 渠道的对话在服务器侧校验授权：用 GitHub 登录，并给 {repo} 点一个 Star，即可解锁。登录在浏览器里完成，无需复制粘贴；取消 Star 后授权会自动失效。',
         'eac.login': '使用 GitHub 登录',
@@ -537,6 +538,7 @@ window.__ModuleLoader__.load({
         'eac.pollFailed': 'Could not collect authorization ({reason}); retrying automatically. No new sign-in is needed.',
         'eac.saveFailed': 'Authorization completed, but this machine could not save it. Check DSH_HOME permissions; collection will retry automatically.',
         'eac.cancel': 'Cancel this sign-in',
+        'eac.cancelFailed': 'Could not confirm cancellation. Please try again.',
         'eac.pillUnverified': 'gateway unreachable',
         'eac.intro': 'EAC turns are checked server-side: sign in with GitHub and star {repo} to unlock them. The browser does the work — nothing to paste — and removing the star revokes access automatically.',
         'eac.login': 'Sign in with GitHub',
@@ -1916,6 +1918,7 @@ window.__ModuleLoader__.load({
       const [pending, setPending] = useState(restoreEacLogin)
       const [copied, setCopied] = useState(false)
       const starting = useRef(false)
+      const cancelling = useRef(false)
       const attempt = useRef(0)
       const pendingRef = useRef(pending)
       pendingRef.current = pending
@@ -1940,13 +1943,13 @@ window.__ModuleLoader__.load({
         let timer
         const poll = async () => {
           const t = latestT.current
-          if (!alive) return
+          if (!alive || cancelling.current) return
           if (Date.now() - pending.startedAt >= EAC_LOGIN_TTL) {
             updatePending(null); setNotice(t('eac.expired')); return
           }
           try {
             const result = await api(`/eac/login/poll?link=${encodeURIComponent(pending.link)}`, { timeout: 22_000 })
-            if (!alive || pendingRef.current?.link !== pending.link) return
+            if (!alive || cancelling.current || pendingRef.current?.link !== pending.link) return
             if (result.status === 'ok') {
               updatePending(null)
               setNotice(t('eac.done').replace('{login}', result.login ?? ''))
@@ -1959,8 +1962,9 @@ window.__ModuleLoader__.load({
             if (result.status === 'unstarred') setNotice(t('eac.needStar').replace('{login}', result.login ?? ''))
             else setNotice('')
           } catch (error) {
-            if (!alive || pendingRef.current?.link !== pending.link) return
+            if (!alive || cancelling.current || pendingRef.current?.link !== pending.link) return
             const reason = String(error?.message ?? '')
+            if (reason === 'cancelled') { updatePending(null); setNotice(''); return }
             // Never render response HTML, URL or credentials as diagnostics.
             const safe = /^gateway-http-\d{3}$/.test(reason) ? `HTTP ${reason.slice(-3)}`
               : ['unreachable', 'malformed', 'not-writable', 'cancelled', 'no-lane', 'bad-link', 'timeout'].includes(reason) ? reason : 'unreachable'
@@ -1972,14 +1976,34 @@ window.__ModuleLoader__.load({
         return () => { alive = false; clearTimeout(timer) }
       }, [pending, refresh])
 
-      const cancel = () => { attempt.current++; updatePending(null); setNotice('') }
+      const cancel = async () => {
+        const currentPending = pendingRef.current
+        if (currentPending === null || cancelling.current) return
+        cancelling.current = true
+        attempt.current++; setBusy(true)
+        try {
+          const result = await post(`/eac/login/cancel?link=${encodeURIComponent(currentPending.link)}`)
+          if (result.ok !== true && result.status !== 'ok') throw new Error('cancellation unconfirmed')
+          updatePending(null)
+          if (result.status === 'ok') {
+            setNotice(latestT.current('eac.done').replace('{login}', result.login ?? ''))
+            refresh(); latest.current?.reload?.()
+          } else setNotice('')
+        } catch {
+          const t = latestT.current
+          setNotice(t('eac.cancelFailed'))
+          // A failed cancellation must retain the link and restart the serial
+          // loop. The Host may already have saved it or accepted cancellation.
+          updatePending({ ...currentPending })
+        } finally { cancelling.current = false; setBusy(false) }
+      }
       const login = async () => {
-        if (starting.current || pendingRef.current !== null) return
+        if (starting.current || cancelling.current || pendingRef.current !== null) return
         starting.current = true
         const current = ++attempt.current
         setBusy(true); setNotice('')
         try {
-          const started = await post('/eac/login/start')
+          const started = await post('/eac/login/start', undefined, 20_000)
           if (current !== attempt.current) return
           if (started?.error !== undefined) { setNotice(t('eac.startFailed').replace('{reason}', started.error)); return }
           updatePending({ link: started.link, url: started.url, startedAt: Date.now() })
@@ -1989,7 +2013,7 @@ window.__ModuleLoader__.load({
         } finally { starting.current = false; setBusy(false) }
       }
       const logout = async () => {
-        cancel(); setBusy(true)
+        attempt.current++; updatePending(null); setBusy(true)
         try {
           await post('/eac/logout')
           refresh(); latest.current?.reload?.()
@@ -2025,7 +2049,7 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'ofm_callout' },
             h('div', null,
               h('div', null, t('eac.waiting')),
-              h(Button, { kind: 'ghost', onClick: cancel }, t('eac.cancel')),
+              h(Button, { kind: 'ghost', disabled: busy, onClick: cancel }, t('eac.cancel')),
               h('div', { style: { display: 'flex', gap: 8, alignItems: 'center', marginTop: 6 } },
                 h('code', { className: 'ofm_mono', style: { padding: '4px 8px', flex: 1, minWidth: 200, wordBreak: 'break-all' } }, pending.url),
                 h(Button, { kind: 'ghost', onClick: () => copy(pending.url, ok => { if (ok) { setCopied(true); setTimeout(() => setCopied(false), 1600) } }) }, copied ? t('eac.copied') : t('eac.copy')))))
