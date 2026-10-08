@@ -14,6 +14,7 @@
   "scripts": {
     "start:standalone": "node packages/standalone/cli.mjs",
     "test:standalone": "node scripts/standalone-test.mjs",
+    "test:management": "node scripts/standalone-management-test.mjs",
     "test": "node scripts/test-all.mjs",
     "test:contributor": "node scripts/test-all.mjs --mode contributor",
     "test:release": "node scripts/test-all.mjs --mode release",
