@@ -5,6 +5,8 @@ import { createModelRuntime, createRuntimeStores } from '../../src/core/runtime.
 import { generateKey, startForwardServer } from '../../src/forward.js'
 import { isLoopbackHost } from '../../src/trust.js'
 import { createManagement } from './management.mjs'
+import { createStandaloneEac } from './eac.mjs'
+import { createChannelRuntime } from './channels/runtime.mjs'
 
 const PRODUCT = 'our-free-model-standalone'
 const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
@@ -31,6 +33,8 @@ export async function startStandalone({
   let runtime
   let listener
   let management
+  let channels
+  let eac
   let timer
   let refreshInFlight
   let closing
@@ -50,17 +54,36 @@ export async function startStandalone({
     settings.update({ forwardKey: key, ...probe === undefined ? {} : { standaloneProbe: probe === true } })
     settings.flush()
     if (settings.writeFailed) throw new Error('could not persist the standalone API key')
+    eac = createStandaloneEac({
+      dataDir,
+      onSaved: () => { void runtime?.refreshSealedLane().catch(error => logger.warn?.(`EAC 清单刷新失败：${error.message}`)) },
+    })
     runtime = createModelRuntime({
       ...stores, logger, attributionUserAgent: `${PRODUCT}/${VERSION}`,
-      // EAC 能力只由插件宿主注入，独立入口不读取任何 DSH 授权状态。
+      sealedCredential: eac.credential,
     })
+    channels = await createChannelRuntime({ dataDir, logger, stats: stores.stats })
+    const core = runtime
+    runtime = {
+      ...core,
+      get egress() { return core.egress },
+      get gatewayLatency() { return core.gatewayLatency },
+      get catalog() { return [...core.catalog, ...channels.publicModelRows().map(row => ({ ...row, contextWindow: row.context_window, maxOutput: row.max_tokens }))] },
+      state: () => ({ ...core.state(), catalog: [...core.catalog, ...channels.publicModelRows()] }),
+      publicModelRows: () => [...core.publicModelRows(), ...channels.publicModelRows()],
+      complete: (request, onChunk) => channels.handles(request.model) ? channels.complete(request, onChunk) : core.complete(request, onChunk),
+      async refreshCatalog(options) {
+        if (stopped) return
+        await Promise.all([core.refreshCatalog(options), channels.refresh().catch(error => { if (!stopped) throw error })])
+      },
+    }
     management = createManagement({
-      stores, runtime,
+      stores, runtime, channels, eac,
       info: () => ({
         product: PRODUCT, version: VERSION, dataDir,
         baseUrl: `http://${host === '::1' ? '[::1]' : host}:${listener?.port ?? requestedPort}`,
         automaticRefresh: refresh,
-        capabilities: { anonymous: true, kilo: true, eac: false, accountChannels: false, webUi: true },
+        capabilities: { anonymous: true, kilo: true, eac: true, accountChannels: true, webUi: true },
       }),
       onSettingsChanged: () => { if (!refreshInFlight) scheduleRefresh() },
     })
@@ -70,7 +93,7 @@ export async function startStandalone({
       modelRows: runtime.publicModelRows,
       health: () => ({
         ok: true, service: PRODUCT, product: 'standalone', version: VERSION,
-        capabilities: { anonymous: true, kilo: true, eac: false, accountChannels: false, webUi: true },
+        capabilities: { anonymous: true, kilo: true, eac: true, accountChannels: true, webUi: true },
       }),
       handleRequest: management.handleRequest,
       log: message => logger.warn?.(`our-free-model standalone: ${message}`),
@@ -96,22 +119,23 @@ export async function startStandalone({
       return refreshInFlight
     }
     // 启动可强制探测；后续周期刷新遵守核心的限流退避。
-    const ready = refresh ? refreshModels(settings.get().standaloneProbe === true) : Promise.resolve()
+    const ready = Promise.all([channels.ready, refresh ? refreshModels(settings.get().standaloneProbe === true) : Promise.resolve()])
     return {
       product: PRODUCT, version: VERSION, dataDir,
       url: `http://${host === '::1' ? '[::1]' : host}:${listener.port}`,
       managementUrl: `http://${host === '::1' ? '[::1]' : host}:${listener.port}/${management.bootstrapFragment}`,
       port: listener.port,
       keyFile: path.join(dataDir, 'settings.json'),
-      runtime, ready,
+      runtime, channels, ready,
       close() {
         if (closing !== undefined) return closing
         stopped = true
         clearTimeout(timer)
         management.dispose()
+        eac.dispose()
         runtime.dispose()
         closing = (async () => {
-          try { await listener.close() } finally {
+          try { await Promise.all([listener.close(), channels.close()]) } finally {
             stores.dispose()
             releaseLock()
           }
@@ -123,8 +147,10 @@ export async function startStandalone({
     stopped = true
     clearTimeout(timer)
     management?.dispose()
+    eac?.dispose()
     runtime?.dispose()
     if (listener) await listener.close()
+    await channels?.close()
     stores?.dispose()
     releaseLock()
     throw error
