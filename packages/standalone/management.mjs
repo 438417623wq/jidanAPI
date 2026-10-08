@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { buildStats } from '../../src/core/stats.js'
 import { generateKey } from '../../src/forward.js'
 import { structuralRejection } from '../../src/trust.js'
+import { openLoginTerminal } from './login-terminal.mjs'
 
 const PREFIX = '/api/management'
 const BOOTSTRAP_MS = 10 * 60_000
@@ -77,12 +78,14 @@ export function managementSettings(value) {
   }
 }
 
-/** 独立服务管理端：无宿主依赖，所有读写先通过同源与管理鉴权。 */
-export function createManagement({ stores, runtime, channels, eac, info, onSettingsChanged }) {
+/** 管理读写要求鉴权；登录恢复仅允许同源页面触发固定本机动作。 */
+export function createManagement({ stores, runtime, channels, eac, info, onSettingsChanged, loginTerminal = openLoginTerminal }) {
   let bootstrap = { token: crypto.randomBytes(32).toString('base64url'), until: Date.now() + BOOTSTRAP_MS }
   const sessions = new Map()
   let cookieName
   let closed = false
+  let terminalOpening = false
+  let terminalOpenedAt = null
   const assets = new Map([...ASSETS].map(([url, [file, type]]) => [
     url, { type, body: fs.readFileSync(new URL(`./web/${file}`, import.meta.url)) },
   ]))
@@ -138,6 +141,25 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
 
   async function route(req, res, pathname) {
     const method = req.method ?? 'GET'
+    if (method === 'POST' && pathname === `${PREFIX}/login/terminal`) {
+      // 此入口发生在登录前，必须有浏览器的同源 Origin，拒绝跨站和无来源调用。
+      if (req.headers.origin !== new URL(`http://${req.headers.host}`).origin ||
+          req.headers['sec-fetch-site'] !== 'same-origin') {
+        throw fail(403, '请从本机登录页面点击获取令牌')
+      }
+      const body = await readBody(req)
+      if (Object.keys(body).length !== 0) throw fail(400, '获取令牌不接受路径或命令参数')
+      if (terminalOpening || (terminalOpenedAt !== null && Date.now() - terminalOpenedAt < 30_000)) {
+        throw fail(429, '已请求打开 PowerShell，请检查弹出的窗口，30 秒后可重试')
+      }
+      terminalOpening = true
+      try {
+        await loginTerminal(info().dataDir)
+        terminalOpenedAt = Date.now()
+        json(res, 200, { ok: true })
+      } finally { terminalOpening = false }
+      return
+    }
     if (method === 'POST' && pathname === `${PREFIX}/session`) {
       const body = await readBody(req)
       const validBootstrap = bootstrap !== null && bootstrap.until > Date.now() && matches(body.bootstrapToken, bootstrap.token)
