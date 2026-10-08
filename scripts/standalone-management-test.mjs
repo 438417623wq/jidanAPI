@@ -4,7 +4,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { once } from 'node:events'
-import { verifyLoginTerminal } from './standalone-login-terminal-test.mjs'
+import { verifyLoginLaunchers, verifyLoginTerminal } from './standalone-login-terminal-test.mjs'
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-management-'))
 const dataDir = path.join(scratch, 'data')
@@ -86,6 +86,7 @@ const login = async body => {
 }
 
 try {
+  await check('macOS 与 Windows 固定启动器安全引用路径，令牌只经 stdin 复制', verifyLoginLaunchers)
   await check('本机取令牌入口限制来源与参数，拒绝并发且不泄露密钥或创建会话', verifyLoginTerminal)
   service = await startStandalone({ dataDir, port: 0, refresh: false, logger: { warn() {} } })
   key = getKey()
@@ -97,6 +98,8 @@ try {
     assert.equal(page.headers.get('referrer-policy'), 'no-referrer')
     const body = await page.text()
     assert.match(body, /本地控制台/)
+    const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'unsupported'
+    assert.ok(body.includes(`data-login-platform="${platform}"`))
     assert.ok(!body.includes(key))
     for (const asset of ['/assets/app.js', '/assets/app.css']) assert.equal((await request(asset)).status, 200)
     const health = await (await request('/health')).json()

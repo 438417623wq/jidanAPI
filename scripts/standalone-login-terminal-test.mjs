@@ -1,6 +1,92 @@
 import assert from 'node:assert/strict'
 import http from 'node:http'
 import { once } from 'node:events'
+import { execFile } from 'node:child_process'
+import path from 'node:path'
+import { promisify } from 'node:util'
+import vm from 'node:vm'
+import { openLoginTerminal } from '../packages/standalone/login-terminal.mjs'
+
+const runFile = promisify(execFile)
+const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`
+
+export async function verifyLoginLaunchers() {
+  const calls = []
+  const exec = async (...args) => { calls.push(args) }
+  const dataDir = '/tmp/测试目录/空格 \' " $HOME $(exit 99) `exit 99`\n独立服务'
+  const execPath = "/tmp/Node runtime's/bin/node"
+  await openLoginTerminal(dataDir, { platform: 'darwin', exec, execPath })
+  assert.equal(calls.length, 1)
+  const [file, args, options] = calls[0]
+  assert.equal(file, '/usr/bin/osascript')
+  assert.equal(options.timeout, 10000)
+  assert.equal(args[0], '-e')
+  assert.match(args[1], /do script \(item 1 of argv\)/)
+  assert.match(args[1], /tell application "Terminal"/)
+  assert.ok(!args[1].includes(dataDir))
+  // 用 printf 替代 Node，只验收真实 shell 参数分词，不打开终端或修改剪贴板。
+  const unquote = value => value.slice(1, -1).replaceAll("'\\''", "'")
+  const command = unquote(args[2].slice('/bin/sh -c '.length))
+  const keyFile = path.posix.join(dataDir, 'settings.json')
+  const prefix = `if ${shellQuote(execPath)} -e `
+  const suffix = ` ${shellQuote(keyFile)} 2>/dev/null; then`
+  assert.ok(command.startsWith(prefix))
+  assert.ok(command.includes(suffix))
+  const source = unquote(command.slice(prefix.length, command.indexOf(suffix)))
+  if (process.platform !== 'win32') {
+    const inspection = command.replace(shellQuote(execPath), "/usr/bin/printf '%s\\0'")
+    const { stdout } = await runFile('/bin/sh', ['-c', inspection])
+    const [flag, receivedSource, receivedFile] = stdout.split('\0')
+    assert.equal(flag, '-e')
+    assert.equal(receivedSource, source)
+    assert.equal(receivedFile, keyFile)
+  }
+  const key = 'ofm-private-test-key'
+  let copied = 0
+  let settings = { forwardKey: key }
+  const require = name => {
+    if (name === 'node:fs') return { readFileSync: (received, encoding) => {
+      assert.equal(received, keyFile)
+      assert.equal(encoding, 'utf8')
+      return JSON.stringify(settings)
+    } }
+    assert.equal(name, 'node:child_process')
+    return { execFileSync: (received, argv, config) => {
+      assert.equal(received, '/usr/bin/pbcopy')
+      assert.deepEqual([...argv], [])
+      assert.equal(config.input, key)
+      assert.equal(config.timeout, 5000)
+      assert.deepEqual([...config.stdio], ['pipe', 'ignore', 'ignore'])
+      copied++
+    } }
+  }
+  const evaluate = () => vm.runInNewContext(source, { require, process: { argv: ['node', keyFile] } })
+  evaluate()
+  assert.equal(copied, 1)
+  for (const invalid of ['', '  ', null, 123, undefined]) {
+    settings = { forwardKey: invalid }
+    assert.throws(evaluate, /missing login token/)
+  }
+  assert.equal(copied, 1)
+  assert.ok(!JSON.stringify(calls).includes(key))
+  await assert.rejects(openLoginTerminal(dataDir, { platform: 'darwin', exec: async () => {
+    throw new Error('automation denied')
+  } }), /automation denied/)
+  calls.length = 0
+  const windowsDir = "F:\\测试目录\\带空格与单引号'\\独立服务"
+  await openLoginTerminal(windowsDir, { platform: 'win32', exec, systemRoot: 'C:\\Windows' })
+  assert.equal(calls.length, 1)
+  const [powershell, windowsArgs, windowsOptions] = calls[0]
+  assert.equal(powershell, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+  assert.equal(windowsOptions.windowsHide, true)
+  const launch = Buffer.from(windowsArgs.at(-1), 'base64').toString('utf16le')
+  const encoded = /-EncodedCommand ([A-Za-z0-9+/=]+)/.exec(launch)[1]
+  const windowsCommand = Buffer.from(encoded, 'base64').toString('utf16le')
+  assert.ok(windowsCommand.includes(path.win32.join(windowsDir, 'settings.json').replaceAll("'", "''")))
+  assert.match(windowsCommand, /Set-Clipboard -Value \$ofmLoginKey/)
+  await assert.rejects(openLoginTerminal(dataDir, { platform: 'linux', exec }), { statusCode: 400 })
+  assert.equal(calls.length, 1)
+}
 
 /** 使用替身启动器验收登录前入口，回归测试不弹窗口或接触用户剪贴板。 */
 export async function verifyLoginTerminal() {
