@@ -213,6 +213,7 @@ function renderUsage() {
 }
 
 function render() {
+  $('test-mode-notice').hidden = summary.networkMode !== 'fixture'
   const select = $('model-channel')
   const selected = select.value
   select.replaceChildren(new Option('全部渠道', 'all'))
