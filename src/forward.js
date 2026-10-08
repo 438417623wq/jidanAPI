@@ -296,9 +296,10 @@ export async function bindForwardPort(server, { address, port, attempts = BIND_A
  * @param {() => Array<{id: string, created: number, owned_by: string}>} options.modelRows
  * @param {(message: string) => void} [options.log]
  * @param {(event: object) => void} [options.onTrace] - bounded request diagnostics, separate from warnings
+ * @param {() => object} [options.health] - 健康应答由各产品入口注入，默认保持插件兼容。
  * @returns {Promise<{server: http.Server, port: number, close: () => Promise<void>}>}
  */
-export async function startForwardServer({ config, complete, modelRows, log = () => {}, onTrace = () => {}, heartbeatMs = SSE_HEARTBEAT_MS }) {
+export async function startForwardServer({ config, complete, modelRows, log = () => {}, onTrace = () => {}, heartbeatMs = SSE_HEARTBEAT_MS, health = () => ({ ok: true, service: 'our-free-model' }) }) {
   const server = http.createServer((req, res) => {
     const trace = traceRequest(req, res, 'forward', onTrace)
     void handle(req, res, trace).catch(error => {
@@ -332,7 +333,7 @@ export async function startForwardServer({ config, complete, modelRows, log = ()
     // whether the port is up must not need the key to get an answer. It gets a
     // count of nothing — the model roster is what the authenticated routes serve.
     if (path === '/' || path === '/health') {
-      json(res, 200, { ok: true, service: 'our-free-model' })
+      json(res, 200, health())
       return
     }
     if (!authorized(req, settings.key)) {
