@@ -4,6 +4,7 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import { once } from 'node:events'
+import { verifyLoginTerminal } from './standalone-login-terminal-test.mjs'
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-management-'))
 const dataDir = path.join(scratch, 'data')
@@ -85,6 +86,7 @@ const login = async body => {
 }
 
 try {
+  await check('本机取令牌入口限制来源与参数，拒绝并发且不泄露密钥或创建会话', verifyLoginTerminal)
   service = await startStandalone({ dataDir, port: 0, refresh: false, logger: { warn() {} } })
   key = getKey()
   await check('页面资源本地提供且不包含密钥，健康接口仍兼容', async () => {
