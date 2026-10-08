@@ -152,7 +152,8 @@ function headersFor(credential, method, fullUrl, body) {
     // Absent before login; the gateway then answers 401 AuthorizationRequired,
     // which the settings page turns into a login prompt. Sent on listings too
     // so a gated listing needs no second wire shape.
-    const userToken = laneUserToken()
+    // 显式传入 null 也必须隔离：独立应用未登录时不能回退读取 DSH 授权。
+    const userToken = Object.hasOwn(credential, 'userToken') ? credential.userToken : laneUserToken()
     return userToken === null ? signed : { ...signed, 'x-ofm-user': userToken }
   }
   return { ...headers, 'authorization': `Bearer ${credential.apiKey}` }

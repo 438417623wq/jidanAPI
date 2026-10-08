@@ -114,7 +114,7 @@ function normalizeTool(tool) {
   return { name, description: String(tool?.description ?? tool?.function?.description ?? ''), parameters }
 }
 
-function foldForwardOutcome(outcome, chunk) {
+export function foldForwardOutcome(outcome, chunk) {
   switch (chunk.type) {
     case 'text-delta': outcome.text += chunk.text; break
     case 'tool-call-delta': {
