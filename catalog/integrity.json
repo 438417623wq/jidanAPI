@@ -49,8 +49,8 @@
     },
     {
       "path": "package.json",
-      "size": 2517,
-      "sha256": "fcdb44171d2820efdbd3390b0a0545121ea754fc804b30185602c0a6eb04bcab"
+      "size": 2740,
+      "sha256": "d9f11284e0a43aa36d5923fa687de58f41288489d18c8e04e5e517c3e5300de7"
     },
     {
       "path": "src/adapter.js",
@@ -74,13 +74,13 @@
     },
     {
       "path": "src/core/completion.js",
-      "size": 6935,
-      "sha256": "55b50cec5496ad040196c7cb323fc318c455793f06584f2c1ece668901b79097"
+      "size": 6942,
+      "sha256": "431bad026987bb5f831a6cead8a944b8cf9ff2524aa474a9f52a0cbed395e73e"
     },
     {
       "path": "src/core/runtime.js",
-      "size": 12380,
-      "sha256": "d50b6dbf5eca215d7cc9ae80b6b8b7c8b074ee050a2921bc7ed9653e650f9004"
+      "size": 12926,
+      "sha256": "f9b2179991bd48bf9097851050cfa43eb79e9f5f86057dfa068b168175beb941"
     },
     {
       "path": "src/core/stats.js",
@@ -94,13 +94,13 @@
     },
     {
       "path": "src/eac-user.js",
-      "size": 2926,
-      "sha256": "3be53ff3a2255e2f6616973fe013f97741c27ecf218c635ff6a51c89241d1a1f"
+      "size": 2952,
+      "sha256": "05155af81b9eac36dbb5eb30ad2dc42a48ad01ad6bcd5989def1c321c58b016d"
     },
     {
       "path": "src/eac.js",
-      "size": 13291,
-      "sha256": "7e27a0fe030b5a4fcf8dd2300dad82ebba4668f28e1f4088ccce57988cef740e"
+      "size": 13455,
+      "sha256": "e9d9b69dfb2074537c645a6213dfc04762f23d5d51267d1086dfc07f1b76fc86"
     },
     {
       "path": "src/effort.js",
@@ -119,8 +119,8 @@
     },
     {
       "path": "src/forward.js",
-      "size": 46108,
-      "sha256": "5f0d657e0914dd0bcd54c04572c094b41204633d24d5d023dea5889c71e227d2"
+      "size": 46150,
+      "sha256": "321ad923de09d0cd1b2fb264ad50672c222c7ca70ecaa1aff8f375a1eee626e0"
     },
     {
       "path": "src/http.js",
