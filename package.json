@@ -12,6 +12,8 @@
     "./locale/*.json": "./locale/*.json"
   },
   "scripts": {
+    "start:standalone": "node packages/standalone/cli.mjs",
+    "test:standalone": "node scripts/standalone-test.mjs",
     "test": "node scripts/test-all.mjs",
     "test:contributor": "node scripts/test-all.mjs --mode contributor",
     "test:release": "node scripts/test-all.mjs --mode release",

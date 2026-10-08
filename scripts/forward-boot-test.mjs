@@ -93,7 +93,34 @@ try {
 for (const disposer of ctx.__disposers.reverse()) {
   try { disposer() } catch { /* a suite tearing down must not fail on teardown */ }
 }
+
+// 相对 DSH_HOME 仍应读取原目录，核心接收到的路径须由插件入口归一化。
+const originalCwd = process.cwd()
+const originalDshHome = process.env.DSH_HOME
+const relativeDataDir = path.join(scratch, 'relative-dsh', 'our-free-model')
+fs.mkdirSync(relativeDataDir, { recursive: true })
+fs.writeFileSync(path.join(relativeDataDir, 'settings.json'), JSON.stringify({
+  enabled: false, forwardKey: 'relative-home-key',
+}))
+const relativeCtx = fakeContext({ inject, mounted: ['llm'] })
+try {
+  process.chdir(scratch)
+  process.env.DSH_HOME = './relative-dsh'
+  apply(relativeCtx, { distribution: 'managed' })
+  check('相对 DSH_HOME 可以启动并读取原目录的设置',
+    relativeCtx.__captured.adapters[0]?.adapter.deps.state().settings.forwardKey,
+    'relative-home-key')
+} catch (error) {
+  check(`相对 DSH_HOME 可以启动（${error.message}）`, false, true)
+} finally {
+  for (const disposer of relativeCtx.__disposers.reverse()) disposer()
+  process.chdir(originalCwd)
+  process.env.DSH_HOME = originalDshHome
+}
+
 await stub.close()
-fs.rmSync(scratch, { recursive: true, force: true })
+const cleanupTarget = fs.realpathSync(scratch)
+if (!cleanupTarget.startsWith(fs.realpathSync(os.tmpdir()) + path.sep)) throw new Error('临时目录不在预期清理范围内')
+fs.rmSync(cleanupTarget, { recursive: true, force: true })
 console.log(failures === 0 ? '\nforward-boot: the port never waits on the network' : `\n${failures} check(s) failed`)
 process.exitCode = failures === 0 ? 0 : 1
