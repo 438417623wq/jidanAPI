@@ -34,9 +34,9 @@ export function eacUserPath() {
  *
  * @returns {{token: string, login: string, avatar: string, savedAt: number} | null}
  */
-export function readEacUser() {
+export function readEacUser(file = eacUserPath()) {
   try {
-    const parsed = JSON.parse(fs.readFileSync(eacUserPath(), 'utf8'))
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
     if (parsed === null || typeof parsed !== 'object') return null
     const token = typeof parsed.token === 'string' ? parsed.token : ''
     if (token === '') return null
@@ -58,12 +58,11 @@ export function readEacUser() {
  *
  * @param {{token: string, login?: string, avatar?: string}} user
  */
-export function writeEacUser({ token, login = '', avatar = '' }) {
+export function writeEacUser({ token, login = '', avatar = '' }, file = eacUserPath()) {
   if (typeof token !== 'string' || token === '') return null
   const record = { token, login, avatar, savedAt: Date.now() }
   try {
-    const file = eacUserPath()
-    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 })
     const temp = `${file}.${process.pid}.tmp`
     fs.writeFileSync(temp, JSON.stringify(record, undefined, 2), { mode: 0o600 })
     fs.renameSync(temp, file)
@@ -74,9 +73,9 @@ export function writeEacUser({ token, login = '', avatar = '' }) {
 }
 
 /** Forget the local authorization. The server-side token is revoked separately. */
-export function clearEacUser() {
+export function clearEacUser(file = eacUserPath()) {
   try {
-    fs.rmSync(eacUserPath(), { force: true })
+    fs.rmSync(file, { force: true })
     return true
   } catch {
     return false

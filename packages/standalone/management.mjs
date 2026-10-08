@@ -12,12 +12,14 @@ const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
   ['/assets/app.js', ['app.js', 'text/javascript; charset=utf-8']],
   ['/assets/app.css', ['app.css', 'text/css; charset=utf-8']],
+  ['/assets/channels.js', ['channels.js', 'text/javascript; charset=utf-8']],
+  ['/assets/channels.css', ['channels.css', 'text/css; charset=utf-8']],
 ])
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
   'x-content-type-options': 'nosniff',
   'referrer-policy': 'no-referrer',
-  'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'content-security-policy': "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
 }
 
 function fail(statusCode, message) {
@@ -31,7 +33,7 @@ function matches(actual, expected) {
   return left.length === right.length && crypto.timingSafeEqual(left, right)
 }
 
-async function readBody(req) {
+async function readBody(req, limit = MAX_BODY_BYTES) {
   if (!String(req.headers['content-type'] ?? '').toLowerCase().startsWith('application/json')) {
     throw fail(415, '请求必须使用 application/json')
   }
@@ -39,7 +41,7 @@ async function readBody(req) {
   const chunks = []
   for await (const chunk of req) {
     bytes += chunk.length
-    if (bytes > MAX_BODY_BYTES) throw fail(413, '请求内容过大')
+    if (bytes > limit) throw fail(413, '请求内容过大')
     chunks.push(chunk)
   }
   let value
@@ -76,7 +78,7 @@ export function managementSettings(value) {
 }
 
 /** 独立服务管理端：无宿主依赖，所有读写先通过同源与管理鉴权。 */
-export function createManagement({ stores, runtime, info, onSettingsChanged }) {
+export function createManagement({ stores, runtime, channels, eac, info, onSettingsChanged }) {
   let bootstrap = { token: crypto.randomBytes(32).toString('base64url'), until: Date.now() + BOOTSTRAP_MS }
   const sessions = new Map()
   let cookieName
@@ -118,13 +120,15 @@ export function createManagement({ stores, runtime, info, onSettingsChanged }) {
     const routable = new Set(runtime.publicModelRows().map(entry => entry.id))
     return {
       ...info(),
+      channels: channels?.state(),
+      eacAuth: eac?.cached(),
       settings: managementSettings(stores.settings.get()),
       catalogSyncedAt: stores.settings.get().catalogSyncedAt ?? 0,
       probedAt: available.at ?? 0,
       catalog: state.catalog.map(entry => ({
         id: entry.id, name: entry.name, channel: entry.channel ?? 'anonymous',
-        vision: entry.vision === true, reasoning: entry.reasoning === true,
-        contextWindow: entry.contextWindow, maxOutput: entry.maxOutput,
+        vision: entry.vision === true, reasoning: entry.reasoning === true || (entry.reasoning !== null && typeof entry.reasoning === 'object'),
+        contextWindow: entry.contextWindow ?? entry.context_window, maxOutput: entry.maxOutput ?? entry.max_tokens,
         routable: routable.has(entry.id),
         availability: entry.channel ? 'listed' : available.results?.[entry.id]?.state ?? 'unknown',
         ttftMs: available.results?.[entry.id]?.ttftMs ?? null,
@@ -157,6 +161,45 @@ export function createManagement({ stores, runtime, info, onSettingsChanged }) {
       json(res, 200, summary())
     } else if (method === 'GET' && pathname === `${PREFIX}/stats`) {
       json(res, 200, buildStats(stores.stats.get(), runtime.catalog))
+    } else if (method === 'POST' && pathname === `${PREFIX}/channels/rpc` && channels) {
+      // 渠道备份导入包含多账号凭据，仍限制总大小，但不能套设置表单的 16KB。
+      const body = await readBody(req, 8 * 1024 * 1024)
+      if (body.method === 'gateway.getEnabled' || body.method === 'gateway.setEnabled') {
+        if (body.method === 'gateway.setEnabled') {
+          if (typeof body.payload?.enabled !== 'boolean') throw fail(400, 'enabled 必须是布尔值')
+          persist({ enabled: body.payload.enabled })
+        }
+        const base = new URL(info().baseUrl)
+        json(res, 200, { ok: true, value: {
+          enabled: stores.settings.get().enabled !== false, running: stores.settings.get().enabled !== false,
+          blockedByEnv: false, address: { host: base.hostname, port: Number(base.port) },
+          apiKey: { value: stores.settings.get().forwardKey, path: `${info().dataDir}/settings.json`, fromEnv: false },
+          models: runtime.publicModelRows(), modelsSource: 'catalog',
+        } })
+      } else {
+        const controller = new AbortController()
+        const abort = () => controller.abort()
+        res.once('close', abort)
+        try { json(res, 200, await channels.rpc(body, controller.signal)) }
+        finally { res.removeListener('close', abort) }
+      }
+    } else if (eac && pathname.startsWith(`${PREFIX}/eac/`)) {
+      const params = new URL(req.url, 'http://localhost').searchParams
+      const route = pathname.slice(PREFIX.length)
+      let result
+      if (method === 'GET' && route === '/eac/status') result = await eac.status()
+      else if (method === 'GET' && route === '/eac/login/poll') result = await eac.poll(params.get('link') ?? '')
+      else if (method === 'GET' && route === '/eac/pool') result = await eac.pool()
+      else if (method === 'POST') {
+        await readBody(req)
+        if (route === '/eac/login/start') result = await eac.start()
+        else if (route === '/eac/login/cancel') result = eac.cancel(params.get('link') ?? '')
+        else if (route === '/eac/logout') result = await eac.logout()
+      }
+      if (result === undefined) throw fail(404, 'EAC 接口不存在')
+      if (result.error) throw fail(502, result.error)
+      if (result.ok === false) throw fail(500, '无法移除本地授权')
+      json(res, 200, result)
     } else if (method === 'POST' && pathname === `${PREFIX}/settings`) {
       const patch = validateSettings(await readBody(req))
       persist(patch)

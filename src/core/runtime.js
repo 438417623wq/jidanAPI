@@ -156,12 +156,15 @@ export function createModelRuntime({
     try {
       const ids = parseListing(await fetchSealedListing(credential, { signal: lifetime.signal }))
       if (disposed) return
+      // 独立应用授权变更时，旧账号正在返回的清单不得覆盖新状态。
+      if (Object.hasOwn(credential, 'userToken') && sealedCredential()?.userToken !== credential.userToken) return
       if (ids.length > 0) {
         sealedCatalog = buildEacCatalog(ids)
         catalogStore.update({ sealIds: sealedCatalog.map(entry => entry.id) })
       }
     } catch (error) {
       if (disposed) return
+      if (Object.hasOwn(credential, 'userToken') && sealedCredential()?.userToken !== credential.userToken) return
       if (error?.code === CODE.credential) {
         sealedCatalog = []
         catalogStore.update({ sealIds: [] })
@@ -170,6 +173,14 @@ export function createModelRuntime({
       }
       logger.warn?.(`our-free-model: sealed lane listing failed (${error?.code ?? 'unknown'}); keeping its cached roster`)
     }
+  }
+
+  async function refreshSealedLane() {
+    await refreshSealedRoster()
+    if (disposed) return
+    catalog = catalog.filter(entry => entry.channel !== 'eac')
+    mergeCatalogs()
+    emitTopology()
   }
 
   async function refreshKiloRoster() {
@@ -261,7 +272,7 @@ export function createModelRuntime({
   }
 
   return {
-    state, adapter, refreshCatalog, refreshAvailability, watchEgress, fetchListing,
+    state, adapter, refreshCatalog, refreshSealedLane, refreshAvailability, watchEgress, fetchListing,
     complete: createForwardCompletion({ adapter, state, signal: lifetime.signal }),
     publicModelRows: () => publicModelRows(state()),
     get catalog() { return catalog },

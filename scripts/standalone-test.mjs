@@ -130,8 +130,8 @@ try {
     const health = await response.json()
     assert.equal(response.status, 200)
     assert.equal(health.product, 'standalone')
-    assert.equal(health.capabilities.eac, false)
-    assert.equal(health.capabilities.accountChannels, false)
+    assert.equal(health.capabilities.eac, true)
+    assert.equal(health.capabilities.accountChannels, true)
     await listingStarted
     assert.equal(kiloCalls, 0)
   })

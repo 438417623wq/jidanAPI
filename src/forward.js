@@ -954,7 +954,7 @@ async function responsesEndpoint(req, res, complete, options = {}) {
       say('response.output_item.added', { output_index: index, item: { type: 'function_call', item_id: `fc_${index}`, call_id: `fc_${index}`, name, arguments: '' } })
     }
     let usage
-    const outcome = await complete({ model, openAi, responses: true }, (chunk) => {
+    const outcome = await complete({ model, openAi, responses: true, responsesBody: body }, (chunk) => {
       if (res.destroyed) return
       if (chunk.type === 'text-delta') {
         announceMessage()
@@ -1007,7 +1007,7 @@ async function responsesEndpoint(req, res, complete, options = {}) {
     return
   }
 
-  const outcome = await complete({ model, openAi, responses: true })
+  const outcome = await complete({ model, openAi, responses: true, responsesBody: body })
   if (outcome.error !== undefined) {
     openAiError(res, 502, 'server_error', outcome.error)
     return

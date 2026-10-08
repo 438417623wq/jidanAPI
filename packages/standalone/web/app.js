@@ -1,7 +1,7 @@
 /* 独立服务页面仅使用同源管理接口，不依赖 DSH 或外部 CDN。 */
 const $ = id => document.getElementById(id)
 const API = '/api/management'
-const PAGE_NAMES = { overview: '概览', models: '模型清单', usage: '用量统计', settings: '服务设置', connection: 'API 接入' }
+const PAGE_NAMES = { overview: '概览', models: '模型清单', usage: '用量统计', channels: '免费账号渠道', eac: 'EAC 协付渠道', settings: '服务设置', connection: 'API 接入' }
 const STATE_NAMES = { available: '已探测可用', listed: '清单已收录', unknown: '未探测', unavailable: '不可用', throttled: '限流中', 'region-blocked': '地区受限' }
 let summary
 let stats
@@ -45,6 +45,7 @@ async function request(path, body, timeoutMs = 10000) {
 
 function showLogin(message = '') {
   authenticated = false
+  window.ofmChannels?.hide()
   generation++
   summary = undefined
   stats = undefined
@@ -92,7 +93,13 @@ async function action(button, run, message) {
 function navigate(next) {
   if (!Object.hasOwn(PAGE_NAMES, next)) return
   page = next
-  for (const name of Object.keys(PAGE_NAMES)) $(`page-${name}`).hidden = name !== next
+  for (const name of ['overview', 'models', 'usage', 'settings', 'connection']) $(`page-${name}`).hidden = name !== next
+  const channelPage = next === 'channels' || next === 'eac'
+  $('page-channel').hidden = !channelPage
+  if (channelPage) {
+    text('channel-heading', PAGE_NAMES[next])
+    window.ofmChannels?.show(next, { ...summary, reload: () => { void loadData().catch(errorNotice) } })
+  } else window.ofmChannels?.hide()
   document.querySelectorAll('[data-page]').forEach(button => {
     button.classList.toggle('active', button.dataset.page === next)
     if (button.dataset.page === next) button.setAttribute('aria-current', 'page')
@@ -147,12 +154,12 @@ function renderModels() {
     const header = node('div', 'model-card-header')
     const title = node('div')
     title.append(node('h2', '', model.name), node('div', 'model-id', model.id))
-    header.append(title, node('span', 'channel-mark', model.channel === 'kilo' ? 'K' : 'A'))
+    header.append(title, node('span', 'channel-mark', model.channel === 'anonymous' ? 'A' : model.channel.slice(0, 1).toUpperCase()))
     const badges = node('div', 'model-badges')
-    badges.append(node('span', '', model.channel === 'kilo' ? 'Kilo 免费池' : '匿名模型'), node('span', '', model.vision ? '视觉' : '纯文本'))
+    badges.append(node('span', '', channelName(model.channel)), node('span', '', model.vision ? '视觉' : '纯文本'))
     if (model.reasoning) badges.append(node('span', '', '思考模型'))
     const capacity = node('div', 'model-capacity')
-    capacity.append(node('span', '', `上下文 ${short(model.contextWindow ?? 0)}`), node('span', '', `输出 ${short(model.maxOutput ?? 0)}`))
+    capacity.append(node('span', '', `上下文 ${model.contextWindow ? short(model.contextWindow) : '未知'}`), node('span', '', `输出 ${model.maxOutput ? short(model.maxOutput) : '未知'}`))
     const footer = node('div', 'model-card-footer')
     const availability = node('span', `availability ${model.availability}`, STATE_NAMES[model.availability] ?? '未知')
     if (!model.routable) availability.textContent += ' · 未公开'
@@ -206,6 +213,12 @@ function renderUsage() {
 }
 
 function render() {
+  const select = $('model-channel')
+  const selected = select.value
+  select.replaceChildren(new Option('全部渠道', 'all'))
+  for (const channel of new Set(['anonymous', 'kilo', 'eac', ...summary.catalog.map(row => row.channel)])) select.add(new Option(channelName(channel), channel))
+  select.value = [...select.options].some(option => option.value === selected) ? selected : 'all'
+  if (page === 'channels' || page === 'eac') window.ofmChannels?.show(page, { ...summary, reload: () => { void loadData().catch(errorNotice) } })
   text('nav-count', summary.catalog.length)
   text('sidebar-version', `v${summary.version} · 独立服务`)
   text('overview-status', summary.settings.enabled ? '● 推理服务已启用' : '● 推理服务已暂停')
@@ -234,6 +247,10 @@ function render() {
   text('connection-example', `curl ${summary.baseUrl}/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: '你好' }] })}'`)
   renderModels()
   renderUsage()
+}
+
+function channelName(value) {
+  return ({ anonymous: '匿名模型', kilo: 'Kilo 免费池', eac: 'EAC 协付' })[value] ?? window.ofmChannels?.providerName(value) ?? value
 }
 
 function loadData() {
