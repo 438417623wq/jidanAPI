@@ -16,13 +16,27 @@
       <div class="brand-mark" aria-hidden="true">ofm<span>·</span></div>
       <span class="eyebrow">YOUR LOCAL MODEL GATEWAY</span>
       <h1>连接你的本地服务</h1>
-      <p>使用启动时打印的一次性链接，或输入保存在本机的 API Key。</p>
+      <p>使用启动时打印的一次性链接，或输入保存在本机的登录令牌。</p>
       <form id="login-form">
-        <label for="login-key">API Key</label>
+        <label for="login-key">登录令牌（API Key）</label>
         <input id="login-key" name="key" type="password" autocomplete="off" placeholder="ofm-…" required>
         <button class="primary" type="submit">进入控制台 <span aria-hidden="true">→</span></button>
       </form>
       <p id="login-error" role="alert" class="error"></p>
+      <div class="login-help">
+        <h2>没有令牌？从本机获取</h2>
+        <p>Windows 用户点击下方按钮，会弹出 PowerShell 并将当前服务的令牌复制到剪贴板。回来粘贴到上方即可。</p>
+        <button id="login-terminal" class="secondary" type="button">打开 PowerShell 获取令牌 ↗</button>
+        <p id="login-help-status" role="status"></p>
+        <details>
+          <summary>手动获取与其他系统</summary>
+          <p>默认位置：用户目录下的 <code>.our-free-model/settings.json</code>，取 <code>forwardKey</code> 字段。如果启动时设置了 <code>--data-dir</code> 或 <code>OFM_HOME</code>，请使用该目录；自动按钮会读取当前服务的实际目录。</p>
+          <label for="login-command">Windows PowerShell 命令（默认目录）</label>
+          <textarea id="login-command" readonly rows="4" spellcheck="false">(Get-Content -LiteralPath "$env:USERPROFILE\.our-free-model\settings.json" -Raw -Encoding UTF8 | ConvertFrom-Json).forwardKey | Set-Clipboard</textarea>
+          <button id="copy-login-command" class="text-button" type="button">复制获取令牌命令</button>
+          <p>macOS / Linux：打开上述配置文件，复制 <code>forwardKey</code> 的值。也可使用服务启动时打印的管理链接。</p>
+        </details>
+      </div>
       <small>登录仅用于本机管理。会话在 8 小时后或服务重启后失效。</small>
     </div>
   </section>

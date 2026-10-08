@@ -141,6 +141,15 @@ footer span { margin: 0 10px; }
 .login-card form { margin: 25px 0 10px; display: grid; gap: 10px; }.login-card label { font-size: 11px; color: #93a183; }
 .login-card .primary { display: flex; justify-content: space-between; margin-top: 5px; padding: 13px 16px; }
 .login-card small { font-size: 10px; color: #a6af9d; }.error { color: #ab725b !important; min-height: 19px; }
+.login-help { border-top: 1px solid var(--line); margin: 20px 0; padding-top: 18px; }
+.login-help h2 { font-size: 14px; margin-bottom: 8px; }
+.login-help p { margin-bottom: 12px; }
+.login-help summary { cursor: pointer; color: var(--green); font-size: 12px; }
+.login-help details p { margin-top: 10px; }
+.login-help code { overflow-wrap: anywhere; }
+.login-help textarea { display: block; width: 100%; resize: vertical; margin: 8px 0 10px; border: 1px solid var(--line); border-radius: 8px; padding: 10px; font: 11px/1.6 Consolas, monospace; background: var(--paper); color: var(--ink); }
+.login-help textarea:focus-visible, .login-help summary:focus-visible { outline: 3px solid #94b97b; outline-offset: 3px; }
+#login-help-status { margin: 10px 0; color: var(--green); }
 .loading-screen { text-align: center; }.loading-screen p { font-size: 12px; margin-top: 15px; }
 @media (min-width: 1450px) { .page { padding-top: 43px; }.welcome-panel { min-height: 275px; }.metric-card { padding: 24px; }.usage-chart { height: 190px; } }
 @media (max-width: 1100px) { .sidebar { width: 200px; padding-left: 14px; padding-right: 14px; }.page, .topbar, footer { padding-left: 28px; padding-right: 28px; }.notice { margin-left: 28px; margin-right: 28px; }.gateway-visual { margin-right: -28px; width: 220px; }.model-grid { grid-template-columns: repeat(2, 1fr); }.metric-grid { gap: 10px; }.metric-card { padding: 17px; }.metric-card strong { font-size: 26px; } }
