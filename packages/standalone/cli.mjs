@@ -7,8 +7,8 @@ const usage = `Our Free Model 独立本地服务
 
   --port <端口>       监听端口，默认 18900（冲突时自动选择可用端口）
   --data-dir <目录>   数据目录，默认 OFM_HOME 或 ~/.our-free-model
-  --no-refresh        不访问上游，使用已缓存的模型清单
-  --probe             刷新时探测匿名模型可用性，会产生上游请求
+  --no-refresh        跳过启动与周期刷新；仍可手动刷新和推理
+  --probe             启用并保存自动探测设置，会产生上游请求
   --help              显示帮助
 `
 
@@ -40,7 +40,7 @@ async function main() {
   }
   process.once('SIGINT', shutdown)
   process.once('SIGTERM', shutdown)
-  process.stdout.write(`${service.product} ${service.version}\nAPI：${service.url}/v1\nAPI Key 保存在：${service.keyFile}\n`)
+  process.stdout.write(`${service.product} ${service.version}\n管理页面（10 分钟内一次性登录）：${service.managementUrl}\nAPI：${service.url}/v1\nAPI Key 保存在：${service.keyFile}\n`)
 }
 
 main().catch(error => {

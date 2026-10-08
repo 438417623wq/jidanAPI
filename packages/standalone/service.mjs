@@ -4,6 +4,7 @@ import path from 'node:path'
 import { createModelRuntime, createRuntimeStores } from '../../src/core/runtime.js'
 import { generateKey, startForwardServer } from '../../src/forward.js'
 import { isLoopbackHost } from '../../src/trust.js'
+import { createManagement } from './management.mjs'
 
 const PRODUCT = 'our-free-model-standalone'
 const VERSION = JSON.parse(fs.readFileSync(new URL('./package.json', import.meta.url), 'utf8')).version
@@ -16,7 +17,7 @@ export function resolveStandaloneDataDir(env = process.env, home = os.homedir())
 /** 直接创建核心和 HTTP 服务，不加载插件入口、Cordis 或 DSH 凭据。 */
 export async function startStandalone({
   dataDir = resolveStandaloneDataDir(), host = '127.0.0.1', port,
-  logger = console, refresh = true, probe = false,
+  logger = console, refresh = true, probe,
 } = {}) {
   if (!isLoopbackHost(host)) throw new TypeError('the standalone service binds a loopback address only')
   if (typeof dataDir !== 'string' || !path.isAbsolute(dataDir)) throw new TypeError('dataDir must be an absolute path')
@@ -29,7 +30,9 @@ export async function startStandalone({
   let stores
   let runtime
   let listener
+  let management
   let timer
+  let refreshInFlight
   let closing
   let stopped = false
   const releaseLock = () => {
@@ -44,12 +47,22 @@ export async function startStandalone({
     const requestedPort = port ?? (Number.isInteger(savedPort) && savedPort >= 0 && savedPort <= 65535 ? savedPort : 18900)
     const existingKey = settings.get().forwardKey
     const key = typeof existingKey === 'string' && existingKey !== '' ? existingKey : generateKey()
-    settings.update({ forwardKey: key })
+    settings.update({ forwardKey: key, ...probe === undefined ? {} : { standaloneProbe: probe === true } })
     settings.flush()
     if (settings.writeFailed) throw new Error('could not persist the standalone API key')
     runtime = createModelRuntime({
       ...stores, logger, attributionUserAgent: `${PRODUCT}/${VERSION}`,
       // EAC 能力只由插件宿主注入，独立入口不读取任何 DSH 授权状态。
+    })
+    management = createManagement({
+      stores, runtime,
+      info: () => ({
+        product: PRODUCT, version: VERSION, dataDir,
+        baseUrl: `http://${host === '::1' ? '[::1]' : host}:${listener?.port ?? requestedPort}`,
+        automaticRefresh: refresh,
+        capabilities: { anonymous: true, kilo: true, eac: false, accountChannels: false, webUi: true },
+      }),
+      onSettingsChanged: () => { if (!refreshInFlight) scheduleRefresh() },
     })
     listener = await startForwardServer({
       config: () => ({ host, port: requestedPort, enabled: settings.get().enabled !== false, key: settings.get().forwardKey }),
@@ -57,30 +70,37 @@ export async function startStandalone({
       modelRows: runtime.publicModelRows,
       health: () => ({
         ok: true, service: PRODUCT, product: 'standalone', version: VERSION,
-        capabilities: { anonymous: true, kilo: true, eac: false, accountChannels: false, webUi: false },
+        capabilities: { anonymous: true, kilo: true, eac: false, accountChannels: false, webUi: true },
       }),
+      handleRequest: management.handleRequest,
       log: message => logger.warn?.(`our-free-model standalone: ${message}`),
     })
+    management.setPort(listener.port)
     settings.update({ standalonePort: listener.port })
     settings.flush()
 
-    async function refreshModels(force = false) {
-      try { await runtime.refreshCatalog({ probe, force }) }
-      catch (error) {
-        if (!stopped) logger.warn?.(`our-free-model standalone: catalog refresh failed (${error?.message ?? error})`)
-      } finally {
-        if (!stopped && refresh) {
-          const minutes = Number(settings.get().probeIntervalMinutes)
-          timer = setTimeout(() => { void refreshModels() }, (Number.isFinite(minutes) && minutes > 0 ? Math.max(1, minutes) : 15) * 60_000)
-          timer.unref?.()
-        }
-      }
+    function scheduleRefresh() {
+      clearTimeout(timer)
+      if (stopped || !refresh) return
+      const minutes = Number(settings.get().probeIntervalMinutes)
+      timer = setTimeout(() => { void refreshModels() }, (Number.isFinite(minutes) && minutes > 0 ? Math.max(1, minutes) : 15) * 60_000)
+      timer.unref?.()
+    }
+    function refreshModels(force = false) {
+      if (refreshInFlight) return refreshInFlight
+      refreshInFlight = runtime.refreshCatalog({ probe: settings.get().standaloneProbe === true, force })
+        .catch(error => {
+          if (!stopped) logger.warn?.(`our-free-model standalone: catalog refresh failed (${error?.message ?? error})`)
+        })
+        .finally(() => { refreshInFlight = undefined; scheduleRefresh() })
+      return refreshInFlight
     }
     // 启动可强制探测；后续周期刷新遵守核心的限流退避。
-    const ready = refresh ? refreshModels(probe) : Promise.resolve()
+    const ready = refresh ? refreshModels(settings.get().standaloneProbe === true) : Promise.resolve()
     return {
       product: PRODUCT, version: VERSION, dataDir,
       url: `http://${host === '::1' ? '[::1]' : host}:${listener.port}`,
+      managementUrl: `http://${host === '::1' ? '[::1]' : host}:${listener.port}/${management.bootstrapFragment}`,
       port: listener.port,
       keyFile: path.join(dataDir, 'settings.json'),
       runtime, ready,
@@ -88,6 +108,7 @@ export async function startStandalone({
         if (closing !== undefined) return closing
         stopped = true
         clearTimeout(timer)
+        management.dispose()
         runtime.dispose()
         closing = (async () => {
           try { await listener.close() } finally {
@@ -101,6 +122,7 @@ export async function startStandalone({
   } catch (error) {
     stopped = true
     clearTimeout(timer)
+    management?.dispose()
     runtime?.dispose()
     if (listener) await listener.close()
     stores?.dispose()
