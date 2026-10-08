@@ -65,6 +65,7 @@ function showLogin(message = '') {
   $('error-notice').hidden = true
   text('show-key', '查看密钥')
   text('login-error', message)
+  text('login-help-status', '')
 }
 
 function errorNotice(error) {
@@ -351,6 +352,29 @@ $('rotate-confirm-button').addEventListener('click', () => {
 })
 $('logout').addEventListener('click', () => {
   void action($('logout'), async () => { await request('/logout', {}); showLogin('已退出管理') })
+})
+$('login-terminal').addEventListener('click', () => {
+  const button = $('login-terminal')
+  button.disabled = true
+  text('login-help-status', '正在本机打开 PowerShell…')
+  void (async () => {
+    try {
+      await request('/login/terminal', {}, 15000)
+      text('login-help-status', '已请求打开 PowerShell。窗口提示复制成功后，回到这里粘贴令牌。')
+      $('login-key').focus()
+    } catch (error) {
+      text('login-help-status', `${error.message}。可以展开下方的手动获取说明。`)
+    } finally { button.disabled = false }
+  })()
+})
+$('copy-login-command').addEventListener('click', () => {
+  void navigator.clipboard.writeText($('login-command').value)
+    .then(() => text('login-help-status', '命令已复制。在 PowerShell 执行后，回到上方粘贴令牌。'))
+    .catch(() => {
+      $('login-command').focus()
+      $('login-command').select()
+      text('login-help-status', '浏览器未允许复制，已选中命令，请按 Ctrl+C 手动复制。')
+    })
 })
 $('login-form').addEventListener('submit', event => {
   event.preventDefault()
