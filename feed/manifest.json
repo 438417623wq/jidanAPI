@@ -1,7 +1,7 @@
 {
   "version": "2.0.0",
   "base": "../",
-  "publishedAt": "2026-10-08T07:15:15.698Z",
+  "publishedAt": "2026-10-08T07:54:25.775Z",
   "notes": "",
   "files": [
     {
@@ -31,8 +31,8 @@
     },
     {
       "path": "index.js",
-      "size": 96762,
-      "sha256": "16818c3b8dc273bb4844edbc51dc49b3abc6705bf8591b51f1e647d8e4124f25"
+      "size": 92652,
+      "sha256": "3ad9b157b824e292e7cfd6c280a5c431d7b227b2bc41b0f0d5b239fad32068c9"
     },
     {
       "path": "LICENSE",
@@ -51,8 +51,8 @@
     },
     {
       "path": "package.json",
-      "size": 2447,
-      "sha256": "34abcdb3c54638005aa1559ea59efb1a14b9141d2963c072b1e1e798cec7b800"
+      "size": 2517,
+      "sha256": "fcdb44171d2820efdbd3390b0a0545121ea754fc804b30185602c0a6eb04bcab"
     },
     {
       "path": "src/adapter.js",
@@ -83,6 +83,11 @@
       "path": "src/core/runtime.js",
       "size": 12380,
       "sha256": "d50b6dbf5eca215d7cc9ae80b6b8b7c8b074ee050a2921bc7ed9653e650f9004"
+    },
+    {
+      "path": "src/core/stats.js",
+      "size": 4210,
+      "sha256": "f3e9df8f3b12e9c11673542b17e1b8249154fa6112005b1ade6d4fb5e54a73d4"
     },
     {
       "path": "src/eac-login.js",
@@ -116,8 +121,8 @@
     },
     {
       "path": "src/forward.js",
-      "size": 45866,
-      "sha256": "7ba70554175b26f1971c9ef2fb4512cacba24caea370fadc288d9ca367b4efb1"
+      "size": 46108,
+      "sha256": "5f0d657e0914dd0bcd54c04572c094b41204633d24d5d023dea5889c71e227d2"
     },
     {
       "path": "src/http.js",
@@ -215,5 +220,5 @@
       "sha256": "6419471effa631519def7797d76d7ede38b9fcfa9a83c2148c8ef5d43355b43d"
     }
   ],
-  "signature": "T5br/QO7DMr5PpnhTGVRfTE0ZxxmmzmTDNAcjLajFFVkEsbDQ3OZbMr4XxxMTIaettjsz/RGl3oToQRR0n88Cg=="
+  "signature": "JbzJVLORTzaE7Lhpzj7KkqcfaHzLDKKdKofeWuLBFl+927cI6U9hwELTmN20zHH1dR2fiZRKXppV5/WgyaNdBw=="
 }
