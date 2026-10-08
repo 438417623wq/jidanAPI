@@ -131,6 +131,7 @@ td:first-child { white-space: normal; max-width: 260px; overflow-wrap: anywhere;
 .confirm-panel { background: #fff5eb; border: 1px solid #eddbca; border-radius: 10px; padding: 20px 24px; }
 .confirm-panel p { font-size: 12px; margin: 8px 0 16px; color: #a18b73; }
 .notice { margin: 20px 44px -12px; background: #edf5e4; border: 1px solid #dce9ce; padding: 12px 16px; border-radius: 8px; font-size: 12px; color: #5d7b45; }
+.test-mode-notice { background: #fff3d9; border-color: #e4c174; color: #73510d; font-weight: 600; }
 .error-notice { display: flex; align-items: center; justify-content: space-between; gap: 14px; background: #fff4ef; color: #a06a51; border-color: #e8d9ca; }
 footer { max-width: 1320px; margin: 0 auto; padding: 20px 44px 25px; font-size: 9px; letter-spacing: 1.2px; color: #b1b9a8; }
 footer span { margin: 0 10px; }

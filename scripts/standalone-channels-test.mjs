@@ -144,6 +144,7 @@ try {
     assert.equal(value.data.find(row => row.id === 'buddy/fixture-free').context_window, 128000)
     assert.equal(value.data.find(row => row.id === 'buddy/fixture-free').max_tokens, 4096)
     const summary = (await api('/api/management/summary')).value
+    assert.equal(summary.networkMode, 'fixture')
     assert.equal(summary.catalog.find(row => row.id === 'buddy/fixture-free').maxOutput, 4096)
     assert.equal(summary.channels.state, 'ready')
     assert.equal(JSON.stringify(summary).includes('fixture-refresh'), false)
