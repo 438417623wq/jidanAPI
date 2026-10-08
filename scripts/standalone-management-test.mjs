@@ -126,7 +126,7 @@ try {
     const summary = await response.json()
     assert.equal(summary.dataDir, dataDir)
     assert.equal(summary.automaticRefresh, false)
-    assert.equal(summary.capabilities.eac, false)
+    assert.equal(summary.capabilities.eac, true)
     assert.ok(!JSON.stringify(summary).includes(key))
     const stats = await (await request('/api/management/stats')).json()
     assert.equal(stats.requests, 0)
