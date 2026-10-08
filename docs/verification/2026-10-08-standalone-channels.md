@@ -61,3 +61,41 @@ EAC 覆盖原 GitHub prepare/poll/ACK、签名、独立用户 token、模型清�
 没有创建独立安装制品、进行实际 DSH 桌面视觉验收或发布 Release。
 已检查原插件回归和数据隔离，未读取或迁移用户 DSH 凭据。
 发布清单签署属于维护者发布流程，本次不替换信任根、不伪造签名。
+
+## 登录失败反馈的定位与修正
+
+用户反馈 WorkBuddy 国内/国际版缺少 `state`、Cline 设备授权缺少字段、
+MiniMax 设备码响应无法解析。核对 18888 的实际监听进程，确认仍为
+`.verify/channels-preview.mjs`。该进程装载测试 preload，将外部 HTTPS 请求
+全部重定向到本机替身；替身对这些授权路径返回通用对象，产生反馈中的字段错误。
+这属于交付预览时没有区分测试与真实运行的错误。
+
+已停止 18888 替身，换成使用默认独立目录 `~/.our-free-model` 的真实服务。
+测试账号、凭据、模型回答与模拟额度没有迁入真实目录。
+管理摘要增加 `networkMode`，加载渠道替身时标记 `fixture`，
+网页显示醒目的测试提示；正常独立入口标记 `live`。
+
+### 真实上游验证
+
+在与用户安装隔离的诊断目录运行真实 Worker，没有导入任何测试 preload。
+仅执行四次 `account.create` 授权初始化，不打开第三方页面，不完成授权，不读取用户凭据。
+以下均返回 `ok: true`、有效 accountId 和 HTTPS 登录地址：
+
+| 渠道 | 返回授权页面的域名 |
+| --- | --- |
+| WorkBuddy 国内版 | `copilot.tencent.com` |
+| WorkBuddy 国际版 | `www.workbuddy.ai` |
+| Cline | `authkit.cline.bot` |
+| MiniMax Code | `account.minimax.cn` |
+
+诊断结束关闭 Worker，停止这些未完成登录的后台轮询。
+这证明当前真实授权初始化可用，不等同于完成真实账号登录或验证登录后的推理。
+再次执行管理 13/13、渠道 11/11、完整贡献者回归 32/32，均通过。
+同步最新主线的签名清单后执行 `npm run test:release`，3/3 套通过。
+
+浏览器已重新登录 18888 的真实服务，页面显示 0/13 个已接入账号。
+另外在 18889 的临时替身上确认测试提示可见，截图后关闭临时标签。
+
+![真实独立服务的渠道页面](images/standalone-live-channels.png)
+
+![替身测试模式提示](images/standalone-fixture-warning.png)
