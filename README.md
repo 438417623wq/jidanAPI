@@ -88,9 +88,9 @@ npm run start:standalone
 ```
 
 独立服务默认使用 `~/.our-free-model` 和端口 `18900`，拥有自己的 API Key，
-不读取插件数据。当前完成共享核心与服务入口拆分，支持匿名/Kilo 模型和
-Chat Completions、Responses API，以及独立网页管理（模型、统计、设置、API Key）。
-启动后打开终端打印的一次性管理链接即可使用；账号渠道后续接入。
+不读取插件数据。支持匿名/Kilo、EAC 和原有十三个账号渠道，提供
+Chat Completions、Responses API，以及独立网页管理（模型、统计、渠道、EAC、设置、API Key）。
+启动后打开终端打印的一次性管理链接即可使用；账号在独立页面登录，也可手动导入插件账号备份。
 启动、参数与验证见 [独立服务说明](packages/standalone/README.md)。
 独立服务的安装制品与 Release 尚未发布。
 
