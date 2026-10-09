@@ -98,7 +98,20 @@ try {
     const body = await page.text()
     assert.match(body, /本地控制台/)
     assert.ok(!body.includes(key))
-    for (const asset of ['/assets/app.js', '/assets/app.css']) assert.equal((await request(asset)).status, 200)
+    const manifest = JSON.parse(fs.readFileSync(new URL('../packages/standalone/web/assets.json', import.meta.url), 'utf8'))
+    assert.ok(manifest.includes('app.js') && manifest.includes('app.css'))
+    assert.ok(manifest.some(name => /^channels-.+\.js$/.test(name)))
+    for (const asset of manifest) {
+      const response = await request(`/assets/${asset}`, { cookie: '' })
+      assert.equal(response.status, 200, asset)
+      assert.match(response.headers.get('content-type'), asset.endsWith('.css') ? /text\/css/ : /javascript/)
+      assert.ok(!(await response.text()).includes(key), asset)
+      assert.equal((await request(`/assets/${asset}`, { method: 'HEAD' })).status, 200)
+      assert.equal((await request(`/assets/${asset}`, { method: 'POST' })).status, 405)
+    }
+    for (const route of ['/assets/settings.json', '/assets/assets.json', '/assets/unknown.js', '/frontend/app.tsx', '/assets/%2e%2e%2fservice.mjs']) {
+      assert.equal((await request(route, { cookie: '', headers: { authorization: `Bearer ${key}` } })).status, 404, route)
+    }
     const health = await (await request('/health')).json()
     assert.equal(health.product, 'standalone')
     assert.equal(health.capabilities.webUi, true)
