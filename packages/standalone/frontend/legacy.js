@@ -1,11 +1,9 @@
-import { providers } from 'ofm-provider-list'
 let view
 /* 独立服务页面仅使用同源管理接口，不依赖 DSH 或外部 CDN。 */
 const $ = id => document.getElementById(id)
 const API = '/api/management'
 window.addEventListener('ofm:unauthorized', () => showLogin('管理会话已失效，请重新登录'))
 const PAGE_NAMES = { overview: '概览', models: '模型清单', usage: '用量统计', channels: '免费账号渠道', eac: 'EAC 协付渠道', settings: '服务设置', connection: 'API 接入' }
-const STATE_NAMES = { available: '已探测可用', listed: '清单已收录', unknown: '未探测', unavailable: '不可用', throttled: '限流中', 'region-blocked': '地区受限' }
 let summary
 let stats
 let apiKey = ''
@@ -15,7 +13,6 @@ let pollTimer
 let loading
 let authenticated = false
 let generation = 0
-let testInProgress = false
 const fmt = value => new Intl.NumberFormat('zh-CN').format(Number.isFinite(value) ? value : 0)
 const short = value => value >= 1000000 ? `${(value / 1000000).toFixed(1)}M` : value >= 1000 ? `${(value / 1000).toFixed(1)}K` : fmt(value)
 const dateText = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未刷新'
@@ -43,14 +40,14 @@ const node = (tag, className, value) => {
   return element
 }
 
-async function request(path, body, timeoutMs = 10000) {
+async function request(path, body, timeoutMs = 10000, signal) {
   const current = generation
   const response = await fetch(API + path, {
     method: body === undefined ? 'GET' : 'POST',
     credentials: 'same-origin', cache: 'no-store',
     headers: body === undefined ? {} : { 'content-type': 'application/json' },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
   })
   const value = await response.json()
   if (!response.ok) {
@@ -77,9 +74,6 @@ function showLogin(message = '') {
   $('connection-key').value = ''
   $('connection-key').type = 'password'
   $('copy-key').disabled = true
-  $('test-result').hidden = true
-  text('test-result-meta', '')
-  text('test-result-text', '')
   $('notice').hidden = true
   $('error-notice').hidden = true
   text('show-key', '查看密钥')
@@ -125,7 +119,6 @@ function navigate(next) {
     else button.removeAttribute('aria-current')
   })
   if (summary) {
-    if (page === 'models') renderModels()
     if (page === 'usage') renderUsage()
     view?.update({ summary, stats }, page)
   }
@@ -162,61 +155,6 @@ function chart(id, count) {
   }
 }
 
-function renderModels() {
-  const search = $('model-search').value.trim().toLowerCase()
-  const channel = $('model-channel').value
-  const models = summary.catalog.filter(row => (
-    (channel === 'all' || row.channel === channel)
-    && `${row.name} ${row.id}`.toLowerCase().includes(search)
-  ))
-  text('model-result-count', `${models.length} 个模型`)
-  const list = $('model-list')
-  list.replaceChildren()
-  for (const model of models) {
-    const card = node('article', 'model-card')
-    const header = node('div', 'model-card-header')
-    const title = node('div')
-    title.append(node('h2', '', model.name), node('div', 'model-id', model.id))
-    header.append(title, node('span', 'channel-mark', model.channel === 'anonymous' ? 'A' : model.channel.slice(0, 1).toUpperCase()))
-    const badges = node('div', 'model-badges')
-    badges.append(node('span', '', channelName(model.channel)), node('span', '', model.vision ? '视觉' : '纯文本'))
-    if (model.reasoning) badges.append(node('span', '', '思考模型'))
-    const capacity = node('div', 'model-capacity')
-    capacity.append(node('span', '', `上下文 ${model.contextWindow ? short(model.contextWindow) : '未知'}`), node('span', '', `输出 ${model.maxOutput ? short(model.maxOutput) : '未知'}`))
-    const footer = node('div', 'model-card-footer')
-    const availability = node('span', `availability ${model.availability}`, STATE_NAMES[model.availability] ?? '未知')
-    if (!model.routable) availability.textContent += ' · 未公开'
-    const actions = node('div', 'actions')
-    const copy = node('button', 'text-button', '复制 ID')
-    copy.addEventListener('click', () => { void copyText(model.id).catch(errorNotice) })
-    const test = node('button', 'text-button', '测试 ↗')
-    test.disabled = testInProgress || !model.routable || !summary.settings.enabled
-    test.addEventListener('click', () => {
-      void action(test, async () => {
-        if (testInProgress) return
-        testInProgress = true
-        renderModels()
-        try {
-          notice(`正在测试 ${model.name}，会发送少量推理请求…`)
-          const result = await request('/models/test', { model: model.id }, 70000)
-          text('test-result-meta', `${model.name} · ${fmt(result.latencyMs)} ms`)
-          text('test-result-text', result.text || '请求已完成，上游没有返回可见正文。')
-          $('test-result').hidden = false
-          await loadData()
-        } finally {
-          testInProgress = false
-          if (summary) renderModels()
-        }
-      }, '模型测试完成')
-    })
-    actions.append(copy, test)
-    footer.append(availability, actions)
-    card.append(header, badges, capacity, footer)
-    list.append(card)
-  }
-  if (!models.length) list.append(node('p', 'empty-state', '没有匹配的模型，试试其他名称或渠道。'))
-}
-
 function renderUsage() {
   text('usage-requests', fmt(stats.requests))
   text('usage-failed', fmt(stats.failedTurns))
@@ -236,11 +174,6 @@ function renderUsage() {
 
 function render() {
   $('test-mode-notice').hidden = summary.networkMode !== 'fixture'
-  const select = $('model-channel')
-  const selected = select.value
-  select.replaceChildren(new Option('全部渠道', 'all'))
-  for (const channel of new Set(['anonymous', 'kilo', 'eac', ...summary.catalog.map(row => row.channel)])) select.add(new Option(channelName(channel), channel))
-  select.value = [...select.options].some(option => option.value === selected) ? selected : 'all'
   if (page === 'channels' || page === 'eac') view?.channels(page, { ...summary, reload: () => { void loadData().catch(errorNotice) } })
   const endpoint = `${summary.baseUrl}/v1`
   $('connection-endpoint').value = endpoint
@@ -256,12 +189,7 @@ function render() {
   text('settings-refresh-note', summary.automaticRefresh ? '自动刷新已启用，保存间隔后会重新安排下一轮。' : '当前以 --no-refresh 启动。此页设置会保存，但自动任务保持暂停；手动刷新仍可用。')
   const model = summary.catalog.find(row => row.routable)?.id ?? 'MODEL_ID'
   text('connection-example', `curl ${summary.baseUrl}/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: '你好' }] })}'`)
-  if (page === 'models') renderModels()
   if (page === 'usage') renderUsage()
-}
-
-function channelName(value) {
-  return ({ anonymous: '匿名模型', kilo: 'Kilo 免费池', eac: 'EAC 协付' })[value] ?? providers.find(row => row.id === value)?.name ?? value
 }
 
 function loadData() {
@@ -304,15 +232,6 @@ document.querySelectorAll('[data-copy="endpoint"]').forEach(button => button.add
 }))
 for (const id of ['usage-refresh', 'retry']) $(id).addEventListener('click', () => {
   void action($(id), loadData, '状态已更新')
-})
-$('model-search').addEventListener('input', () => { if (summary) renderModels() })
-$('model-channel').addEventListener('change', () => { if (summary) renderModels() })
-for (const [id, probe] of [['model-refresh', false], ['model-probe', true]]) $(id).addEventListener('click', () => {
-  void action($(id), async () => {
-    notice(probe ? '正在探测可用性，会发送少量推理请求…' : '正在刷新上游模型清单…')
-    await request('/models/refresh', { probe }, 300000)
-    await loadData()
-  }, probe ? '可用性探测已完成' : '模型清单已更新')
 })
 $('settings-form').addEventListener('input', () => { settingsDirty = true; text('settings-save-status', '有尚未保存的修改') })
 $('settings-form').addEventListener('submit', event => {
@@ -416,5 +335,10 @@ export function startLegacy(nextView) {
   return {
     navigate, refresh: loadData, copy: copyText, error: errorNotice,
     async logout() { await request('/logout', {}); showLogin('已退出管理') },
+    testModel(model, signal) { return request('/models/test', { model }, 70000, signal) },
+    async refreshModels(probe, signal) {
+      await request('/models/refresh', { probe }, 300000, signal)
+      if (!signal.aborted) await loadData()
+    },
   }
 }

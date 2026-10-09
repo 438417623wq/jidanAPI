@@ -18,6 +18,36 @@ let channelGeneration = 0
 let channelModule: typeof import('./channels.mjs') | undefined
 let channelImport: Promise<typeof import('./channels.mjs')> | undefined
 let channelMounted = false
+let modelModule: typeof import('./models') | undefined
+let modelImport: Promise<void> | undefined
+
+function renderModelPage() {
+  if (!current) return
+  if (modelModule) {
+    root('page-models').render(<modelModule.Models summary={current.summary} host={host} active={currentPage === 'models'} />)
+    return
+  }
+  if (currentPage !== 'models' || modelImport) return
+  const container = document.getElementById('page-models')!
+  container.textContent = '正在加载模型清单…'
+  container.setAttribute('role', 'status')
+  modelImport = import('./models').then(module => {
+    modelModule = module
+    container.removeAttribute('role')
+    container.replaceChildren()
+    renderModelPage()
+  }).catch(() => {
+    if (!current || currentPage !== 'models') return
+    container.replaceChildren()
+    const error = document.createElement('p')
+    error.textContent = '模型页面加载失败，请检查本地服务是否运行。'
+    const retry = document.createElement('button')
+    retry.className = 'secondary'
+    retry.textContent = '重试加载模型'
+    retry.onclick = renderModelPage
+    container.append(error, retry)
+  }).finally(() => { modelImport = undefined })
+}
 
 function hideChannels() {
   channelGeneration++
@@ -61,12 +91,14 @@ host = startLegacy({
     root('sidebar-root').render(<Sidebar page={page} summary={snapshot.summary} host={host} />)
     root('topbar-root').render(<Topbar page={page} summary={snapshot.summary} />)
     root('page-overview').render(<Overview {...snapshot} host={host} />)
+    renderModelPage()
   },
   clear() {
     current = undefined
     hideChannels()
     for (const value of roots.values()) value.render(null)
     document.getElementById('channel-root')!.replaceChildren()
+    document.getElementById('page-models')!.removeAttribute('role')
   },
   channels(kind: 'channels' | 'eac', summary: Snapshot['summary'] & { reload(): void }) {
     // 导航先更新目标，再启动异步页面，避免快速切页时迟到挂载。

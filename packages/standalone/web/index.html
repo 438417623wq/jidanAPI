@@ -46,12 +46,7 @@
       <div id="notice" class="notice" role="status" hidden></div>
       <div id="error-notice" class="notice error-notice" role="alert" hidden><span></span><button id="retry" class="text-button">重试</button></div>
       <section id="page-overview" class="page"></section>
-      <section id="page-models" class="page" hidden>
-        <div class="page-heading"><div><span class="eyebrow">MODEL LIBRARY</span><h1>找到合适的模型<span class="heading-dot">.</span></h1><p>清单来自上游。主动探测和测试会发送少量推理请求。</p></div><div class="actions"><button id="model-refresh" class="secondary">↻ 刷新清单</button><button id="model-probe" class="primary">探测可用性</button></div></div>
-        <div class="filter-bar"><input id="model-search" type="search" aria-label="搜索模型" placeholder="搜索名称或模型 ID…"><select id="model-channel" aria-label="筛选渠道"><option value="all">全部渠道</option><option value="anonymous">匿名模型</option><option value="kilo">Kilo 免费池</option></select><span id="model-result-count" class="muted"></span></div>
-        <div id="model-list" class="model-grid"></div><p class="footnote">Kilo 免费池的提示词可能被上游记录并用于改进服务，请勿发送敏感内容。清单中出现不代表实时可用。</p>
-        <div id="test-result" class="panel" hidden><h2>模型测试结果</h2><p id="test-result-meta" class="muted"></p><pre id="test-result-text"></pre></div>
-      </section>
+      <section id="page-models" class="page" hidden></section>
       <section id="page-usage" class="page" hidden>
         <div class="page-heading"><div><span class="eyebrow">USAGE ANALYTICS</span><h1>每一次调用，都有记录<span class="heading-dot">.</span></h1><p>统计只记录用量与性能，不保存你的提示词和回答。</p></div><button id="usage-refresh" class="secondary">↻ 更新统计</button></div>
         <div class="metric-grid"><article class="metric-card"><span>物理请求</span><strong id="usage-requests">—</strong><small>含恢复时的追加请求</small></article><article class="metric-card"><span>失败回合</span><strong id="usage-failed">—</strong><small id="usage-estimate">最终未完成的用户回合</small></article><article class="metric-card"><span>输入 Token</span><strong id="usage-input">—</strong><small>以已上报用量为准</small></article><article class="metric-card"><span>输出 Token</span><strong id="usage-output">—</strong><small>以已上报用量为准</small></article></div>
