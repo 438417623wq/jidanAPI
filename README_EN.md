@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **This repository is a third-party read-only backup mirror, not the original project.**
+> Upstream: <https://github.com/Ebony-Vinyl/dsh-our-free-model> (by [Ebony-Vinyl](https://github.com/Ebony-Vinyl), MIT License)
+> Upstream HEAD at backup time: `f8974369c5904858c696b520d8b9b82ad4425f78` (2026-10-09 15:16:27 UTC)
+> This repository is an archive only and is not developed here. For installation, usage and the latest work, see upstream. Details: [UPSTREAM.md](UPSTREAM.md).
+
 <div align="center">
   <img src="icon.svg" alt="Our Free Model — free model provider plugin for DeepSeek Harness" width="120">
 

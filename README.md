@@ -1,3 +1,9 @@
+> [!IMPORTANT]
+> **本仓库是第三方只读备份镜像，不是原项目。**
+> 上游仓库：<https://github.com/Ebony-Vinyl/dsh-our-free-model>（作者 [Ebony-Vinyl](https://github.com/Ebony-Vinyl)，MIT 许可证）
+> 备份时上游 HEAD：`f8974369c5904858c696b520d8b9b82ad4425f78`（2026-10-09 15:16:27 UTC）
+> 本仓库仅作存档，不参与开发；安装、使用与最新进展请以上游为准。详见 [UPSTREAM.md](UPSTREAM.md)。
+
 <div align="center">
   <img src="icon.svg" alt="Our Free Model — DeepSeek Harness 免费模型插件" width="120">
 
