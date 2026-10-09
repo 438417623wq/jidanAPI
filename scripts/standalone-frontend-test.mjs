@@ -3,6 +3,8 @@ import fs from 'node:fs'
 import { buildStats } from '../src/core/stats.js'
 import { filterModels } from '../packages/standalone/frontend/models-data.mjs'
 import { usageDays, usageModels } from '../packages/standalone/frontend/usage-data.mjs'
+import { settingsDraft, settingsChanged, syncSettings, validateSettingsDraft } from '../packages/standalone/frontend/settings-data.mjs'
+import { verifySettingsHost } from './standalone-settings-host-test.mjs'
 import { spawnSync } from 'node:child_process'
 
 const web = new URL('../packages/standalone/web/', import.meta.url)
@@ -16,6 +18,7 @@ assert.match(html, /type="module".+src="\/assets\/app.js"/)
 assert.ok(!html.includes('channels-'), '渠道不应在登录首屏预加载')
 assert.ok(!html.includes('models-'), '模型页面不应在登录首屏预加载')
 assert.ok(!html.includes('usage-'), '用量页面不应在登录首屏预加载')
+assert.ok(!html.includes('settings-'), '设置页面不应在登录首屏预加载')
 assert.ok(!html.includes('app.tsx'), '只提供编译后的资源')
 assert.ok(!fs.existsSync(new URL('channels.js', web)), '不同时携带第二份 React 渠道包')
 const app = fs.readFileSync(new URL('app.js', web), 'utf8')
@@ -26,6 +29,8 @@ const modelsChunk = assets.find(name => name.startsWith('models-'))
 assert.ok(modelsChunk && app.includes(modelsChunk), '入口必须按需导入模型页面')
 const usageChunk = assets.find(name => name.startsWith('usage-'))
 assert.ok(usageChunk && app.includes(usageChunk), '入口必须按需导入用量页面')
+const settingsChunk = assets.find(name => name.startsWith('settings-'))
+assert.ok(settingsChunk && app.includes(settingsChunk), '入口必须按需导入服务设置')
 for (const [_, name] of html.matchAll(/(?:src|href)="\/assets\/([^"]+)"/g)) {
   assert.ok(assets.includes(name), `HTML 资源未登记：${name}`)
 }
@@ -108,4 +113,47 @@ assert.equal(cumulative.turns, 40)
 assert.equal(cumulative.requests, 50)
 assert.equal(cumulative.logicalEstimated, true)
 assert.equal(cumulative.requestFailures, 3)
-console.log('standalone-frontend: 资源登记、三页面分包、千模型筛选、累计口径、本地日期与统计分页检查通过')
+const savedSettings = {
+  enabled: true, exposeRegionModels: true, streamRecovery: true, standaloneProbe: false,
+  defaultMaxTokens: 32768, probeIntervalMinutes: 15,
+}
+const cleanDraft = settingsDraft(savedSettings)
+assert.equal(settingsChanged(cleanDraft, savedSettings), false)
+assert.deepEqual(validateSettingsDraft(cleanDraft).patch, savedSettings)
+for (const [field, valid, invalid] of [
+  ['defaultMaxTokens', ['512', '131072', ' 8192 '], ['', ' ', '511', '131073', '512.5', 'NaN', 'Infinity']],
+  ['probeIntervalMinutes', ['1', '1440', '12'], ['', ' ', '0', '1441', '1.5', 'NaN', 'Infinity']],
+]) {
+  for (const value of valid) {
+    const result = validateSettingsDraft({ ...cleanDraft, [field]: value })
+    assert.ok(result.patch, `${field}=${value} 应可保存`)
+    assert.equal(result.patch[field], Number(value))
+  }
+  for (const value of invalid) {
+    const result = validateSettingsDraft({ ...cleanDraft, [field]: value })
+    assert.equal(result.patch, null, `${field}=${value} 不应提交`)
+    assert.ok(result.errors[field])
+  }
+}
+const bothInvalid = validateSettingsDraft({ ...cleanDraft, defaultMaxTokens: '', probeIntervalMinutes: '0' })
+assert.equal(Object.keys(bothInvalid.errors).length, 2)
+assert.ok(!Object.hasOwn(validateSettingsDraft({ ...cleanDraft, forwardKey: '不应进入请求' }).patch, 'forwardKey'))
+const editedDraft = { ...cleanDraft, defaultMaxTokens: '8192', enabled: false }
+assert.equal(settingsChanged(editedDraft, savedSettings), true)
+const nextSaved = { ...savedSettings, probeIntervalMinutes: 12 }
+assert.deepEqual(syncSettings({ saved: savedSettings, draft: cleanDraft }, nextSaved, false),
+  { saved: nextSaved, draft: settingsDraft(nextSaved) }, '无修改时跟随后台')
+const synchronized = syncSettings({ saved: savedSettings, draft: editedDraft }, nextSaved, false)
+assert.deepEqual(synchronized.saved, nextSaved)
+assert.deepEqual(synchronized.draft, editedDraft, '轮询更新基线，但不能覆盖草稿')
+assert.deepEqual(syncSettings({ saved: savedSettings, draft: cleanDraft }, nextSaved, true).draft,
+  cleanDraft, '保存期间即使草稿恰好等于旧基线，也不能被轮询覆盖')
+assert.equal(settingsChanged(settingsDraft(synchronized.saved), synchronized.saved), false, '撤销恢复最新保存值')
+assert.equal(settingsChanged({ ...editedDraft, defaultMaxTokens: '32768', enabled: true }, savedSettings), false,
+  '改回原值不应继续提示未保存')
+assert.deepEqual(savedSettings, {
+  enabled: true, exposeRegionModels: true, streamRecovery: true, standaloneProbe: false,
+  defaultMaxTokens: 32768, probeIntervalMinutes: 15,
+}, '草稿操作不能改动输入配置')
+await verifySettingsHost()
+console.log('standalone-frontend: 资源登记、四页面分包、模型筛选、统计日期分页、设置校验与草稿同步、迟到摘要及退出保存检查通过')

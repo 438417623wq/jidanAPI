@@ -6,6 +6,7 @@ import { createCredentials } from '../packages/standalone/channels/credentials.m
 
 const modelCount = Number(process.env.OFM_PREVIEW_MODELS ?? 0)
 const usageFixture = process.env.OFM_PREVIEW_USAGE === '1'
+const settingsFixture = process.env.OFM_PREVIEW_SETTINGS === '1'
 const usageDaysAgo = Number(process.env.OFM_PREVIEW_USAGE_DAYS_AGO ?? 0)
 if (!Number.isInteger(usageDaysAgo) || usageDaysAgo < 0 || usageDaysAgo > 90) throw new Error('用量替身日期偏移必须为 0–90 天')
 if (!Number.isInteger(modelCount) || modelCount < 0 || modelCount > 1000) throw new Error('替身模型数量必须为 0–1000')
@@ -70,7 +71,7 @@ process.env.OUR_FREE_MODEL_KILO_BASE = base
 const fixture = new URL('./lib/standalone-channel-fixture.mjs', import.meta.url).href
 process.execArgv.push('--import', fixture)
 await import(fixture)
-const prefix = usageFixture ? usageDaysAgo ? 'ui-usage-history' : 'ui-usage' : modelCount ? 'ui-phase1-load' : 'ui-phase1'
+const prefix = settingsFixture ? 'ui-settings' : usageFixture ? usageDaysAgo ? 'ui-usage-history' : 'ui-usage' : modelCount ? 'ui-phase1-load' : 'ui-phase1'
 const dataDir = path.resolve(`.verify/${prefix}-data`)
 fs.mkdirSync(path.join(dataDir, 'channel-pack'), { recursive: true })
 const state = path.join(dataDir, 'channel-pack/state.json')
@@ -117,7 +118,10 @@ if (usageFixture && !fs.existsSync(usageFile)) {
   }))
 }
 const { startStandalone } = await import('../packages/standalone/service.mjs')
-const service = await startStandalone({ dataDir, port: usageFixture ? usageDaysAgo ? 18904 : 18903 : modelCount ? 18902 : 18901 })
+const service = await startStandalone({
+  dataDir, port: settingsFixture ? 18905 : usageFixture ? usageDaysAgo ? 18904 : 18903 : modelCount ? 18902 : 18901,
+  refresh: process.env.OFM_PREVIEW_NO_REFRESH !== '1',
+})
 await service.ready
 fs.writeFileSync(`.verify/${prefix}-url.txt`, service.managementUrl)
 console.log(`界面预览：${service.url}（本机替身，非真实账号与上游）`)
