@@ -14,7 +14,9 @@ const require = createRequire(import.meta.url)
 const { chromium } = require(process.env.OFM_PLAYWRIGHT_MODULE ?? 'playwright')
 const runFile = promisify(execFile)
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'ofm-login-ui-'))
-const dataDir = path.join(scratch, '测试目录 带空格 \' " $HOME $(exit 99)\n独立服务')
+const dataDir = path.join(scratch, process.platform === 'win32'
+  ? "测试目录 带空格 ' $HOME $(exit 99) 独立服务"
+  : '测试目录 带空格 \' " $HOME $(exit 99)\n独立服务')
 const key = 'ofm-isolated-macos-ui-test-key'
 fs.mkdirSync(dataDir, { mode: 0o700 })
 fs.writeFileSync(path.join(dataDir, 'settings.json'), JSON.stringify({ forwardKey: key }), { mode: 0o600 })
