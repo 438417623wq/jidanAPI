@@ -1,173 +1,60 @@
 import { createRoot } from 'react-dom/client'
-import type { Root } from 'react-dom/client'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent, ReactNode } from 'react'
+import { AlertCircle } from 'lucide-react'
 import { Sidebar, Topbar } from './components/shell'
 import { Overview } from './components/overview'
-import { startLegacy } from './legacy'
-import type { Host, Page, Snapshot } from './types'
+import { Connection } from './connection'
+import type { Host, Page, ServiceSettings, Snapshot } from './types'
 import './app.css'
 
-const roots = new Map<string, Root>()
-const root = (id: string) => {
-  if (!roots.has(id)) roots.set(id, createRoot(document.getElementById(id)!))
-  return roots.get(id)!
-}
-let host: Host
-let current: Snapshot | undefined
-let currentPage: Page = 'overview'
-let channelGeneration = 0
-let channelModule: typeof import('./channels.mjs') | undefined
-let channelImport: Promise<typeof import('./channels.mjs')> | undefined
-let channelMounted = false
-let modelModule: typeof import('./models') | undefined
-let modelImport: Promise<void> | undefined
-let usageModule: typeof import('./usage') | undefined
-let usageImport: Promise<void> | undefined
-let settingsModule: typeof import('./settings') | undefined
-let settingsImport: Promise<void> | undefined
+const API = '/api/management'
+const pageNames: Page[] = ['overview', 'models', 'usage', 'channels', 'eac', 'settings', 'connection']
+const platform = document.getElementById('root')?.dataset.loginPlatform ?? (/Windows/i.test(navigator.userAgent) ? 'windows' : /Macintosh|Mac OS/i.test(navigator.userAgent) ? 'macos' : 'unsupported')
+const terminalName = platform === 'windows' ? 'PowerShell' : '终端'
+type Request = <T = any>(path: string, body?: unknown, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
+const messageOf = (error: unknown) => error instanceof Error ? error.name === 'TimeoutError' ? '请求超时，请检查服务是否仍在运行。' : error.message : '请求失败，请重试。'
 
-function renderSettingsPage() {
-  if (!current) return
-  if (settingsModule) {
-    root('page-settings').render(<settingsModule.Settings summary={current.summary} host={host} active={currentPage === 'settings'} />)
-    return
-  }
-  if (currentPage !== 'settings' || settingsImport) return
-  const container = document.getElementById('page-settings')!
-  container.textContent = '正在加载服务设置…'
-  container.setAttribute('role', 'status')
-  settingsImport = import('./settings').then(module => {
-    settingsModule = module
-    container.removeAttribute('role')
-    container.replaceChildren()
-    renderSettingsPage()
-  }).catch(() => {
-    if (!current || currentPage !== 'settings') return
-    container.replaceChildren()
-    const error = document.createElement('p')
-    error.textContent = '设置页面加载失败，请检查本地服务是否运行。'
-    const retry = document.createElement('button')
-    retry.className = 'secondary'
-    retry.textContent = '重试加载设置'
-    retry.onclick = renderSettingsPage
-    container.append(error, retry)
-  }).finally(() => { settingsImport = undefined })
+function LoginScreen({ request }: { request: Request }) {
+  const [key, setKey] = useState(''), [error, setError] = useState(''), [status, setStatus] = useState(''), [busy, setBusy] = useState(false)
+  const command = platform === 'windows'
+    ? '(Get-Content -LiteralPath "$env:USERPROFILE\\.our-free-model\\settings.json" -Raw -Encoding UTF8 | ConvertFrom-Json).forwardKey | Set-Clipboard'
+    : platform === 'macos'
+      ? `node -e 'const fs = require("node:fs"); const {execFileSync} = require("node:child_process"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); execFileSync("/usr/bin/pbcopy", [], {input: key});' "$HOME/.our-free-model/settings.json"`
+      : `node -e 'const fs = require("node:fs"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); process.stdout.write(key + "\\n");' "$HOME/.our-free-model/settings.json"`
+  const submit = async (event: FormEvent) => { event.preventDefault(); if (busy) return; setBusy(true); setError(''); try { await request('/session', { key: key.trim() }); setKey(''); window.dispatchEvent(new CustomEvent('ofm:logged-in')) } catch (reason) { setError(messageOf(reason)) } finally { setBusy(false) } }
+  const openTerminal = async () => { if (platform === 'unsupported' || busy) return; setBusy(true); setStatus(`正在本机打开${terminalName}…`); try { await request('/login/terminal', {}, 15000); setStatus(`已请求打开${terminalName}。窗口提示复制成功后，回到这里粘贴令牌。`); document.getElementById('login-key')?.focus() } catch (reason) { setStatus(`${messageOf(reason)}。可以展开下方的手动获取说明。`) } finally { setBusy(false) } }
+  const copyCommand = async () => { try { await navigator.clipboard.writeText(command); setStatus(`命令已复制。在${terminalName}执行后，回到这里粘贴令牌。`) } catch { const input = document.getElementById('login-command') as HTMLTextAreaElement | null; input?.focus(); input?.select(); setStatus(`浏览器未允许复制，已选中命令，请按 ${platform === 'macos' ? 'Command+C' : 'Ctrl+C'} 手动复制。`) } }
+  return <section id="login-screen" className="login-shell" data-testid="login-screen"><div className="login-card"><div className="brand-mark" aria-hidden="true">ofm<span>.</span></div>
+    <span className="eyebrow">OUR FREE MODEL / LOCAL CONSOLE</span><h1>连接你的本地服务</h1><p>使用启动时打印的一次性链接，或输入保存在本机的登录令牌。</p>
+    <form id="login-form" onSubmit={event => { void submit(event) }}><label htmlFor="login-key">登录令牌（API Key）</label><input id="login-key" name="key" type="password" autoComplete="off" placeholder="ofm-…" required value={key} onChange={event => setKey(event.target.value)} /><button className="primary" type="submit" disabled={busy}>进入控制台 <span aria-hidden="true">→</span></button></form>
+    {error && <p id="login-error" role="alert" className="error">{error}</p>}<div className="login-help"><h2>没有令牌？从本机获取</h2><p id="login-terminal-help">{platform === 'unsupported' ? '当前系统不支持自动打开终端，请展开下方说明手动获取令牌。' : `点击下方按钮，会打开${terminalName}并将当前服务的令牌复制到剪贴板。回来粘贴到上方即可。`}</p>
+      <button id="login-terminal" className="secondary" type="button" data-login-platform={platform} disabled={platform === 'unsupported' || busy} onClick={() => void openTerminal()}>打开{platform === 'windows' ? ' PowerShell ' : '终端'}获取令牌 ↗</button><p id="login-help-status" role="status">{status}</p><details><summary>手动获取与其他系统</summary><p>默认位置：用户目录下的 <code>.our-free-model/settings.json</code>，取 <code>forwardKey</code> 字段。</p><label id="login-command-label" htmlFor="login-command">获取令牌命令（默认目录）</label><textarea id="login-command" readOnly rows={4} spellCheck={false} value={command} /><button id="copy-login-command" className="text-button" type="button" onClick={() => void copyCommand()}>复制获取令牌命令</button></details></div><small>登录仅用于本机管理。会话在 8 小时后或服务重启后失效。</small></div></section>
 }
-
-function renderUsagePage() {
-  if (!current) return
-  if (usageModule) {
-    root('page-usage').render(<usageModule.Usage stats={current.stats} host={host} active={currentPage === 'usage'} />)
-    return
-  }
-  if (currentPage !== 'usage' || usageImport) return
-  const container = document.getElementById('page-usage')!
-  container.textContent = '正在加载用量统计…'
-  container.setAttribute('role', 'status')
-  usageImport = import('./usage').then(module => {
-    usageModule = module
-    container.removeAttribute('role')
-    container.replaceChildren()
-    renderUsagePage()
-  }).catch(() => {
-    if (!current || currentPage !== 'usage') return
-    container.replaceChildren()
-    const error = document.createElement('p')
-    error.textContent = '统计页面加载失败，请检查本地服务是否运行。'
-    const retry = document.createElement('button')
-    retry.className = 'secondary'
-    retry.textContent = '重试加载统计'
-    retry.onclick = renderUsagePage
-    container.append(error, retry)
-  }).finally(() => { usageImport = undefined })
+function LoadingScreen() { return <div id="loading-screen" className="loading-screen"><div className="brand-mark">ofm<span>·</span></div><p>正在连接本地服务…</p></div> }
+function ChannelMount({ kind, summary }: { kind: 'channels' | 'eac'; summary: Snapshot['summary'] & { reload(): void } }) {
+  const [module, setModule] = useState<typeof import('./channels.mjs')>(); const generation = useRef(0); const summaryRef = useRef(summary); summaryRef.current = summary
+  useEffect(() => { const current = ++generation.current; let alive = true; void import('./channels.mjs').then(value => { if (alive && current === generation.current) setModule(value) }); return () => { alive = false; generation.current++; module?.hide() } }, [kind])
+  useEffect(() => { if (!module) return; module.show(kind, summaryRef.current); return () => module.hide() }, [module, kind])
+  return <div id="channel-root" className="ofm_root" role={module ? undefined : 'status'}>{module ? null : '正在加载渠道管理…'}</div>
 }
-
-function renderModelPage() {
-  if (!current) return
-  if (modelModule) {
-    root('page-models').render(<modelModule.Models summary={current.summary} host={host} active={currentPage === 'models'} />)
-    return
-  }
-  if (currentPage !== 'models' || modelImport) return
-  const container = document.getElementById('page-models')!
-  container.textContent = '正在加载模型清单…'
-  container.setAttribute('role', 'status')
-  modelImport = import('./models').then(module => {
-    modelModule = module
-    container.removeAttribute('role')
-    container.replaceChildren()
-    renderModelPage()
-  }).catch(() => {
-    if (!current || currentPage !== 'models') return
-    container.replaceChildren()
-    const error = document.createElement('p')
-    error.textContent = '模型页面加载失败，请检查本地服务是否运行。'
-    const retry = document.createElement('button')
-    retry.className = 'secondary'
-    retry.textContent = '重试加载模型'
-    retry.onclick = renderModelPage
-    container.append(error, retry)
-  }).finally(() => { modelImport = undefined })
+function LazyPage({ name, snapshot, host }: { name: 'models' | 'usage' | 'settings'; snapshot: Snapshot; host: Host }) {
+  const [module, setModule] = useState<any>(); useEffect(() => { let alive = true; const loaded = name === 'models' ? import('./models') : name === 'usage' ? import('./usage') : import('./settings'); void loaded.then(value => { if (alive) setModule(value) }); return () => { alive = false } }, [name])
+  if (!module) return <p role="status">正在加载页面…</p>; const Component = module[name === 'models' ? 'Models' : name === 'usage' ? 'Usage' : 'Settings']; return <Component summary={snapshot.summary} stats={snapshot.stats} host={host} active />
 }
-
-function hideChannels() {
-  channelGeneration++
-  if (channelMounted) { channelModule?.hide(); channelMounted = false }
+function App() {
+  const [mode, setMode] = useState<'loading' | 'login' | 'ready'>('loading'), [snapshot, setSnapshot] = useState<Snapshot>(), [page, setPage] = useState<Page>('overview'), [notice, setNotice] = useState(''), [error, setError] = useState('')
+  const generation = useRef(0), loading = useRef<Promise<void> | undefined>(undefined), authenticated = useRef(false), settingsRevision = useRef(0)
+  const enterLogin = (reason = '') => { generation.current++; authenticated.current = false; setSnapshot(undefined); setError(reason); setNotice(''); setMode('login') }
+  const request: Request = async (path, body, timeoutMs = 10000, signal) => { const current = generation.current; const response = await fetch(API + path, { method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin', cache: 'no-store', headers: body === undefined ? {} : { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body), signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs) }); const value = await response.json(); if (!response.ok) { const reason = Object.assign(new Error(value.error ?? `请求失败（${response.status}）`), { status: response.status }); if (response.status === 401 && path !== '/session') enterLogin(reason.message); throw reason } if (current !== generation.current) throw new Error('管理会话已变化，请重新操作。'); return value }
+  const loadData = async () => { if (loading.current) return loading.current; const current = generation.current, revision = settingsRevision.current; loading.current = Promise.all([request('/summary'), request('/stats')]).then(([summary, stats]) => { if (current !== generation.current) return; setSnapshot(previous => ({ summary: revision !== settingsRevision.current && previous ? { ...summary, settings: previous.summary.settings } : summary, stats })); authenticated.current = true; setMode('ready'); setError('') }).finally(() => { loading.current = undefined }); return loading.current }
+  const host = useMemo<Host>(() => ({ navigate: next => { if (pageNames.includes(next)) { setPage(next); setError(''); setNotice('') } }, refresh: async () => { await loadData() }, copy: async value => { await navigator.clipboard.writeText(value); setNotice('已复制到剪贴板') }, getApiKey: async () => (await request<{ key: string }>('/key')).key, rotateKey: async () => (await request<{ key: string }>('/key/rotate', { confirm: true })).key, logout: async () => { await request('/logout', {}); enterLogin('已退出管理') }, error: reason => setError(messageOf(reason)), testModel: (model, signal) => request('/models/test', { model }, 70000, signal), refreshModels: async (probe, signal) => { await request('/models/refresh', { probe }, 300000, signal); if (!signal.aborted) await loadData() }, saveSettings: async (settings: ServiceSettings) => { const value = await request<{ settings: ServiceSettings }>('/settings', settings); settingsRevision.current++; return value.settings } }), [page])
+  useEffect(() => { const onUnauthorized = () => enterLogin('管理会话已失效，请重新登录'); window.addEventListener('ofm:unauthorized', onUnauthorized); return () => window.removeEventListener('ofm:unauthorized', onUnauthorized) }, [])
+  useEffect(() => { const token = new URLSearchParams(location.hash.slice(1)).get('login'); if (token) history.replaceState(null, '', location.pathname + location.search); void (async () => { try { if (token) await request('/session', { bootstrapToken: token }); await loadData() } catch (reason) { enterLogin((reason as any)?.status === 401 && !token ? '' : messageOf(reason)) } })() }, [])
+  useEffect(() => { if (mode !== 'ready') return; const timer = window.setInterval(() => { if (!document.hidden) void loadData().catch(reason => setError(messageOf(reason))) }, 15000); return () => window.clearInterval(timer) }, [mode])
+  const content: ReactNode = snapshot && page === 'overview' ? <Overview {...snapshot} host={host} /> : snapshot && page === 'connection' ? <Connection summary={snapshot.summary} host={host} active /> : snapshot && (page === 'channels' || page === 'eac') ? <ChannelMount kind={page} summary={{ ...snapshot.summary, reload: () => { void loadData() } }} /> : null
+  if (mode === 'loading') return <LoadingScreen />
+  if (mode === 'login') return <LoginScreen request={async (...args) => { const result = await request(...args); if (args[0] === '/session') await loadData(); return result }} />
+  return <div id="app" className="app-shell"><aside className="sidebar"><Sidebar page={page} summary={snapshot?.summary} host={host} /></aside><main><header className="topbar"><Topbar page={page} summary={snapshot?.summary} /></header>{snapshot?.summary.networkMode === 'fixture' && <div className="notice test-mode-notice" role="alert">当前为本机替身测试模式：账号、模型回答与额度均为测试数据。</div>}{notice && <div className="notice" role="status">{notice}<button className="text-button" onClick={() => setNotice('')}>关闭</button></div>}{error && <div className="notice error-notice" role="alert"><AlertCircle size={16} /><span>{error}</span><button className="text-button" onClick={() => { setError(''); void loadData() }}>重试</button></div>}<section className="page">{content}{snapshot && page === 'models' && <LazyPage name="models" snapshot={snapshot} host={host} />}{snapshot && page === 'usage' && <LazyPage name="usage" snapshot={snapshot} host={host} />}{snapshot && page === 'settings' && <LazyPage name="settings" snapshot={snapshot} host={host} />}</section><footer>OUR FREE MODEL <span>·</span> 本地运行 · 由你掌控</footer></main></div>
 }
-function showChannels(kind: 'channels' | 'eac', summary: Snapshot['summary'] & { reload(): void }) {
-  if (channelModule) {
-    channelGeneration++
-    document.getElementById('channel-root')!.removeAttribute('role')
-    channelModule.show(kind, summary)
-    channelMounted = true
-    return
-  }
-  const generation = ++channelGeneration
-  const container = document.getElementById('channel-root')!
-  container.textContent = '正在加载渠道管理…'
-  container.setAttribute('role', 'status')
-  channelImport ??= import('./channels.mjs').catch(error => { channelImport = undefined; throw error })
-  void channelImport.then(module => {
-    if (generation !== channelGeneration || !current || currentPage !== kind) return
-    container.removeAttribute('role')
-    container.textContent = ''
-    channelModule = module
-    module.show(kind, summary)
-    channelMounted = true
-  }).catch(() => {
-    if (generation !== channelGeneration || !current || currentPage !== kind) return
-    container.textContent = ''
-    const error = document.createElement('p')
-    error.textContent = '渠道页面加载失败，请检查本地服务是否运行。'
-    const retry = document.createElement('button')
-    retry.className = 'secondary'; retry.textContent = '重试加载渠道'
-    retry.onclick = () => showChannels(kind, summary)
-    container.append(error, retry)
-  })
-}
-host = startLegacy({
-  update(snapshot: Snapshot, page: Page) {
-    current = snapshot
-    currentPage = page
-    root('sidebar-root').render(<Sidebar page={page} summary={snapshot.summary} host={host} />)
-    root('topbar-root').render(<Topbar page={page} summary={snapshot.summary} />)
-    root('page-overview').render(<Overview {...snapshot} host={host} />)
-    renderModelPage()
-    renderUsagePage()
-    renderSettingsPage()
-  },
-  clear() {
-    current = undefined
-    hideChannels()
-    for (const value of roots.values()) value.render(null)
-    document.getElementById('channel-root')!.replaceChildren()
-    document.getElementById('page-models')!.removeAttribute('role')
-    document.getElementById('page-usage')!.removeAttribute('role')
-    document.getElementById('page-settings')!.removeAttribute('role')
-  },
-  channels(kind: 'channels' | 'eac', summary: Snapshot['summary'] & { reload(): void }) {
-    // 导航先更新目标，再启动异步页面，避免快速切页时迟到挂载。
-    currentPage = kind
-    showChannels(kind, summary)
-  },
-  hideChannels,
-})
+createRoot(document.getElementById('root')!).render(<App />)

@@ -64,6 +64,8 @@ export interface Host {
   navigate(page: Page): void
   refresh(): Promise<void>
   copy(value: string): Promise<void>
+  getApiKey(): Promise<string>
+  rotateKey(): Promise<string>
   logout(): Promise<void>
   error(error: Error): void
   testModel(model: string, signal: AbortSignal): Promise<ModelTestResult>

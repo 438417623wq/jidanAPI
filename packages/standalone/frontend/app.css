@@ -229,6 +229,18 @@ th:first-child, td:first-child { text-align: left; overflow-wrap: anywhere; }
 .field-label { display: block; font-size: 12px; color: #687487; margin: 18px 0 8px; }
 .copy-field { display: flex; flex-wrap: wrap; gap: 8px; }
 .copy-field input { flex: 1; font-family: Consolas, monospace; }
+.connection-browser { max-width: 900px; }
+.connection-card { margin-bottom: 18px; }
+.connection-card-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 6px; color: #687487; }
+.connection-card-heading > div { flex: 1; min-width: 0; }
+.connection-card-heading h2 { color: var(--ink); }
+.connection-card-heading p { margin-top: 3px; font-size: 11px; }
+.connection-feedback, .connection-error { display: flex; align-items: center; gap: 7px; margin: 0 0 14px; font-size: 12px; }
+.connection-feedback { color: #16805a; }
+.connection-error { color: #b63647; }
+.connection-example { margin-top: 15px; }
+.connection-danger { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.connection-danger p { margin-top: 4px; font-size: 12px; }
 pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f0f2f6; border-radius: 6px; padding: 18px; font-size: 12px; margin-top: 12px; }
 .danger-button { color: #b63647; border-color: #edccd1; background: #fff7f8; }
 .confirm-panel { padding: 18px; border: 1px solid #edccd1; background: #fff7f8; border-radius: 6px; }
