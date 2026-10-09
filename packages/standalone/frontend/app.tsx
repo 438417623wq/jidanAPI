@@ -20,6 +20,36 @@ let channelImport: Promise<typeof import('./channels.mjs')> | undefined
 let channelMounted = false
 let modelModule: typeof import('./models') | undefined
 let modelImport: Promise<void> | undefined
+let usageModule: typeof import('./usage') | undefined
+let usageImport: Promise<void> | undefined
+
+function renderUsagePage() {
+  if (!current) return
+  if (usageModule) {
+    root('page-usage').render(<usageModule.Usage stats={current.stats} host={host} active={currentPage === 'usage'} />)
+    return
+  }
+  if (currentPage !== 'usage' || usageImport) return
+  const container = document.getElementById('page-usage')!
+  container.textContent = '正在加载用量统计…'
+  container.setAttribute('role', 'status')
+  usageImport = import('./usage').then(module => {
+    usageModule = module
+    container.removeAttribute('role')
+    container.replaceChildren()
+    renderUsagePage()
+  }).catch(() => {
+    if (!current || currentPage !== 'usage') return
+    container.replaceChildren()
+    const error = document.createElement('p')
+    error.textContent = '统计页面加载失败，请检查本地服务是否运行。'
+    const retry = document.createElement('button')
+    retry.className = 'secondary'
+    retry.textContent = '重试加载统计'
+    retry.onclick = renderUsagePage
+    container.append(error, retry)
+  }).finally(() => { usageImport = undefined })
+}
 
 function renderModelPage() {
   if (!current) return
@@ -92,6 +122,7 @@ host = startLegacy({
     root('topbar-root').render(<Topbar page={page} summary={snapshot.summary} />)
     root('page-overview').render(<Overview {...snapshot} host={host} />)
     renderModelPage()
+    renderUsagePage()
   },
   clear() {
     current = undefined
@@ -99,6 +130,7 @@ host = startLegacy({
     for (const value of roots.values()) value.render(null)
     document.getElementById('channel-root')!.replaceChildren()
     document.getElementById('page-models')!.removeAttribute('role')
+    document.getElementById('page-usage')!.removeAttribute('role')
   },
   channels(kind: 'channels' | 'eac', summary: Snapshot['summary'] & { reload(): void }) {
     // 导航先更新目标，再启动异步页面，避免快速切页时迟到挂载。

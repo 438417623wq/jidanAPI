@@ -26,12 +26,30 @@ export interface Summary {
 }
 export interface Stats {
   requests: number
+  requestFailures: number
+  requestFailuresEstimated?: boolean
+  logicalEstimated?: boolean
   turns: number
   failedTurns: number
   recoveredTurns: number
   days: { day: string; total: number }[]
-  grand: { input: number; output: number }
+  grand: { input: number; output: number; reasoning: number }
+  models: UsageModel[]
   samples: { model?: string; ok?: boolean; error?: string; at?: number; ms?: number }[]
+}
+export interface UsageModel {
+  model: string
+  name: string
+  calls: number
+  turns: number
+  input: number
+  output: number
+  reasoning: number
+  failed: number
+  failedTurns: number
+  recoveredTurns: number
+  avgTtftMs?: number | null
+  tps?: number | null
 }
 export interface Snapshot { summary: Summary; stats: Stats }
 export interface Host {

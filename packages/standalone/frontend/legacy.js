@@ -13,9 +13,6 @@ let pollTimer
 let loading
 let authenticated = false
 let generation = 0
-const fmt = value => new Intl.NumberFormat('zh-CN').format(Number.isFinite(value) ? value : 0)
-const short = value => value >= 1000000 ? `${(value / 1000000).toFixed(1)}M` : value >= 1000 ? `${(value / 1000).toFixed(1)}K` : fmt(value)
-const dateText = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未刷新'
 const text = (id, value) => { $(id).textContent = value }
 const loginPlatform = $('login-terminal').dataset.loginPlatform
 const loginTerminalName = loginPlatform === 'windows' ? 'PowerShell' : '终端'
@@ -33,13 +30,6 @@ if (loginPlatform !== 'windows') {
     ? `node -e 'const fs = require("node:fs"); const {execFileSync} = require("node:child_process"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); execFileSync("/usr/bin/pbcopy", [], {input: key});' "$HOME/.our-free-model/settings.json"`
     : `node -e 'const fs = require("node:fs"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); process.stdout.write(key + "\\n");' "$HOME/.our-free-model/settings.json"`
 }
-const node = (tag, className, value) => {
-  const element = document.createElement(tag)
-  if (className) element.className = className
-  if (value !== undefined) element.textContent = value
-  return element
-}
-
 async function request(path, body, timeoutMs = 10000, signal) {
   const current = generation
   const response = await fetch(API + path, {
@@ -119,57 +109,9 @@ function navigate(next) {
     else button.removeAttribute('aria-current')
   })
   if (summary) {
-    if (page === 'usage') renderUsage()
     view?.update({ summary, stats }, page)
   }
   $('rotate-confirm').hidden = true
-}
-
-function dayId(date) {
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
-}
-
-function chart(id, count) {
-  const values = new Map((stats.days ?? []).map(row => [row.day, row.total]))
-  const days = []
-  const today = new Date()
-  today.setHours(12, 0, 0, 0)
-  for (let index = count - 1; index >= 0; index--) {
-    const at = new Date(today)
-    at.setDate(at.getDate() - index)
-    days.push({ day: dayId(at), total: values.get(dayId(at)) ?? 0 })
-  }
-  const max = Math.max(1, ...days.map(row => row.total))
-  const container = $(id)
-  container.replaceChildren()
-  container.setAttribute('role', 'img')
-  container.setAttribute('aria-label', `最近 ${count} 天 Token 用量：${days.map(row => `${row.day} ${fmt(row.total)}`).join('；')}`)
-  for (const row of days) {
-    const column = node('div', 'chart-column')
-    column.title = `${row.day} · ${fmt(row.total)} Token`
-    const value = node('span', 'chart-value', row.total ? short(row.total) : '')
-    const bar = node('div', `chart-bar${row.total ? '' : ' chart-zero'}`)
-    bar.style.height = `${Math.max(2, row.total / max * 75)}%`
-    column.append(value, bar, node('span', 'chart-label', row.day.slice(5).replace('-', '/')))
-    container.append(column)
-  }
-}
-
-function renderUsage() {
-  text('usage-requests', fmt(stats.requests))
-  text('usage-failed', fmt(stats.failedTurns))
-  text('usage-estimate', stats.logicalEstimated ? '包含迁移前历史估算' : '最终未完成的用户回合')
-  text('usage-input', short(stats.grand.input))
-  text('usage-output', short(stats.grand.output))
-  chart('usage-chart', 14)
-  const rows = $('usage-models')
-  rows.replaceChildren()
-  for (const model of [...stats.models].sort((a, b) => b.calls - a.calls)) {
-    const row = node('tr')
-    for (const value of [model.name, fmt(model.turns), fmt(model.calls), fmt(model.input), fmt(model.output), fmt(model.failedTurns)]) row.append(node('td', '', value))
-    rows.append(row)
-  }
-  $('usage-empty').hidden = stats.models.length > 0
 }
 
 function render() {
@@ -189,7 +131,6 @@ function render() {
   text('settings-refresh-note', summary.automaticRefresh ? '自动刷新已启用，保存间隔后会重新安排下一轮。' : '当前以 --no-refresh 启动。此页设置会保存，但自动任务保持暂停；手动刷新仍可用。')
   const model = summary.catalog.find(row => row.routable)?.id ?? 'MODEL_ID'
   text('connection-example', `curl ${summary.baseUrl}/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: '你好' }] })}'`)
-  if (page === 'usage') renderUsage()
 }
 
 function loadData() {
@@ -230,9 +171,7 @@ document.querySelectorAll('[data-go]').forEach(button => button.addEventListener
 document.querySelectorAll('[data-copy="endpoint"]').forEach(button => button.addEventListener('click', () => {
   void copyText(`${summary.baseUrl}/v1`).catch(errorNotice)
 }))
-for (const id of ['usage-refresh', 'retry']) $(id).addEventListener('click', () => {
-  void action($(id), loadData, '状态已更新')
-})
+$('retry').addEventListener('click', () => { void action($('retry'), loadData, '状态已更新') })
 $('settings-form').addEventListener('input', () => { settingsDirty = true; text('settings-save-status', '有尚未保存的修改') })
 $('settings-form').addEventListener('submit', event => {
   event.preventDefault()

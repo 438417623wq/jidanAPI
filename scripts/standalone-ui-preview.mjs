@@ -5,6 +5,9 @@ import http from 'node:http'
 import { createCredentials } from '../packages/standalone/channels/credentials.mjs'
 
 const modelCount = Number(process.env.OFM_PREVIEW_MODELS ?? 0)
+const usageFixture = process.env.OFM_PREVIEW_USAGE === '1'
+const usageDaysAgo = Number(process.env.OFM_PREVIEW_USAGE_DAYS_AGO ?? 0)
+if (!Number.isInteger(usageDaysAgo) || usageDaysAgo < 0 || usageDaysAgo > 90) throw new Error('用量替身日期偏移必须为 0–90 天')
 if (!Number.isInteger(modelCount) || modelCount < 0 || modelCount > 1000) throw new Error('替身模型数量必须为 0–1000')
 const testDelay = Number(process.env.OFM_PREVIEW_TEST_DELAY_MS ?? 0)
 if (!Number.isInteger(testDelay) || testDelay < 0 || testDelay > 60000) throw new Error('替身测试延迟必须为 0–60000 毫秒')
@@ -67,7 +70,7 @@ process.env.OUR_FREE_MODEL_KILO_BASE = base
 const fixture = new URL('./lib/standalone-channel-fixture.mjs', import.meta.url).href
 process.execArgv.push('--import', fixture)
 await import(fixture)
-const prefix = modelCount ? 'ui-phase1-load' : 'ui-phase1'
+const prefix = usageFixture ? usageDaysAgo ? 'ui-usage-history' : 'ui-usage' : modelCount ? 'ui-phase1-load' : 'ui-phase1'
 const dataDir = path.resolve(`.verify/${prefix}-data`)
 fs.mkdirSync(path.join(dataDir, 'channel-pack'), { recursive: true })
 const state = path.join(dataDir, 'channel-pack/state.json')
@@ -84,8 +87,37 @@ if (!fs.existsSync(state)) {
   }))
   credentials.dispose()
 }
+// 仅独立用量验收目录初始化模拟统计；正式 CLI 不加载这个脚本。
+const usageFile = path.join(dataDir, 'stats.json')
+if (usageFixture && !fs.existsSync(usageFile)) {
+  const models = Object.fromEntries(Array.from({ length: 47 }, (_, index) => [
+    `fixture/usage-${index}`, {
+      input: (index + 1) * 720, output: (index + 1) * 280, reasoning: index * 35,
+      cacheRead: 0, calls: (index + 1) * 3, failed: index % 5,
+    },
+  ]))
+  const logicalModels = Object.fromEntries(Object.keys(models).map((id, index) => [
+    id, { turns: (index + 1) * 2, failed: index % 3, recovered: index % 4 },
+  ]))
+  const days = Object.fromEntries(Array.from({ length: 21 }, (_, index) => {
+    const at = new Date()
+    at.setDate(at.getDate() - 20 + index - usageDaysAgo)
+    const day = `${at.getFullYear()}-${String(at.getMonth() + 1).padStart(2, '0')}-${String(at.getDate()).padStart(2, '0')}`
+    const model = `fixture/usage-${index}`
+    const input = 720 * (index + 1), output = 280 * (index + 1)
+    return [day, { total: input + output, models: { [model]: { input, output, reasoning: 35 * index, cacheRead: 0,
+      calls: 3, failed: 0, ttftMs: 300 + index * 10, ttftSamples: 1, decodeMs: 2000, decodeTokens: 100 + index } } }]
+  }))
+  const sum = (values, key) => Object.values(values).reduce((total, row) => total + row[key], 0)
+  fs.writeFileSync(usageFile, JSON.stringify({
+    version: 3, days, models, samples: [], requests: sum(models, 'calls'), failedRequests: sum(models, 'failed'),
+    failedRequestsEstimated: true,
+    logical: { turns: sum(logicalModels, 'turns'), failed: sum(logicalModels, 'failed'),
+      recovered: sum(logicalModels, 'recovered'), estimated: true, models: logicalModels },
+  }))
+}
 const { startStandalone } = await import('../packages/standalone/service.mjs')
-const service = await startStandalone({ dataDir, port: modelCount ? 18902 : 18901 })
+const service = await startStandalone({ dataDir, port: usageFixture ? usageDaysAgo ? 18904 : 18903 : modelCount ? 18902 : 18901 })
 await service.ready
 fs.writeFileSync(`.verify/${prefix}-url.txt`, service.managementUrl)
 console.log(`界面预览：${service.url}（本机替身，非真实账号与上游）`)

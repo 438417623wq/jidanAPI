@@ -1,0 +1,58 @@
+.usage-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-bottom: 17px; }
+.usage-scope { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 24px; margin-bottom: 24px; color: #79818e; font-size: 12px; }
+.usage-scope strong { font-weight: 500; color: #465269; margin-left: 5px; }
+.usage-feedback { margin-bottom: 15px; font-size: 12px; color: #16744c; }
+.usage-estimated { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: #8b6418; margin: 0 0 20px; background: #fff9eb; border: 1px solid #efe0bc; padding: 12px; border-radius: 6px; }
+.usage-estimated svg { margin-top: 2px; }
+.usage-trend { margin-bottom: 22px; }
+.usage-trend .channel-filters button { font-size: 12px; padding: 6px 11px; }
+.usage-window-total { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; margin: 20px 0 15px; }
+.usage-window-total strong { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.usage-window-total span { color: #8a919c; font-size: 11px; }
+.usage-trend-scroll { overflow-x: auto; margin-bottom: 18px; padding: 4px; }
+.usage-scroll-hint { font-size: 11px; color: #818a98; padding: 0 0 10px; }
+.usage-trend-chart { display: flex; align-items: stretch; height: 190px; gap: 10px; border-bottom: 1px solid #edf0f4; }
+.usage-day { flex: 1; min-width: 0; display: flex; align-items: center; flex-direction: column; gap: 10px; font-variant-numeric: tabular-nums; }
+.usage-day:focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+.usage-day-track { height: 154px; width: 100%; display: flex; align-items: flex-end; justify-content: center; }
+.usage-day-bar { width: 50%; max-width: 32px; background: #4c82f0; border-radius: 3px 3px 0 0; min-height: 2px; }
+.usage-day-bar.zero { background: #d8e2f5; }
+.usage-day span { color: #808793; font-size: 10px; white-space: nowrap; }
+.usage-window-empty { font-size: 12px; padding: 0 0 16px; }
+.usage-model-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 19px 0; }
+.usage-model-search { position: relative; min-width: 0; flex: 1; }
+.usage-model-search > svg { position: absolute; left: 12px; top: 12px; color: #7c8593; pointer-events: none; }
+.usage-model-search input { width: 100%; height: 40px; padding-left: 37px; font-size: 13px; }
+.usage-model-filters select { height: 40px; font-size: 12px; }
+.usage-model-scroll { overflow-x: auto; }
+.usage-model-table { min-width: 1000px; font-variant-numeric: tabular-nums; }
+.usage-model-table th { background: #f7f8fa; white-space: nowrap; font-size: 11px; }
+.usage-model-table th, .usage-model-table td { padding: 13px 10px; }
+.usage-model-table th:first-child { width: 25%; }
+.usage-model-table td:first-child { min-width: 200px; max-width: 300px; }
+.usage-model-table td:first-child strong { display: block; font-weight: 550; font-size: 12px; }
+.usage-model-table td:first-child code { display: block; color: #7b8594; font-size: 11px; margin-top: 3px; overflow-wrap: anywhere; }
+.usage-model-table td small { display: block; margin-top: 3px; font-size: 10px; color: #8a929e; }
+.usage-model-table tbody tr:hover { background: #f9fbff; }
+.usage-empty { padding: 45px 15px; text-align: center; border-top: 1px solid var(--line); }
+.usage-empty > svg { color: #9ba4b3; margin: 0 auto 12px; }
+.usage-empty h3 { font-size: 14px; }
+.usage-empty p { font-size: 12px; margin-top: 7px; }
+.usage-pagination { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 10px; padding-top: 17px; font-size: 11px; color: #7a8391; }
+.usage-pagination > span:first-child { margin-right: auto; }
+@media (max-width: 950px) {
+  .usage-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+}
+@media (max-width: 700px) {
+  .usage-metrics { gap: 10px; }
+  .usage-metrics .dashboard-metric { padding: 16px 13px; }
+  .usage-metrics .dashboard-metric strong { font-size: 25px; }
+  .usage-metrics .dashboard-metric p { font-size: 10px; }
+  .usage-metrics .dashboard-metric svg { width: 15px; }
+  .usage-scope { gap: 7px 18px; font-size: 11px; }
+  .usage-trend .card-heading { flex-wrap: wrap; }
+  .usage-trend-chart { gap: 8px; }
+  .usage-model-search { flex-basis: 100%; }
+  .usage-pagination { gap: 8px; }
+  .usage-pagination > span:first-child { flex-basis: 100%; }
+}

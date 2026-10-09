@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import { buildStats } from '../src/core/stats.js'
 import { filterModels } from '../packages/standalone/frontend/models-data.mjs'
+import { usageDays, usageModels } from '../packages/standalone/frontend/usage-data.mjs'
+import { spawnSync } from 'node:child_process'
 
 const web = new URL('../packages/standalone/web/', import.meta.url)
 const assets = JSON.parse(fs.readFileSync(new URL('assets.json', web), 'utf8'))
@@ -13,6 +15,7 @@ const html = fs.readFileSync(new URL('index.html', web), 'utf8')
 assert.match(html, /type="module".+src="\/assets\/app.js"/)
 assert.ok(!html.includes('channels-'), '渠道不应在登录首屏预加载')
 assert.ok(!html.includes('models-'), '模型页面不应在登录首屏预加载')
+assert.ok(!html.includes('usage-'), '用量页面不应在登录首屏预加载')
 assert.ok(!html.includes('app.tsx'), '只提供编译后的资源')
 assert.ok(!fs.existsSync(new URL('channels.js', web)), '不同时携带第二份 React 渠道包')
 const app = fs.readFileSync(new URL('app.js', web), 'utf8')
@@ -21,6 +24,8 @@ assert.ok(channel, '渠道必须是独立分包')
 assert.ok(app.includes(channel) && app.includes('import('), '入口必须动态导入渠道')
 const modelsChunk = assets.find(name => name.startsWith('models-'))
 assert.ok(modelsChunk && app.includes(modelsChunk), '入口必须按需导入模型页面')
+const usageChunk = assets.find(name => name.startsWith('usage-'))
+assert.ok(usageChunk && app.includes(usageChunk), '入口必须按需导入用量页面')
 for (const [_, name] of html.matchAll(/(?:src|href)="\/assets\/([^"]+)"/g)) {
   assert.ok(assets.includes(name), `HTML 资源未登记：${name}`)
 }
@@ -53,4 +58,54 @@ assert.equal(filterModels(catalog, { channel: 'buddy', availability: 'available'
 assert.equal(filterModels(catalog, { access: 'hidden' }).length + filterModels(catalog, { access: 'routable' }).length, catalog.length)
 assert.equal(filterModels([{ id: 'unknown', name: '未知状态', routable: false }], { availability: 'unknown' }).length, 1)
 assert.deepEqual(catalog, baseline, '视图筛选不得改变目录、公开状态或模型开关')
-console.log('standalone-frontend: 资源登记、双页面分包、空统计与千模型组合筛选检查通过')
+const usageRows = Array.from({ length: 47 }, (_, index) => ({
+  model: `fixture/usage-${index}`, name: `用量模型 ${index}`, calls: index + 1, turns: index,
+  input: index * 10, output: (46 - index) * 20, failedTurns: index % 4,
+}))
+const usageBaseline = structuredClone(usageRows)
+const first = usageModels(usageRows)
+assert.equal(first.total, 47)
+assert.equal(first.pages, 3)
+assert.equal(first.rows.length, 20)
+assert.equal(first.rows[0].model, 'fixture/usage-46')
+assert.equal(usageModels(usageRows, { page: 3 }).rows.length, 7)
+assert.equal(usageModels(usageRows, { page: 999 }).page, 3)
+assert.equal(usageModels(usageRows, { page: -1 }).page, 1)
+assert.equal(usageModels([], { page: 3 }).page, 1)
+assert.equal(usageModels(usageRows, { search: '  FIXTURE/USAGE-46  ', page: 3 }).rows[0].model, 'fixture/usage-46')
+assert.equal(usageModels(usageRows, { search: '用量模型 46' }).total, 1)
+assert.equal(usageModels(usageRows, { search: '没有这个模型' }).total, 0)
+assert.equal(usageModels(usageRows, { sort: 'tokens' }).rows[0].model, 'fixture/usage-0')
+assert.equal(usageModels(usageRows, { sort: 'failedTurns' }).rows[0].failedTurns, 3)
+assert.equal(usageModels(usageRows, { sort: 'name' }).rows[0].name, '用量模型 0')
+assert.deepEqual(usageRows, usageBaseline, '筛选排序不得修改累计统计')
+const series = [{ day: '2025-12-31', total: 18 }, { day: '2026-01-02', total: 7 }, { day: '2026-01-03', total: 999 }]
+const seriesBaseline = structuredClone(series)
+assert.deepEqual(usageDays(series, 3, new Date(2026, 0, 2, 1)), [
+  { day: '2025-12-31', total: 18 }, { day: '2026-01-01', total: 0 }, { day: '2026-01-02', total: 7 },
+])
+assert.deepEqual(usageDays([], 1, new Date(2026, 9, 9)), [{ day: '2026-10-09', total: 0 }])
+assert.equal(usageDays(series, 30, new Date(2026, 0, 2)).length, 30)
+assert.deepEqual(series, seriesBaseline)
+// 跨夏令时不能按固定 24 小时回退；本地日期在两个时区均应连续且不重复。
+for (const timezone of ['Asia/Shanghai', 'America/New_York']) {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    import assert from 'node:assert/strict'
+    import { usageDays } from './packages/standalone/frontend/usage-data.mjs'
+    assert.deepEqual(usageDays([], 3, new Date(2026, 2, 9, 1)).map(row => row.day),
+      ['2026-03-07', '2026-03-08', '2026-03-09'])
+  `], { cwd: new URL('../', import.meta.url), env: { ...process.env, TZ: timezone }, encoding: 'utf8' })
+  assert.equal(result.status, 0, `${timezone}: ${result.stderr}`)
+}
+const cumulative = buildStats({
+  requests: 50, failedRequests: 3, logical: { turns: 40, failed: 2, recovered: 4, estimated: true, models: {} },
+  models: { old: { input: 9000, output: 1000, reasoning: 10, calls: 50, failed: 3 } },
+  days: { '2026-01-01': { total: 18, models: {} } },
+}, [])
+assert.equal(cumulative.grand.input + cumulative.grand.output, 10000)
+assert.equal(usageDays(cumulative.days, 14, new Date(2026, 9, 9)).reduce((sum, row) => sum + row.total, 0), 0)
+assert.equal(cumulative.turns, 40)
+assert.equal(cumulative.requests, 50)
+assert.equal(cumulative.logicalEstimated, true)
+assert.equal(cumulative.requestFailures, 3)
+console.log('standalone-frontend: 资源登记、三页面分包、千模型筛选、累计口径、本地日期与统计分页检查通过')
