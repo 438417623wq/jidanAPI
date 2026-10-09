@@ -8,7 +8,7 @@ let summary
 let stats
 let apiKey = ''
 let page = 'overview'
-let settingsDirty = false
+let settingsRevision = 0
 let pollTimer
 let loading
 let authenticated = false
@@ -56,7 +56,7 @@ function showLogin(message = '') {
   summary = undefined
   stats = undefined
   apiKey = ''
-  settingsDirty = false
+  settingsRevision++
   clearTimeout(pollTimer)
   $('app').hidden = true
   $('loading-screen').hidden = true
@@ -120,15 +120,6 @@ function render() {
   const endpoint = `${summary.baseUrl}/v1`
   $('connection-endpoint').value = endpoint
   view?.update({ summary, stats }, page)
-  if (!settingsDirty) {
-    for (const [name, value] of Object.entries(summary.settings)) {
-      const input = $('settings-form').elements.namedItem(name)
-      if (!input) continue
-      if (input.type === 'checkbox') input.checked = value
-      else input.value = value
-    }
-  }
-  text('settings-refresh-note', summary.automaticRefresh ? '自动刷新已启用，保存间隔后会重新安排下一轮。' : '当前以 --no-refresh 启动。此页设置会保存，但自动任务保持暂停；手动刷新仍可用。')
   const model = summary.catalog.find(row => row.routable)?.id ?? 'MODEL_ID'
   text('connection-example', `curl ${summary.baseUrl}/v1/chat/completions \\\n  -H "Authorization: Bearer YOUR_API_KEY" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify({ model, messages: [{ role: 'user', content: '你好' }] })}'`)
 }
@@ -136,10 +127,13 @@ function render() {
 function loadData() {
   if (loading) return loading
   const current = generation
+  const revision = settingsRevision
   loading = Promise.all([request('/summary'), request('/stats')])
     .then(([nextSummary, nextStats]) => {
       if (current !== generation) return
-      summary = nextSummary
+      // 保存前启动的轮询可能晚到，不能覆盖已确认的设置写入结果。
+      summary = revision !== settingsRevision && summary
+        ? { ...nextSummary, settings: summary.settings } : nextSummary
       stats = nextStats
       authenticated = true
       $('login-screen').hidden = true
@@ -172,20 +166,6 @@ document.querySelectorAll('[data-copy="endpoint"]').forEach(button => button.add
   void copyText(`${summary.baseUrl}/v1`).catch(errorNotice)
 }))
 $('retry').addEventListener('click', () => { void action($('retry'), loadData, '状态已更新') })
-$('settings-form').addEventListener('input', () => { settingsDirty = true; text('settings-save-status', '有尚未保存的修改') })
-$('settings-form').addEventListener('submit', event => {
-  event.preventDefault()
-  const form = event.currentTarget
-  const button = form.querySelector('button[type="submit"]')
-  const patch = {}
-  for (const input of form.elements) if (input.name) patch[input.name] = input.type === 'checkbox' ? input.checked : Number(input.value)
-  void action(button, async () => {
-    await request('/settings', patch)
-    settingsDirty = false
-    text('settings-save-status', '已保存')
-    await loadData()
-  }, '设置已保存并生效')
-})
 $('show-key').addEventListener('click', () => {
   void action($('show-key'), async () => {
     if (apiKey) {
@@ -278,6 +258,12 @@ export function startLegacy(nextView) {
     async refreshModels(probe, signal) {
       await request('/models/refresh', { probe }, 300000, signal)
       if (!signal.aborted) await loadData()
+    },
+    async saveSettings(patch) {
+      const value = await request('/settings', patch)
+      settingsRevision++
+      if (summary) { summary = { ...summary, settings: value.settings }; render() }
+      return value.settings
     },
   }
 }

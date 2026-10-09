@@ -12,6 +12,14 @@ export interface Model {
   ttftMs?: number | null
 }
 export interface ModelTestResult { ok: boolean; text: string; latencyMs: number }
+export interface ServiceSettings {
+  enabled: boolean
+  exposeRegionModels: boolean
+  streamRecovery: boolean
+  standaloneProbe: boolean
+  probeIntervalMinutes: number
+  defaultMaxTokens: number
+}
 export interface Summary {
   version: string
   baseUrl: string
@@ -19,7 +27,7 @@ export interface Summary {
   networkMode: string
   automaticRefresh: boolean
   catalogSyncedAt: number
-  settings: { enabled: boolean; probeIntervalMinutes: number; standaloneProbe: boolean }
+  settings: ServiceSettings
   channels: { state: string; error?: string }
   eacAuth?: { local?: boolean; authorized?: boolean; login?: string }
   catalog: Model[]
@@ -60,4 +68,5 @@ export interface Host {
   error(error: Error): void
   testModel(model: string, signal: AbortSignal): Promise<ModelTestResult>
   refreshModels(probe: boolean, signal: AbortSignal): Promise<void>
+  saveSettings(settings: ServiceSettings): Promise<ServiceSettings>
 }
