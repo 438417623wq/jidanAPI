@@ -1,4 +1,4 @@
-/** 第一阶段视觉验收：隔离数据目录和替身上游，不读取真实账号。 */
+/** 界面视觉验收：隔离数据目录和替身上游，不读取真实账号。 */
 import fs from 'node:fs'
 import path from 'node:path'
 import http from 'node:http'
@@ -6,12 +6,19 @@ import { createCredentials } from '../packages/standalone/channels/credentials.m
 
 const modelCount = Number(process.env.OFM_PREVIEW_MODELS ?? 0)
 if (!Number.isInteger(modelCount) || modelCount < 0 || modelCount > 1000) throw new Error('替身模型数量必须为 0–1000')
+const testDelay = Number(process.env.OFM_PREVIEW_TEST_DELAY_MS ?? 0)
+if (!Number.isInteger(testDelay) || testDelay < 0 || testDelay > 60000) throw new Error('替身测试延迟必须为 0–60000 毫秒')
+const testRequests = { started: 0, completed: 0, cancelled: 0 }
+const recordRequests = () => {
+  if (testDelay) fs.writeFileSync('.verify/ui-model-test-requests.json', JSON.stringify(testRequests))
+}
 const json = (res, body) => {
   res.writeHead(200, { 'content-type': 'application/json' })
   res.end(JSON.stringify(body))
 }
 const upstream = http.createServer(async (req, res) => {
-  for await (const _chunk of req) {}
+  const chunks = []
+  for await (const chunk of req) chunks.push(chunk)
   const pathname = new URL(req.url, 'http://localhost').pathname
   if (pathname.endsWith('/auth/status')) {
     json(res, { configured: true, required: true, authorized: false, repo: 'Ebony-Vinyl/dsh-our-free-model' })
@@ -27,8 +34,29 @@ const upstream = http.createServer(async (req, res) => {
       agents: [{ name: 'craft', models: ['fixture-free'] }],
     } })
   } else if (pathname.endsWith('/chat/completions')) {
+    testRequests.started++
+    recordRequests()
+    res.once('close', () => {
+      if (!res.writableEnded) { testRequests.cancelled++; recordRequests() }
+    })
+    // 仅长清单替身中的指定模型模拟失败，不改变正式渠道或 API。
+    if (modelCount === 1000 && Buffer.concat(chunks).toString('utf8').includes('fixture/model-998:free')) {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: '本机替身：模拟测试失败' } }))
+      testRequests.completed++
+      recordRequests()
+      return
+    }
+    if (testDelay) await new Promise(resolve => {
+      const finish = () => { clearTimeout(timer); res.off('close', finish); resolve() }
+      const timer = setTimeout(finish, testDelay)
+      res.once('close', finish)
+    })
+    if (res.destroyed) return
     res.writeHead(200, { 'content-type': 'text/event-stream' })
     res.end(`data: ${JSON.stringify({ choices: [{ delta: { content: 'OK · 本机替身请求已完成' } }] })}\n\ndata: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: 'stop' }], usage: { prompt_tokens: 11, completion_tokens: 7 } })}\n\ndata: [DONE]\n\n`)
+    testRequests.completed++
+    recordRequests()
   } else json(res, { data: { Response: { Data: { Accounts: [] } } } })
 })
 await new Promise(resolve => upstream.listen(0, '127.0.0.1', resolve))
@@ -60,7 +88,7 @@ const { startStandalone } = await import('../packages/standalone/service.mjs')
 const service = await startStandalone({ dataDir, port: modelCount ? 18902 : 18901 })
 await service.ready
 fs.writeFileSync(`.verify/${prefix}-url.txt`, service.managementUrl)
-console.log(`第一阶段预览：${service.url}（本机替身，非真实账号与上游）`)
+console.log(`界面预览：${service.url}（本机替身，非真实账号与上游）`)
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => {
   void service.close().then(() => { upstream.closeAllConnections(); upstream.close() })
 })
