@@ -1,19 +1,23 @@
 import * as React from 'react'
 import { createRoot } from 'react-dom/client'
 import { shared } from 'ofm-shared-client'
+import { ChannelBrowser } from './components/channel-browser'
+import 'ofm-shared-styles.css'
 
-const { ChannelsPage, EacAuth, useEacLogin, DICT, Tank, usePool, poolReading, capacityText, CHANNEL_PROVIDERS, LedgerPage, LogsPage } = shared
+const { EacAuth, useEacLogin, DICT, Tank, usePool, poolReading, capacityText, CHANNEL_PROVIDERS, LedgerPage, LogsPage } = shared
 const h = React.createElement
 const t = key => DICT.zh[key] ?? key
 t.locale = 'zh'
+let requestLifetime = new AbortController()
 const ctx = {
   connection: { rpc: {
     async call(_base, _method, payload, signal) {
       const response = await fetch('/api/management/channels/rpc', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(payload), signal, credentials: 'same-origin',
+        body: JSON.stringify(payload), signal: AbortSignal.any([signal, requestLifetime.signal]), credentials: 'same-origin',
       })
       const result = await response.json()
+      if (response.status === 401) window.dispatchEvent(new CustomEvent('ofm:unauthorized'))
       if (!response.ok) throw new Error(result.error ?? '渠道请求失败')
       return result
     },
@@ -110,10 +114,13 @@ function ChannelTools({ summary }) {
 function ChannelConsole({ summary }) {
   const [page, setPage] = React.useState('accounts')
   return h(React.Fragment, null,
+    h('header', { className: 'dashboard-heading' },
+      h('div', null, h('div', { className: 'heading-eyebrow' }, 'WORKSPACE / CHANNELS'),
+        h('h1', null, '免费账号渠道'), h('p', null, '连接你的账号，把各家的免费额度汇集到一个 API。'))),
     h('div', { className: 'ofm_seg', role: 'tablist', 'aria-label': '渠道管理页面' },
       [['accounts', '登录与账号池'], ['ledger', '渠道用量'], ['logs', '请求日志'], ['tools', '供应商与备份']].map(([id, name]) =>
         h('button', { key: id, role: 'tab', 'aria-selected': page === id, onClick: () => setPage(id) }, name))),
-    page === 'accounts' ? h(ChannelsPage, { t, ctx, summary })
+    page === 'accounts' ? h(ChannelBrowser, { rpc, summary })
       : page === 'ledger' ? h(LedgerPage, { t, ctx, summary })
         : page === 'logs' ? h(LogsPage, { t, ctx, summary })
           : h(ChannelTools, { summary }))
@@ -126,6 +133,9 @@ function EacPage({ summary }) {
   const reading = pool == null ? null : poolReading(pool)
   React.useEffect(() => { login.refresh() }, [login.refresh])
   return h(React.Fragment, null,
+    h('header', { className: 'dashboard-heading' },
+      h('div', null, h('div', { className: 'heading-eyebrow' }, 'WORKSPACE / EAC'),
+        h('h1', null, 'EAC 协付渠道'), h('p', null, '使用本机独立授权，连接共享资源池。'))),
     h(EacAuth, { t, auth, eacLogin: login }),
     login.pending ? h('a', { href: login.pending.url, target: '_blank', rel: 'noreferrer noopener' }, '打开 GitHub 授权页面 ↗') : null,
     h('div', { className: 'ofm_hero' },
@@ -138,11 +148,14 @@ function EacPage({ summary }) {
 }
 
 let root
-window.ofmChannels = {
-  providerName: id => CHANNEL_PROVIDERS.find(row => row.id === id)?.name,
-  show(kind, summary) {
-    if (!root) root = createRoot(document.getElementById('channel-root'))
-    root.render(h(kind === 'eac' ? EacPage : ChannelConsole, { t, ctx, summary }))
-  },
-  hide() { if (root) { root.unmount(); root = undefined } },
+export function show(kind, summary) {
+  if (!root) {
+    requestLifetime = new AbortController()
+    root = createRoot(document.getElementById('channel-root'))
+  }
+  root.render(h(kind === 'eac' ? EacPage : ChannelConsole, { t, ctx, summary }))
+}
+export function hide() {
+  requestLifetime.abort()
+  if (root) { root.unmount(); root = undefined }
 }
