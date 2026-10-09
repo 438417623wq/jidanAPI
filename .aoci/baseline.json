@@ -1,7 +1,7 @@
 {
   "version": 1,
   "created_at": "2026-10-09T01:59:32Z",
-  "updated_at": "2026-10-09T02:16:00Z",
+  "updated_at": "2026-10-09T13:43:31Z",
   "files": {
     ".gitattributes": {
       "role": "index",
@@ -76,9 +76,9 @@
     },
     "aoci.code.txt": {
       "role": "index",
-      "sha256": "a2513bb4219dbae57c32cb305b7f1d12a625677209bf92e0e579d148e2f9ffdc",
-      "size": 44842,
-      "normalized_sha256": "a2513bb4219dbae57c32cb305b7f1d12a625677209bf92e0e579d148e2f9ffdc"
+      "sha256": "c3660f570b84efe4e4d777ebe5e9afbe5761cf1413b85f7ffdd5b78657fdf36a",
+      "size": 45185,
+      "normalized_sha256": "c3660f570b84efe4e4d777ebe5e9afbe5761cf1413b85f7ffdd5b78657fdf36a"
     },
     "aoci.meta.txt": {
       "role": "index",
@@ -112,9 +112,9 @@
     },
     "client.js": {
       "role": "index",
-      "sha256": "7bac72fa95e993016667bb0631a788f8d27204df8465455e3c6c9ce78b2630ef",
-      "size": 320062,
-      "normalized_sha256": "7bac72fa95e993016667bb0631a788f8d27204df8465455e3c6c9ce78b2630ef"
+      "sha256": "973ec370deed665e2f45b33ed86b07b3554903d6aabed46ff2a986a590f1cf5d",
+      "size": 320257,
+      "normalized_sha256": "973ec370deed665e2f45b33ed86b07b3554903d6aabed46ff2a986a590f1cf5d"
     },
     "cordis.patch.yml": {
       "role": "index",
@@ -547,9 +547,9 @@
     },
     "scripts/channel-pack-test.mjs": {
       "role": "index",
-      "sha256": "3e44ee29af68ea45cdf7063eb832d8477767a072a7dbba02fb20b4745622b9de",
-      "size": 7308,
-      "normalized_sha256": "3e44ee29af68ea45cdf7063eb832d8477767a072a7dbba02fb20b4745622b9de"
+      "sha256": "9321f65af0487d7477a0820e930950926bb4ea7ea725d338eb74e91c3681112f",
+      "size": 8990,
+      "normalized_sha256": "9321f65af0487d7477a0820e930950926bb4ea7ea725d338eb74e91c3681112f"
     },
     "scripts/client-lint.mjs": {
       "role": "index",

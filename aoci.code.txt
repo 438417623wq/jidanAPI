@@ -7,7 +7,7 @@ AGENTS.md[SG8S]: F:规定 AOCI 认知建立、压缩恢复及稳定后维护流�
 LICENSE[SG5T]: F:授予项目 MIT 使用许可并声明免责 | R:- | A:版权和许可文本 | S:分发副本须保留版权及许可
 README.md[SG7L]: F:中文说明插件安装、渠道、看板、安全边界和独立服务入口 | R:code:README_EN.md,code:packages/standalone/README.md | A:用户操作与开发说明 | S:免费额度受上游控制；EAC 需独立授权；历史验收不代表当前可用性
 README_EN.md[SG6L]: F:英文说明插件能力、配置、协议与安全边界 | R:code:README.md | A:英文使用和维护说明 | S:类型检查仅覆盖 adapter；历史测试有明确范围
-client.js[AU9L]: F:注册设置与首次公告界面，展示渠道、用量、登录、网关和升级状态 | R:code:index.js,code:src/store.js,code:src/push.js | A:ModuleLoader factory；settings.section/onboarding；同源 /api/our-free-model | S:公告 HTML 经白名单转 React；SSE 重连退避；登录轮询串行且取消需 Host 确认；升级响应需结束本地 busy 状态
+client.js[AU9L]: F:注册设置与首次公告界面，展示渠道、用量、登录、网关和升级状态 | R:code:index.js,code:src/store.js,code:src/push.js,code:vendor/channel-pack/src/channel-pack-rpc.ts | A:ModuleLoader factory；settings.section/onboarding；同源 /api/our-free-model；渠道 OAuth 轮询 | S:公告 HTML 经白名单转 React；SSE 重连退避；登录轮询串行且取消需 Host 确认；登录后台失败必须显示终态原因并结束等待；升级响应需结束本地 busy 状态
 cordis.patch.yml[FE6T]: F:以 bundle 插入方式挂载插件 Host | R:code:package.json,code:index.js | A:insert id=our-free-model | S:裸包名才能关联 package.json 声明的浏览器半身
 icon.svg[SU3T]: F:以内嵌 JPEG 提供项目图标 | R:code:README.md,code:package.json | A:128×128 SVG 图像 | S:-
 index.js[AE9L]: F:编排插件模型运行时、渠道、鉴权管理 API、转发和发行生命周期 | R:code:src/core/runtime.js,code:src/trust.js,code:src/updater.js,code:src/reload.js | A:apply(ctx,config),inject=[llm],version；/api/our-free-model | S:仅 llm 为硬依赖；Web 与账号包各自 fiber；managed 禁止自更新；版本绑定模块代际；渠道凭据不交浏览器
@@ -101,7 +101,7 @@ build-standalone-channels.mjs[XV7T]: F:从渠道发行包生成独立业务模�
 build-standalone-ui.mjs[XV7T]: F:提取共享客户端组件并打包独立渠道网页及 CSS | R:code:client.js,code:packages/standalone/web/channels-entry.mjs | A:esbuild 产物；--check 对比 | S:关键源码锚点改变时报错；React 随包而非在线加载
 catalog-test.mjs[TV7S]: F:验证生态目录结构、来源 revision、发行摘要与 adapter 隔离 | R:code:catalog/dsh-plugin.json,code:catalog/provenance.json | A:目录门禁脚本 | S:结构校验非完整 JSON Schema；vendor 是内核 import 检查的明确例外
 chan-relay-test.mjs[TN6S]: F:通过本机网关验证渠道中继鉴权、路径白名单与 home 选择 | R:code:src/chan-relay.js | A:离线中继安全回归 | S:网关密钥应替换中继密钥；已有 hop 必须拒绝
-channel-pack-test.mjs[TE7S]: F:隔离挂载实际渠道发行包并验证禁用项及模型桥接 | R:code:scripts/lib/channel-pack-kernel.mjs | A:真实 bundle 配合内核替身回归 | S:不访问真实凭据；OpenCode 不注册且历史账号保留
+channel-pack-test.mjs[TE7S]: F:隔离挂载实际渠道发行包并验证禁用项、模型桥接及账号登录失败反馈 | R:code:scripts/lib/channel-pack-kernel.mjs,code:vendor/channel-pack/src/channel-pack-rpc.ts | A:真实 bundle 配合内核替身回归；验证 OAuth 令牌交换失败时 login.poll 返回终态错误 | S:不访问真实凭据；OpenCode 不注册且历史账号保留；登录失败测试只使用本地 HTTP 回调与替身令牌端点
 client-lint.mjs[TU6S]: F:检查客户端注册、双语词典及 CSS 使用覆盖 | R:code:client.js | A:静态和最小加载校验 | S:不能代替真实浏览器布局或事件测试
 eac-auth-test.mjs[TI8L]: F:验证 GitHub OAuth、Star 闸门、令牌领取及撤销协议 | R:code:worker/auth-github.mjs,code:src/eac.js | A:本机 HTTP 和 GitHub 替身集成回归 | S:覆盖跨重启待领取、幂等与 ACK；不执行真实 OAuth
 eac-login-test.mjs[TI7M]: F:验证 Host 登录领取落盘、取消竞态及真实客户端 hook | R:code:src/eac-login.js,code:index.js | A:离线登录回归 | S:本机临时 home；保存失败不可 ACK，迟到取消按提交点处理
