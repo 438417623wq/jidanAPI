@@ -18,7 +18,7 @@ Vite、Tailwind 和项目内维护的基础组件；不是直接安装整套 sha
 - 模型卡片和用量表只在对应页面渲染，不在概览后台生成千条隐藏卡片。
 
 未修改插件 `client.js`、渠道协议、推理核心或真实用户数据。未提升版本、
-创建 tag、推送、创建 PR 或发布 Release。
+创建 tag 或发布 Release。第一轮验收结束时尚未推送；后续按用户要求提交 PR。
 
 ## 实际验证
 
@@ -28,9 +28,10 @@ Vite、Tailwind 和项目内维护的基础组件；不是直接安装整套 sha
 | `npm run typecheck:standalone` | 通过，检查新 TypeScript 组件与承载接口 |
 | `node scripts/build-standalone-ui.mjs --check` | 通过，源码和提交资源一致 |
 | `node scripts/standalone-frontend-test.mjs` | 通过，资源登记、动态依赖、按需分包及空统计 |
-| `node scripts/standalone-management-test.mjs` | 14/14 通过，含全部分包的 GET/HEAD、方法限制和非公开路径 |
+| `node scripts/standalone-management-test.mjs` | 同步最新主线后 15/15 通过，含跨平台启动器及全部分包的 GET/HEAD、方法限制和非公开路径 |
 | `node scripts/standalone-channels-test.mjs` | 11/11 通过，使用真实适配器与本机替身上游 |
-| `npm run test:contributor` | 最终 33/33 个套件通过，日志位于 `.verify/ui-phase1-contributor.log` |
+| `node scripts/test-all.mjs --mode contributor` | 同步主线后 33/33 个套件通过，日志位于 `.verify/ui-phase1-pr-contributor.log` |
+| `node scripts/test-all.mjs --mode release` | 0/3 通过：签名清单和目录记录尚未随源码变更重新生成；日志位于 `.verify/ui-phase1-pr-release.log` |
 | `node scripts/measure-standalone-ui.mjs --record` | 通过，记录原始及理论 gzip 体积 |
 | `git diff --check` | 通过 |
 
@@ -73,6 +74,12 @@ Vite、Tailwind 和项目内维护的基础组件；不是直接安装整套 sha
 - [窄屏概览](standalone-ui-phase1/overview-mobile.png)
 - [窄屏渠道](standalone-ui-phase1/channels-mobile.png)
 - [窄屏详情](standalone-ui-phase1/detail-mobile.png)
+- [同步主线后的 Windows 登录页](standalone-ui-phase1/login-windows.png)
+
+提交 PR 前已同步主线 `befe365`，将新增的 macOS/Windows 系统判断、终端按钮
+与手动命令迁入 `frontend/legacy.js` 和 `frontend/index.html`，重新生成资源。
+本轮在 Windows 浏览器重新检查登录页、概览与十三个渠道，浏览器错误日志为空。
+macOS 原生窗口的实机结果沿用主线记录，本轮未在 macOS 重新执行。
 
 ## 体积与速度
 
@@ -82,19 +89,21 @@ Vite、Tailwind 和项目内维护的基础组件；不是直接安装整套 sha
 
 | 指标 | 改版前 | 改版后 |
 | --- | ---: | ---: |
-| 全部静态资源原始体积 | 507.8 KiB | 556.8 KiB |
-| 全部静态资源理论 gzip | 168.2 KiB | 193.8 KiB |
-| 首屏静态资源原始体积 | 507.8 KiB | 325.6 KiB |
-| 首屏静态资源理论 gzip | 168.2 KiB | 103.1 KiB |
+| 全部静态资源原始体积 | 507.8 KiB | 558.1 KiB |
+| 全部静态资源理论 gzip | 168.2 KiB | 194.2 KiB |
+| 首屏静态资源原始体积 | 507.8 KiB | 326.8 KiB |
+| 首屏静态资源理论 gzip | 168.2 KiB | 103.6 KiB |
 
-首屏原始体积减少 **35.9%**，但总体原始体积增加 **9.6%**，
-理论 gzip 总体增加约 **15.2%**。不能宣称整个包变小了。
+以上改版后体积包含同步主线的跨平台登录逻辑。
+首屏原始体积减少 **35.6%**，但总体原始体积增加 **9.9%**，
+理论 gzip 总体增加约 **15.5%**。不能宣称整个包变小了。
 总量增长主要来自新概览、导航、筛选详情、图标及基础组件依赖，
 以及统一样式；旧共享渠道组件为保持业务兼容仍保留。
 当前 HTTP 资源没有开启 gzip，这里只是同一压缩方法的理论对比。
 独立安装包尚未构建，因此没有 ZIP 大小结论。
 
-同一浏览器采用“刷新/点击至目标可见”的自动化方法：
+第一轮验收在同步 macOS 登录改动之前，采用同一浏览器
+“刷新/点击至目标可见”的自动化方法：
 
 | 项目 | 实测 |
 | --- | --- |
@@ -122,7 +131,8 @@ Vite、Tailwind 和项目内维护的基础组件；不是直接安装整套 sha
   相应后端链路由替身专项测试覆盖，不冒充真实账号验收。
 - 没有测 Windows/macOS/Linux 全平台安装包；Linux CI 配置已添加，
   但本机未执行 GitHub Actions。
-- 未运行签名 Release 检查、发布流程、安装制品和冷启动性能分析。
+- Release 检查已运行但未通过；未更新签名或版本，未运行发布流程、
+  安装制品和冷启动性能分析。合入发货主线前仍需维护者完成签名准备并使该门禁通过。
 - 第一阶段不包含模型列表重设计、虚拟滚动或旧共享业务组件全面拆分。
 
 ## 预览与回退

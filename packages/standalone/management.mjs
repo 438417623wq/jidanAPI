@@ -82,8 +82,12 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
   let closed = false
   let terminalOpening = false
   let terminalOpenedAt = null
+  const loginPlatform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'unsupported'
   const assets = new Map([...ASSETS].map(([url, [file, type]]) => [
-    url, { type, body: fs.readFileSync(new URL(`./web/${file}`, import.meta.url)) },
+    url, { type, body: file === 'index.html'
+      ? Buffer.from(fs.readFileSync(new URL(`./web/${file}`, import.meta.url), 'utf8')
+        .replace('data-login-platform="unsupported"', `data-login-platform="${loginPlatform}"`))
+      : fs.readFileSync(new URL(`./web/${file}`, import.meta.url)) },
   ]))
   // 只公开构建清单中经过路径校验的 JS/CSS，绝不按请求路径读取磁盘。
   const manifest = JSON.parse(fs.readFileSync(new URL('./web/assets.json', import.meta.url), 'utf8'))
@@ -155,7 +159,7 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
       const body = await readBody(req)
       if (Object.keys(body).length !== 0) throw fail(400, '获取令牌不接受路径或命令参数')
       if (terminalOpening || (terminalOpenedAt !== null && Date.now() - terminalOpenedAt < 30_000)) {
-        throw fail(429, '已请求打开 PowerShell，请检查弹出的窗口，30 秒后可重试')
+        throw fail(429, '已请求打开终端，请检查弹出的窗口，30 秒后可重试')
       }
       terminalOpening = true
       try {

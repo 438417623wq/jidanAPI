@@ -20,6 +20,22 @@ const fmt = value => new Intl.NumberFormat('zh-CN').format(Number.isFinite(value
 const short = value => value >= 1000000 ? `${(value / 1000000).toFixed(1)}M` : value >= 1000 ? `${(value / 1000).toFixed(1)}K` : fmt(value)
 const dateText = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '尚未刷新'
 const text = (id, value) => { $(id).textContent = value }
+const loginPlatform = $('login-terminal').dataset.loginPlatform
+const loginTerminalName = loginPlatform === 'windows' ? 'PowerShell' : '终端'
+const canOpenLoginTerminal = ['windows', 'macos'].includes(loginPlatform)
+if (canOpenLoginTerminal) {
+  $('login-terminal').disabled = false
+  text('login-terminal', `打开${loginTerminalName === 'PowerShell' ? ' PowerShell ' : '终端'}获取令牌 ↗`)
+  text('login-terminal-help', `点击下方按钮，会打开${loginTerminalName}并将当前服务的令牌复制到剪贴板。回来粘贴到上方即可。`)
+} else {
+  text('login-terminal-help', '当前系统不支持自动打开终端，请展开下方说明手动获取令牌。')
+}
+text('login-command-label', `${loginPlatform === 'windows' ? 'Windows PowerShell' : loginPlatform === 'macos' ? 'macOS 终端' : '终端'}命令（默认目录）`)
+if (loginPlatform !== 'windows') {
+  $('login-command').value = loginPlatform === 'macos'
+    ? `node -e 'const fs = require("node:fs"); const {execFileSync} = require("node:child_process"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); execFileSync("/usr/bin/pbcopy", [], {input: key});' "$HOME/.our-free-model/settings.json"`
+    : `node -e 'const fs = require("node:fs"); const key = JSON.parse(fs.readFileSync(process.argv[1], "utf8")).forwardKey; if (typeof key !== "string" || !key.trim()) throw new Error("missing login token"); process.stdout.write(key + "\\n");' "$HOME/.our-free-model/settings.json"`
+}
 const node = (tag, className, value) => {
   const element = document.createElement(tag)
   if (className) element.className = className
@@ -346,11 +362,11 @@ $('rotate-confirm-button').addEventListener('click', () => {
 $('login-terminal').addEventListener('click', () => {
   const button = $('login-terminal')
   button.disabled = true
-  text('login-help-status', '正在本机打开 PowerShell…')
+  text('login-help-status', `正在本机打开${loginTerminalName}…`)
   void (async () => {
     try {
       await request('/login/terminal', {}, 15000)
-      text('login-help-status', '已请求打开 PowerShell。窗口提示复制成功后，回到这里粘贴令牌。')
+      text('login-help-status', `已请求打开${loginTerminalName}。窗口提示复制成功后，回到这里粘贴令牌。`)
       $('login-key').focus()
     } catch (error) {
       text('login-help-status', `${error.message}。可以展开下方的手动获取说明。`)
@@ -359,11 +375,11 @@ $('login-terminal').addEventListener('click', () => {
 })
 $('copy-login-command').addEventListener('click', () => {
   void navigator.clipboard.writeText($('login-command').value)
-    .then(() => text('login-help-status', '命令已复制。在 PowerShell 执行后，回到上方粘贴令牌。'))
+    .then(() => text('login-help-status', `命令已复制。在${loginTerminalName}执行后，回到上方粘贴令牌。`))
     .catch(() => {
       $('login-command').focus()
       $('login-command').select()
-      text('login-help-status', '浏览器未允许复制，已选中命令，请按 Ctrl+C 手动复制。')
+      text('login-help-status', `浏览器未允许复制，已选中命令，请按 ${loginPlatform === 'macos' ? 'Command+C' : 'Ctrl+C'} 手动复制。`)
     })
 })
 $('login-form').addEventListener('submit', event => {

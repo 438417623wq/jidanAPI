@@ -98,13 +98,14 @@ node scripts/build-standalone-ui.mjs --check
 登录链接的临时凭证位于 URL fragment，页面兑换后移除。浏览器使用 8 小时有效的
 HttpOnly、SameSite=Strict 管理 Cookie；重启服务或退出管理会清除会话。
 链接已使用或过期时，可用 `settings.json` 中的 `forwardKey` 登录。
-登录页提供「打开 PowerShell 获取令牌」入口：Windows 本地服务会打开可见窗口，
+登录页提供本机获取令牌入口：Windows 打开 PowerShell，macOS 打开系统 Terminal，
 读取当前服务实际数据目录中的密钥并复制到剪贴板，再回页面粘贴登录。
 该操作只接受本机页面的同源请求，只执行固定动作，不接受网页提供的命令或路径，
 也不会把密钥返回给未登录的网页。每次成功打开后 30 秒内不能重复打开。
-打开失败时，可展开「手动获取与其他系统」，复制默认目录的 PowerShell 命令，
+打开失败时，可展开「手动获取与其他系统」，复制当前系统默认目录的取令牌命令，
 或直接从配置文件读取 `forwardKey`；自定义目录以启动参数为准。
-macOS / Linux 使用手动说明或服务启动时打印的一次性登录链接。
+macOS 首次打开可能需要允许本地服务控制 Terminal。Linux 使用手动说明
+或服务启动时打印的一次性登录链接；Windows 和 macOS 也保留这些备用入口。
 轮换密钥会立即使旧密钥及其他管理会话失效，当前管理会话保留，客户端需更新配置。
 推理接口仍要求 Bearer API Key，管理 Cookie 不能用于推理。暂停推理后管理页面仍可访问。
 

@@ -2,8 +2,8 @@
   "files": [
     {
       "name": "index.html",
-      "bytes": 10535,
-      "gzip": 4128
+      "bytes": 10510,
+      "gzip": 4066
     },
     {
       "name": "app.css",
@@ -12,8 +12,8 @@
     },
     {
       "name": "app.js",
-      "bytes": 257894,
-      "gzip": 88555
+      "bytes": 259222,
+      "gzip": 89078
     },
     {
       "name": "channels-7dDrVcEH.js",
@@ -22,11 +22,11 @@
     }
   ],
   "total": {
-    "bytes": 570168,
-    "gzip": 198423
+    "bytes": 571471,
+    "gzip": 198884
   },
   "initial": {
-    "bytes": 333367,
-    "gzip": 105606
+    "bytes": 334670,
+    "gzip": 106067
   }
 }
