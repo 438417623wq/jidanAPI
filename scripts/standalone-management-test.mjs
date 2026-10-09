@@ -11,6 +11,9 @@ const dataDir = path.join(scratch, 'data')
 const model = 'mimo-v2.6-flash-free'
 const kilo = 'nvidia/nemotron-3.5-lightning:free'
 let calls = 0
+let holdNextCall = false
+let notifyCall
+let notifyClosed
 const upstream = http.createServer((req, res) => {
   req.resume()
   req.on('end', () => {
@@ -21,6 +24,12 @@ const upstream = http.createServer((req, res) => {
         : [{ id: model }] }))
     } else {
       calls++
+      if (holdNextCall) {
+        holdNextCall = false
+        res.once('close', () => notifyClosed())
+        notifyCall()
+        return
+      }
       res.writeHead(200, { 'content-type': 'text/event-stream' })
       res.end([
         `data: ${JSON.stringify({ choices: [{ index: 0, delta: { content: 'OK' } }] })}\n\n`,
@@ -101,7 +110,20 @@ try {
     const platform = process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'unsupported'
     assert.ok(body.includes(`data-login-platform="${platform}"`))
     assert.ok(!body.includes(key))
-    for (const asset of ['/assets/app.js', '/assets/app.css']) assert.equal((await request(asset)).status, 200)
+    const manifest = JSON.parse(fs.readFileSync(new URL('../packages/standalone/web/assets.json', import.meta.url), 'utf8'))
+    assert.ok(manifest.includes('app.js') && manifest.includes('app.css'))
+    assert.ok(manifest.some(name => /^channels-.+\.js$/.test(name)))
+    for (const asset of manifest) {
+      const response = await request(`/assets/${asset}`, { cookie: '' })
+      assert.equal(response.status, 200, asset)
+      assert.match(response.headers.get('content-type'), asset.endsWith('.css') ? /text\/css/ : /javascript/)
+      assert.ok(!(await response.text()).includes(key), asset)
+      assert.equal((await request(`/assets/${asset}`, { method: 'HEAD' })).status, 200)
+      assert.equal((await request(`/assets/${asset}`, { method: 'POST' })).status, 405)
+    }
+    for (const route of ['/assets/settings.json', '/assets/assets.json', '/assets/unknown.js', '/frontend/app.tsx', '/assets/%2e%2e%2fservice.mjs']) {
+      assert.equal((await request(route, { cookie: '', headers: { authorization: `Bearer ${key}` } })).status, 404, route)
+    }
     const health = await (await request('/health')).json()
     assert.equal(health.product, 'standalone')
     assert.equal(health.capabilities.webUi, true)
@@ -223,6 +245,30 @@ try {
     assert.equal(stats.turns, 1)
     assert.equal(stats.grand.input, 11)
     assert.equal(stats.grand.output, 7)
+  })
+  await check('取消单模型测试会关闭真实上游请求且管理会话仍可使用', async () => {
+    const started = new Promise(resolve => { notifyCall = resolve })
+    const closed = new Promise(resolve => { notifyClosed = resolve })
+    const controller = new AbortController()
+    const before = calls
+    holdNextCall = true
+    const pending = fetch(`${service.url}/api/management/models/test`, {
+      method: 'POST', headers: { cookie, 'content-type': 'application/json' },
+      body: JSON.stringify({ model }), signal: controller.signal,
+    })
+    const cancelled = pending.then(() => null, error => error)
+    const deadline = AbortSignal.timeout(5000)
+    const wait = promise => Promise.race([promise, new Promise((_, reject) => {
+      deadline.addEventListener('abort', () => reject(new Error('取消测试未在五秒内关闭上游')), { once: true })
+    })])
+    try {
+      await wait(started)
+      controller.abort()
+      assert.equal((await cancelled)?.name, 'AbortError')
+      await wait(closed)
+      assert.equal(calls, before + 1)
+      assert.equal((await request('/api/management/summary')).status, 200)
+    } finally { controller.abort(); holdNextCall = false }
   })
   await check('轮换要求确认，旧密钥与其他会话失效，当前管理会话保留', async () => {
     const other = await login({ key })

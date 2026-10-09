@@ -19,6 +19,7 @@
     "test:management": "node scripts/standalone-management-test.mjs",
     "build:standalone-channels": "node scripts/build-standalone-channels.mjs",
     "build:standalone-ui": "node scripts/build-standalone-ui.mjs",
+    "typecheck:standalone": "npm --prefix packages/standalone run typecheck",
     "test:standalone-channels": "node scripts/standalone-channels-test.mjs",
     "test": "node scripts/test-all.mjs",
     "test:contributor": "node scripts/test-all.mjs --mode contributor",

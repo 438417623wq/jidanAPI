@@ -11,10 +11,6 @@ const SESSION_MS = 8 * 60 * 60_000
 const MAX_BODY_BYTES = 16 * 1024
 const ASSETS = new Map([
   ['/', ['index.html', 'text/html; charset=utf-8']],
-  ['/assets/app.js', ['app.js', 'text/javascript; charset=utf-8']],
-  ['/assets/app.css', ['app.css', 'text/css; charset=utf-8']],
-  ['/assets/channels.js', ['channels.js', 'text/javascript; charset=utf-8']],
-  ['/assets/channels.css', ['channels.css', 'text/css; charset=utf-8']],
 ])
 const SECURITY_HEADERS = {
   'cache-control': 'no-store',
@@ -93,6 +89,15 @@ export function createManagement({ stores, runtime, channels, eac, info, onSetti
         .replace('data-login-platform="unsupported"', `data-login-platform="${loginPlatform}"`))
       : fs.readFileSync(new URL(`./web/${file}`, import.meta.url)) },
   ]))
+  // 只公开构建清单中经过路径校验的 JS/CSS，绝不按请求路径读取磁盘。
+  const manifest = JSON.parse(fs.readFileSync(new URL('./web/assets.json', import.meta.url), 'utf8'))
+  if (!Array.isArray(manifest) || manifest.some(name => typeof name !== 'string' || !/^[\w-]+\.(js|css)$/.test(name))) {
+    throw new Error('独立端资源清单无效')
+  }
+  for (const name of manifest) assets.set(`/assets/${name}`, {
+    type: name.endsWith('.css') ? 'text/css; charset=utf-8' : 'text/javascript; charset=utf-8',
+    body: fs.readFileSync(new URL(`./web/${name}`, import.meta.url)),
+  })
   const json = (res, status, payload, headers = {}) => {
     res.writeHead(status, { ...SECURITY_HEADERS, 'content-type': 'application/json; charset=utf-8', ...headers })
     res.end(JSON.stringify(payload))
