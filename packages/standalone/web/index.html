@@ -47,12 +47,7 @@
       <div id="error-notice" class="notice error-notice" role="alert" hidden><span></span><button id="retry" class="text-button">重试</button></div>
       <section id="page-overview" class="page"></section>
       <section id="page-models" class="page" hidden></section>
-      <section id="page-usage" class="page" hidden>
-        <div class="page-heading"><div><span class="eyebrow">USAGE ANALYTICS</span><h1>每一次调用，都有记录<span class="heading-dot">.</span></h1><p>统计只记录用量与性能，不保存你的提示词和回答。</p></div><button id="usage-refresh" class="secondary">↻ 更新统计</button></div>
-        <div class="metric-grid"><article class="metric-card"><span>物理请求</span><strong id="usage-requests">—</strong><small>含恢复时的追加请求</small></article><article class="metric-card"><span>失败回合</span><strong id="usage-failed">—</strong><small id="usage-estimate">最终未完成的用户回合</small></article><article class="metric-card"><span>输入 Token</span><strong id="usage-input">—</strong><small>以已上报用量为准</small></article><article class="metric-card"><span>输出 Token</span><strong id="usage-output">—</strong><small>以已上报用量为准</small></article></div>
-        <article class="panel"><div class="panel-heading"><h2>最近 14 天 Token 用量</h2><span class="small-tag">本机统计</span></div><div id="usage-chart" class="usage-chart large"></div></article>
-        <article class="panel table-panel"><h2>按模型统计</h2><div class="table-scroll"><table><thead><tr><th>模型</th><th>用户回合</th><th>物理请求</th><th>输入</th><th>输出</th><th>失败回合</th></tr></thead><tbody id="usage-models"></tbody></table></div><p id="usage-empty" class="empty-state" hidden>还没有调用记录。接入客户端并发送第一条消息后，统计会显示在这里。</p></article>
-      </section>
+      <section id="page-usage" class="page" hidden></section>
       <section id="page-settings" class="page" hidden>
         <div class="page-heading"><div><span class="eyebrow">SERVICE SETTINGS</span><h1>按你的方式运行<span class="heading-dot">.</span></h1><p>设置保存在本机，保存后立即生效。</p></div></div>
         <form id="settings-form"><article class="panel settings-panel"><h2>推理与模型</h2><label class="setting-row"><span><strong>启用推理服务</strong><small>关闭后暂停 API 推理，管理页面仍可访问。</small></span><input name="enabled" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>显示地区受限模型</strong><small>保留受当前出口地区限制的模型供客户端选择。</small></span><input name="exposeRegionModels" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>自动恢复断流</strong><small>允许从已生成的检查点继续回答。</small></span><input name="streamRecovery" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>单次最大输出 Token</strong><small>512–131072，实际输出还受模型能力限制。</small></span><input name="defaultMaxTokens" type="number" min="512" max="131072" step="1" required></label></article>

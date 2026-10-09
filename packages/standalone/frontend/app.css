@@ -88,7 +88,7 @@ main { flex: 1; min-width: 0; }
 .ui-badge-success { background: #edf8f2; color: #16744c; }
 .ui-badge-warning { background: #fff7e6; color: #946609; }
 .ui-badge-blue { background: #edf3ff; color: #2563eb; }
-.dashboard-metrics, .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 22px; }
+.dashboard-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 22px; }
 .dashboard-metric > div { display: flex; align-items: center; justify-content: space-between; color: #7a8190; font-size: 12px; }
 .dashboard-metric strong { display: block; font-size: 29px; font-weight: 650; font-variant-numeric: tabular-nums; margin: 12px 0 2px; line-height: 1.3; }
 .dashboard-metric p { font-size: 11px; margin-top: 6px; }
@@ -219,14 +219,6 @@ footer span { padding: 0 6px; }
 .panel { padding: 20px 0; border-bottom: 1px solid var(--line); margin-bottom: 16px; min-width: 0; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .small-tag { font-size: 11px; color: #677485; }
-.metric-card { border: 1px solid var(--line); border-radius: 8px; padding: 18px; background: #fff; min-width: 0; }
-.metric-card > span, .metric-card small { display: block; font-size: 12px; color: #737c8a; }
-.metric-card strong { display: block; font-size: 29px; margin: 8px 0; }
-.usage-chart { display: flex; height: 220px; gap: 12px; margin-top: 22px; }
-.chart-column { display: flex; flex: 1; flex-direction: column; align-items: center; justify-content: flex-end; min-width: 0; font-size: 10px; color: #7b8593; }
-.chart-bar { width: 40%; background: #5b89e8; border-radius: 3px 3px 0 0; }
-.chart-zero { background: #dce5f5; }
-.chart-label { padding-top: 7px; }
 .table-scroll { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; font-size: 12px; }
 th, td { text-align: right; padding: 12px; border-bottom: 1px solid var(--line); }
@@ -277,7 +269,7 @@ pre { white-space: pre-wrap; overflow-wrap: anywhere; background: #f0f2f6; borde
 }
 @media (max-width: 950px) {
   .dashboard-bottom-grid, .dashboard-main-grid { grid-template-columns: minmax(0, 1fr); }
-  .dashboard-metrics, .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .dashboard-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .provider-detail-layout { grid-template-columns: minmax(0, 1fr); }
   .provider-detail-sidebar { border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 15px; }
   .provider-detail-sidebar p { margin-bottom: 10px; }
