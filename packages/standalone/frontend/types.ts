@@ -1,4 +1,17 @@
 export type Page = 'overview' | 'models' | 'usage' | 'channels' | 'eac' | 'settings' | 'connection'
+export interface Model {
+  id: string
+  name: string
+  channel: string
+  routable: boolean
+  vision?: boolean
+  reasoning?: boolean
+  contextWindow?: number
+  maxOutput?: number
+  availability?: string
+  ttftMs?: number | null
+}
+export interface ModelTestResult { ok: boolean; text: string; latencyMs: number }
 export interface Summary {
   version: string
   baseUrl: string
@@ -9,7 +22,7 @@ export interface Summary {
   settings: { enabled: boolean; probeIntervalMinutes: number; standaloneProbe: boolean }
   channels: { state: string; error?: string }
   eacAuth?: { local?: boolean; authorized?: boolean; login?: string }
-  catalog: { id: string; name: string; channel: string; routable: boolean }[]
+  catalog: Model[]
 }
 export interface Stats {
   requests: number
@@ -27,4 +40,6 @@ export interface Host {
   copy(value: string): Promise<void>
   logout(): Promise<void>
   error(error: Error): void
+  testModel(model: string, signal: AbortSignal): Promise<ModelTestResult>
+  refreshModels(probe: boolean, signal: AbortSignal): Promise<void>
 }
