@@ -1,74 +1,31 @@
-/** 复用原渠道页面；只转换加载方式和同源 API 前缀，业务组件保持一致。 */
+/** 从独立端源码生成全部本地资源；检查模式不写文件。 */
 import fs from 'node:fs'
-import vm from 'node:vm'
-import path from 'node:path'
 import { createRequire } from 'node:module'
 import { pathToFileURL, fileURLToPath } from 'node:url'
 
 const require = createRequire(import.meta.url)
-const candidates = ['../packages/standalone/', '../.verify/ui-build/'].map(value => fileURLToPath(new URL(value, import.meta.url)))
-const resolved = require.resolve('esbuild', { paths: candidates })
-const tooling = path.dirname(path.dirname(path.dirname(resolved)))
-const esbuild = await import(pathToFileURL(resolved).href)
-let source = fs.readFileSync(new URL('../client.js', import.meta.url), 'utf8')
-function replaceOnce(from, to) {
-  if (source.split(from).length !== 2) throw new Error(`共享页面替换位置改变：${from.slice(0, 90)}`)
-  source = source.replace(from, to)
-}
-const anchor = '    exports.apply = apply'
-if (source.split(anchor).length !== 2) throw new Error('共享页面导出位置改变')
-source = source.replace(anchor, "    exports.standalone = { ChannelsPage, EacAuth, useEacLogin, DICT, CSS, Tank, usePool, poolReading, capacityText, CHANNEL_PROVIDERS, LedgerPage, LogsPage }\n" + anchor)
-const api = "try { return new URL('api/our-free-model', document.baseURI).pathname } catch { return '/api/our-free-model' }"
-if (source.split(api).length !== 2) throw new Error('共享页面 API 位置改变')
-source = source.replace(api, "return '/api/management'")
-replaceOnce("api('/pool', { timeout: 25_000 })", "api('/eac/pool', { timeout: 25_000 })")
-// 原页面 POST 空 body；独立管理接口要求 JSON 对象。
-replaceOnce("...body === undefined ? {} : { body: JSON.stringify(body) },", "body: JSON.stringify(body ?? {}),")
-replaceOnce("h(PageHero, { t, titleKey: 'dash.title', subKey: 'dash.sub' },",
-  "h(PageHero, { title: t('dash.title'), sub: t('dash.sub') },")
-replaceOnce("'chan.sub': '把各家的免费额度接进来：登录一次，模型就出现在对话框的模型选择器里。凭据只写入本机凭据库，页面永远拿不到明文。',",
-  "'chan.sub': '登录各家的账号后，通过同一个 API 地址接入免费额度。凭据保存在本机；账号管理页面不显示明文，导出备份包含凭据。',")
-let record
-vm.runInNewContext(source, { window: { __ModuleLoader__: { load: value => { record = value } } } })
-const shared = record.factory(() => ({})).standalone
-const css = shared.CSS + `
-.ofm_root{
- --dsw-alias-label-primary:#182b28;--dsw-alias-label-secondary:#586c66;--dsw-alias-label-tertiary:#7a8985;
- --dsw-alias-bg-layer-1:#ffffff;--dsw-alias-bg-layer-2:#f5f7f3;--dsw-alias-bg-layer-3:#eef3eb;
- --dsw-alias-border-l1:#e4e9df;--dsw-alias-border-l2:#d6dfd1;
- --dsw-alias-state-success-primary:#33775d;--dsw-alias-state-error-primary:#bc5348;
- --dsw-alias-state-business-primary:#38624d;
- --dsw-alias-accent-primary:#38624d;--dsw-alias-accent-secondary:#edf3e9;
- max-width:none;
-}
-.ofm_root button,.ofm_root input,.ofm_root select{font-family:inherit}
-.ofm_root img{max-width:100%}
-.ofm_root input,.ofm_root select{max-width:100%;padding:7px 9px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;background:white;color:inherit}
-.ofm_root input[type=checkbox]{padding:0}
-`
-const result = await esbuild.build({
-  entryPoints: [fileURLToPath(new URL('../packages/standalone/web/channels-entry.mjs', import.meta.url))],
-  outfile: fileURLToPath(new URL('../packages/standalone/web/channels.js', import.meta.url)),
-  nodePaths: [tooling],
-  bundle: true, format: 'iife', platform: 'browser', target: 'es2022', minify: true,
-  define: { 'process.env.NODE_ENV': '"production"' },
-  legalComments: 'eof', write: false,
-  plugins: [{
-    name: '共享渠道页面',
-    setup(build) {
-      build.onResolve({ filter: /^ofm-shared-client$/ }, () => ({ path: 'shared-client', namespace: 'ofm' }))
-      build.onLoad({ filter: /.*/, namespace: 'ofm' }, () => ({
-        contents: `import * as React from 'react'; export const shared = (${record.factory.toString()})(() => React).standalone;`,
-        resolveDir: fileURLToPath(new URL('../packages/standalone/', import.meta.url)), loader: 'js',
-      }))
-    },
-  }],
-})
-const files = [[new URL('../packages/standalone/web/channels.css', import.meta.url), css],
-  [new URL('../packages/standalone/web/channels.js', import.meta.url), result.outputFiles[0].text]]
-for (const [file, content] of files) {
+const project = fileURLToPath(new URL('../packages/standalone/', import.meta.url))
+const { build } = await import(pathToFileURL(require.resolve('vite', { paths: [project] })).href)
+const result = await build({ configFile: `${project}/vite.config.mjs`, logLevel: 'warn' })
+const output = Array.isArray(result) ? result.flatMap(value => value.output) : result.output
+const files = new Map(output.map(file => [file.fileName, file.type === 'chunk' ? file.code : file.source]))
+const assets = [...files.keys()].filter(name => name !== 'index.html').sort()
+if (assets.some(name => !/^[\w-]+\.(js|css)$/.test(name))) throw new Error('构建产生了未支持的资源路径')
+files.set('assets.json', JSON.stringify(assets, null, 2) + '\n')
+const directory = new URL('../packages/standalone/web/', import.meta.url)
+const manifest = new URL('assets.json', directory)
+const previous = fs.existsSync(manifest) ? JSON.parse(fs.readFileSync(manifest, 'utf8')) : ['channels.js', 'channels.css']
+for (const [name, content] of files) {
+  const file = new URL(name, directory)
   if (process.argv.includes('--check')) {
-    if (!fs.existsSync(file) || fs.readFileSync(file, 'utf8') !== content) throw new Error('独立渠道页面需要重新生成')
+    if (!fs.existsSync(file) || !fs.readFileSync(file).equals(Buffer.from(content))) {
+      throw new Error(`独立端资源需要重新生成：${name}`)
+    }
   } else fs.writeFileSync(file, content)
 }
-console.log('独立渠道页面生成完成')
+if (!process.argv.includes('--check')) {
+  for (const name of previous) {
+    if (/^[\w-]+\.(js|css)$/.test(name) && !files.has(name)) fs.rmSync(new URL(name, directory), { force: true })
+  }
+}
+console.log(`独立端页面生成一致：${assets.length} 个本地资源`)

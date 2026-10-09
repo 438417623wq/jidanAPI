@@ -69,6 +69,23 @@ EAC 在独立页面自行授权；不会使用 DSH 的 EAC token。原插件的�
 
 ## 网页管理
 
+独立端第一阶段已使用新的概览、渠道管理和公共导航；模型、用量、设置、
+API 接入和登录继续保留已有控制逻辑。资源全部由本机服务提供，渠道页面
+按需加载，不依赖 CDN。第一阶段视觉与体积记录见
+[`界面验收报告`](../../docs/verification/2026-10-09-standalone-ui-phase1.md)。
+
+修改前端后，在仓库根目录执行：
+
+```powershell
+npm ci --prefix packages/standalone --ignore-scripts
+npm run typecheck:standalone
+npm run build:standalone-ui
+node scripts/build-standalone-ui.mjs --check
+```
+
+`frontend/` 是源码，`web/` 是提交的构建输出。服务启动时载入这些资源；
+重新构建后需要重启服务。开发工具只用于构建，不作为网页资源公开。
+
 - **概览**：推理状态、接入地址、模型数量、最近 7 天 Token 用量和本机服务信息。
 - **模型清单**：搜索和渠道筛选、复制模型 ID、刷新清单、主动探测和单模型测试。
 - **用量统计**：物理请求、用户回合、输入/输出 Token、最近 14 天趋势和按模型统计。
