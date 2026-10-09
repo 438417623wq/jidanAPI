@@ -22,6 +22,36 @@ let modelModule: typeof import('./models') | undefined
 let modelImport: Promise<void> | undefined
 let usageModule: typeof import('./usage') | undefined
 let usageImport: Promise<void> | undefined
+let settingsModule: typeof import('./settings') | undefined
+let settingsImport: Promise<void> | undefined
+
+function renderSettingsPage() {
+  if (!current) return
+  if (settingsModule) {
+    root('page-settings').render(<settingsModule.Settings summary={current.summary} host={host} active={currentPage === 'settings'} />)
+    return
+  }
+  if (currentPage !== 'settings' || settingsImport) return
+  const container = document.getElementById('page-settings')!
+  container.textContent = '正在加载服务设置…'
+  container.setAttribute('role', 'status')
+  settingsImport = import('./settings').then(module => {
+    settingsModule = module
+    container.removeAttribute('role')
+    container.replaceChildren()
+    renderSettingsPage()
+  }).catch(() => {
+    if (!current || currentPage !== 'settings') return
+    container.replaceChildren()
+    const error = document.createElement('p')
+    error.textContent = '设置页面加载失败，请检查本地服务是否运行。'
+    const retry = document.createElement('button')
+    retry.className = 'secondary'
+    retry.textContent = '重试加载设置'
+    retry.onclick = renderSettingsPage
+    container.append(error, retry)
+  }).finally(() => { settingsImport = undefined })
+}
 
 function renderUsagePage() {
   if (!current) return
@@ -123,6 +153,7 @@ host = startLegacy({
     root('page-overview').render(<Overview {...snapshot} host={host} />)
     renderModelPage()
     renderUsagePage()
+    renderSettingsPage()
   },
   clear() {
     current = undefined
@@ -131,6 +162,7 @@ host = startLegacy({
     document.getElementById('channel-root')!.replaceChildren()
     document.getElementById('page-models')!.removeAttribute('role')
     document.getElementById('page-usage')!.removeAttribute('role')
+    document.getElementById('page-settings')!.removeAttribute('role')
   },
   channels(kind: 'channels' | 'eac', summary: Snapshot['summary'] & { reload(): void }) {
     // 导航先更新目标，再启动异步页面，避免快速切页时迟到挂载。

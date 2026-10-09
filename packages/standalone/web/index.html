@@ -48,11 +48,7 @@
       <section id="page-overview" class="page"></section>
       <section id="page-models" class="page" hidden></section>
       <section id="page-usage" class="page" hidden></section>
-      <section id="page-settings" class="page" hidden>
-        <div class="page-heading"><div><span class="eyebrow">SERVICE SETTINGS</span><h1>按你的方式运行<span class="heading-dot">.</span></h1><p>设置保存在本机，保存后立即生效。</p></div></div>
-        <form id="settings-form"><article class="panel settings-panel"><h2>推理与模型</h2><label class="setting-row"><span><strong>启用推理服务</strong><small>关闭后暂停 API 推理，管理页面仍可访问。</small></span><input name="enabled" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>显示地区受限模型</strong><small>保留受当前出口地区限制的模型供客户端选择。</small></span><input name="exposeRegionModels" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>自动恢复断流</strong><small>允许从已生成的检查点继续回答。</small></span><input name="streamRecovery" type="checkbox" class="switch"></label><label class="setting-row"><span><strong>单次最大输出 Token</strong><small>512–131072，实际输出还受模型能力限制。</small></span><input name="defaultMaxTokens" type="number" min="512" max="131072" step="1" required></label></article>
-        <article class="panel settings-panel"><h2>模型刷新</h2><label class="setting-row"><span><strong>刷新间隔（分钟）</strong><small>1–1440 分钟，刷新后重新安排下一轮。</small></span><input name="probeIntervalMinutes" type="number" min="1" max="1440" step="1" required></label><label class="setting-row"><span><strong>自动探测可用性</strong><small>周期刷新时发送探测请求，遇到限流会自动退避。</small></span><input name="standaloneProbe" type="checkbox" class="switch"></label><p id="settings-refresh-note" class="footnote"></p></article><div class="form-footer"><span id="settings-save-status" class="muted"></span><button class="primary" type="submit">保存设置</button></div></form>
-      </section>
+      <section id="page-settings" class="page" hidden></section>
       <section id="page-channel" class="page" hidden>
         <div id="channel-root" class="ofm_root"></div>
       </section>
